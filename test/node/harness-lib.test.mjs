@@ -993,7 +993,7 @@ describe("the swarm's worker loop against a fake platform", () => {
     assert.ok(at("start:kelvin-remove") > at("end:sloppy-a"), "kelvin-remove waited for sloppy-a");
     assert.ok(at("start:cat-area") > at("end:sloppy-b"), "cat-area waited for sloppy-b");
     assert.ok(lines.some((l) => /kelvin-first {2}waiting for sloppy-a to finish/.test(l)));
-    assert.match(lines[0], /swarm {5}repo=convert mode=claude agents=3 speed=3 contention=off seed=9 tasks=8 api=http:\/\/127\.0\.0\.1:\d+$/);
+    assert.match(lines[0], /swarm {5}repo=convert mode=claude auth=auto agents=3 speed=3 contention=off seed=9 tasks=8 api=http:\/\/127\.0\.0\.1:\d+$/);
 
     // every agent gets the same kind of context, with its own deterministic random stream
     for (const [id, ctx] of contexts) {
@@ -1001,7 +1001,7 @@ describe("the swarm's worker loop against a fake platform", () => {
       assert.equal(typeof ctx.api.begin, "function");
       assert.equal(ctx.dir, catalogueDir);
       assert.match(ctx.worker, /^agent-0[1-3]$/);
-      assert.deepEqual([ctx.speed, ctx.contention, ctx.stub, ctx.model, ctx.apiUrl, ctx.token], [3, false, true, "claude-x", platform.url, "tok"], id);
+      assert.deepEqual([ctx.speed, ctx.contention, ctx.stub, ctx.model, ctx.auth, ctx.apiUrl, ctx.token], [3, false, true, "claude-x", "auto", platform.url, "tok"], id);
       assert.equal(ctx.rng(), makeRng(seedFor(9, id))(), id);
       assert.equal(ctx.task.id, id);
       assert.equal(typeof ctx.log, "function");
@@ -1010,6 +1010,25 @@ describe("the swarm's worker loop against a fake platform", () => {
     const plain = [];
     await runSwarm(args(["--agents", "1", "--tasks", "cat-area"]), { log: () => {}, runAgent: async (ctx) => (plain.push(ctx), { task: ctx.task.id, outcome: "landed" }) });
     assert.deepEqual([plain[0].stub, plain[0].model, plain[0].contention], [undefined, undefined, true]);
+  });
+
+  it("checks a CLI mode's login once, before it touches the repo, and stops there when there is none", async () => {
+    const saved = process.env.RYKE_STUB_LOGIN;
+    process.env.RYKE_STUB_LOGIN = "none";
+    try {
+      const before = platform.requests.length;
+      const lines = [];
+      await assert.rejects(
+        runSwarm(args(["--mode", "codex", "--stub", "--auth", "subscription", "--agents", "2", "--tasks", "cat-area", "--repo", "never-made"]), { log: (l) => lines.push(l) }),
+        (e) => e.name === "AccessError" && /codex is not logged in on this machine/.test(e.message),
+      );
+      const after = platform.requests.slice(before).map((r) => `${r.method} ${r.path}`);
+      assert.deepEqual(after, ["GET /api/health"], "nothing but the health check reached the platform");
+      assert.match(lines[0], /mode=codex auth=subscription agents=2/);
+    } finally {
+      if (saved === undefined) delete process.env.RYKE_STUB_LOGIN;
+      else process.env.RYKE_STUB_LOGIN = saved;
+    }
   });
 
   it("gives local test runs to at most --verify-slots agents at a time", async () => {
@@ -1078,7 +1097,7 @@ describe("swarm arguments", () => {
     const o = parse([]);
     assert.deepEqual(
       { ...o, verifySlots: typeof o.verifySlots },
-      { mode: "scripted", agents: 12, repo: "convert", speed: 4, fresh: false, contention: true, stack: false, tasks: null, json: null, api: "http://127.0.0.1:5173", token: "dev", seed: 42, demo: null, stub: false, model: null, verifySlots: "number", offset: 0, help: false },
+      { mode: "scripted", agents: 12, repo: "convert", speed: 4, fresh: false, contention: true, stack: false, tasks: null, json: null, api: "http://127.0.0.1:5173", token: "dev", seed: 42, demo: null, stub: false, model: null, auth: "auto", verifySlots: "number", offset: 0, help: false },
     );
     assert.ok(o.verifySlots >= 1);
   });
@@ -1095,8 +1114,14 @@ describe("swarm arguments", () => {
     );
   });
 
+  it("takes codex as a mode and the auth of either CLI", () => {
+    assert.deepEqual([parse(["--mode", "codex"]).mode, parse(["--mode", "codex"]).auth], ["codex", "auto"]);
+    for (const auth of ["subscription", "api-key", "auto"]) assert.equal(parse(["--mode", "claude", "--auth", auth]).auth, auth);
+  });
+
   const bad = [
-    [["--mode", "robot"], /--mode must be scripted or claude/],
+    [["--mode", "robot"], /--mode must be scripted, claude or codex/],
+    [["--auth", "oauth"], /--auth must be subscription, api-key or auto, got oauth/],
     [["--agents", "0"], /--agents must be an integer from 1 to 50/],
     [["--agents", "51"], /--agents must be an integer from 1 to 50/],
     [["--agents", "2.5"], /--agents must be an integer/],

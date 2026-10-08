@@ -2938,6 +2938,76 @@ describe("Outbound gateway", () => {
     });
   });
 
+  describe("api.openai.com", () => {
+    const URL_ = "https://api.openai.com/v1/responses";
+    const OPENAI = "sk-proj-operator";
+
+    it("swaps the placeholder bearer for the gateway's own key and keeps the rest of the request", async () => {
+      const { sent, response } = upstream();
+      const res = await gateway({ OPENAI_API_KEY: OPENAI }).fetch(
+        new Request(URL_, { method: "POST", body: '{"model":"m"}', headers: { authorization: "Bearer sk-proj-ryke-gateway-placeholder", "content-type": "application/json" } }),
+      );
+      expect(res).toBe(response);
+      const req = sent();
+      expect(req.url).toBe(URL_);
+      expect(req.method).toBe("POST");
+      expect(req.headers.get("authorization")).toBe(`Bearer ${OPENAI}`);
+      expect(req.headers.get("content-type")).toBe("application/json");
+      expect(await req.text()).toBe('{"model":"m"}');
+      expect(req.redirect).toBe("manual");
+    });
+
+    it("adds the key when the container sent none", async () => {
+      const { sent } = upstream();
+      await gateway({ OPENAI_API_KEY: OPENAI }).fetch(new Request(URL_));
+      expect(sent().headers.get("authorization")).toBe(`Bearer ${OPENAI}`);
+    });
+
+    it.each([
+      ["unset", {}],
+      ["empty", { OPENAI_API_KEY: "" }],
+    ])("answers 503 and sends nothing when the key is %s", async (_name, e) => {
+      const { spy } = upstream();
+      const res = await gateway(e).fetch(new Request(URL_, { headers: { authorization: "Bearer placeholder" } }));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: "OPENAI_API_KEY is not configured on the gateway" });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("never hands the Anthropic key to OpenAI", async () => {
+      const { sent } = upstream();
+      await gateway({ ANTHROPIC_API_KEY: KEY, OPENAI_API_KEY: OPENAI }).fetch(new Request(URL_, { headers: { "x-api-key": "placeholder" } }));
+      expect(sent().headers.get("authorization")).toBe(`Bearer ${OPENAI}`);
+      expect(sent().headers.get("x-api-key")).toBe("placeholder");
+    });
+
+    it("never hands the OpenAI key to Anthropic", async () => {
+      const { sent } = upstream();
+      await gateway({ ANTHROPIC_API_KEY: KEY, OPENAI_API_KEY: OPENAI }).fetch(new Request("https://api.anthropic.com/v1/messages", { headers: { authorization: "Bearer x" } }));
+      expect(sent().headers.get("x-api-key")).toBe(KEY);
+      expect(sent().headers.get("authorization")).toBe("Bearer x");
+    });
+
+    it.each([
+      "https://api.openai.com.evil.test/v1/responses",
+      "https://chatgpt.com/backend-api/codex/responses",
+      "https://openai.com/v1/responses",
+    ])("does not inject the key for %s", async (url) => {
+      const { sent } = upstream();
+      const request = new Request(url, { headers: { authorization: "Bearer placeholder" } });
+      await gateway({ OPENAI_API_KEY: OPENAI }).fetch(request);
+      expect(sent()).toBe(request);
+      expect(sent().headers.get("authorization")).toBe("Bearer placeholder");
+    });
+
+    it("does not reach it from a closed gateway", async () => {
+      const { spy } = upstream();
+      const res = await gateway({ OPENAI_API_KEY: OPENAI }, { allow: {}, egress: "closed" }).fetch(new Request(URL_));
+      expect(res.status).toBe(403);
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
   describe("everything else", () => {
     it.each([
       "https://registry.npmjs.org/left-pad",

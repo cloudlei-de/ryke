@@ -16,6 +16,7 @@ something we inferred and did not see documented.
 | `agents` | 0.27.0 | Peer-pins `@modelcontextprotocol/server` **2.0.0** exactly |
 | `@typesafe-ai/sdk` | 0.6.0 | Jev client, fetch-only, works in workerd |
 | `@anthropic-ai/claude-code` | 2.1.293 | Pin it inside the agent image |
+| `@openai/codex` | 0.161.0 | Pinned in the agent image; flags and events checked against this binary |
 | `@cloudflare/vitest-plugin` | 1.3.x | Needs vitest 4.x, not 5 |
 
 ## Sandbox SDK 1.0 / Containers
@@ -80,6 +81,41 @@ claude --print --output-format stream-json --verbose --dangerously-skip-permissi
 - A bad key takes about 3 minutes to fail, because Claude Code retries 10 times. Validate the key once before a swarm starts.
 - Hooks in the container's `~/.claude/settings.json` (`PostToolUse` on `Read|Grep|Glob|Edit|Write|MultiEdit`)
   can append every touched path to a JSONL file. That file is how Ryke records the read and write sets.
+
+### Whose credentials an agent CLI runs on (`--auth`)
+
+Claude Code (code.claude.com docs; `claude auth status` checked with 2.1.294):
+- Precedence: a cloud provider (`CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY`), then
+  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, an `apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN` (made by
+  `claude setup-token` for a subscription), then the `/login` credentials (`~/.claude/.credentials.json`
+  on Linux, the Keychain on macOS). In `-p` mode a set `ANTHROPIC_API_KEY` always wins, and no variable
+  forces the subscription: a subscription run has to remove the key variables.
+- `claude auth status` prints JSON (`loggedIn`, `authMethod`: `claude.ai`, `oauth_token`, `api_key`,
+  `api_key_helper`, `third_party` or `none`; `apiKeySource`), exit 1 when logged out.
+- Terms (code.claude.com/docs/en/legal-and-compliance): OAuth is for ordinary use of Claude Code.
+  Allowed: "an end user signing in to the unmodified Claude Code binary with their own Claude
+  subscription". Third-party developers may not offer Claude.ai login, route requests through Free, Pro
+  or Max plan credentials on behalf of their users, or collect, store or intermediate Claude.ai
+  credentials or session tokens. A hosted offering needs the Commercial Terms, i.e. API keys.
+
+Codex (openai/codex source at 0.161, run here as the real 0.161.0 binary; developers.openai.com and
+api.openai.com are blocked by this VM's proxy, so OpenAI's own docs and terms were not read):
+- `codex exec --json --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
+  --dangerously-bypass-approvals-and-sandbox --cd <dir> [--model M] -- "<prompt>"`.
+- JSONL events: `thread.started`, `turn.started`, `item.started|updated|completed` with
+  `item.type` `agent_message`, `reasoning`, `command_execution` (`command`, `aggregated_output`,
+  `exit_code`), `file_change` (`changes[]` of `{path, kind: add|delete|update}`, absolute paths),
+  `mcp_tool_call`, `web_search`, `todo_list`, `error`; the turn ends with `turn.completed` (usage) or
+  `turn.failed` (`error.message`). A top-level `error` line is not the end: reconnects are reported so.
+- Auth (codex-rs/login `load_auth`): `CODEX_API_KEY` in the environment wins in `codex exec`; then
+  `CODEX_ACCESS_TOKEN` (a ChatGPT personal access token); then the login in `CODEX_HOME` (default
+  `~/.codex`, `auth.json` or the keyring). `OPENAI_API_KEY` is not among them, so Ryke passes it on as
+  `CODEX_API_KEY`. A key goes to `https://api.openai.com/v1`, a ChatGPT login to
+  `https://chatgpt.com/backend-api/codex`. It tries a WebSocket first and falls back to HTTPS.
+- `codex login status` writes `Logged in using ChatGPT`, `Logged in using an API key - …` or
+  `Not logged in` (exit 1) to stderr; it ignores `CODEX_API_KEY`.
+- Without any login `codex exec` does not fail: it retries the connection until it is killed, so the
+  login is checked before a run. `SSL_CERT_FILE` (or `CODEX_CA_CERTIFICATE`) sets its CA bundle.
 
 ## Workflows
 

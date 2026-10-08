@@ -365,7 +365,7 @@ export function claudeVerdict({ tasks, results, report }) {
 
 export const REQUIRED_BINDINGS = ["LEDGER", "RUNNER", "LAND", "INGEST", "LOADER", "ARTIFACTS"];
 // Secrets are set with `wrangler secret put`; one of them showing up as a var would ship it in the config.
-export const SECRET_NAMES = ["RYKE_TOKEN", "RYKE_INTERNAL_SECRET", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY"];
+export const SECRET_NAMES = ["RYKE_TOKEN", "RYKE_INTERNAL_SECRET", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
 const EXPECTED_VARS = { RYKE_STORE: "artifacts", RYKE_RUNNER: "container", RYKE_JEV: "live" };
 const LOCAL_ADDRESS = /127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0/i;
 

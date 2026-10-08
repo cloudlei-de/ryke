@@ -351,9 +351,11 @@ const PROXY_NAMES = [
   "SSL_CERT_DIR",
   "NODE_USE_ENV_PROXY",
 ];
+// Where the agent CLIs keep their own login: a subscription job needs to find it (agent.mjs).
+const LOGIN_DIRS = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
 
 test("inheritedEnv keeps exactly the allow-listed host variables", () => {
-  const everything = Object.fromEntries([...HOST_NAMES, ...PROXY_NAMES, "LC_ALL", "LC_CTYPE", "LC_RYKE_ANY"].map((k) => [k, `v:${k}`]));
+  const everything = Object.fromEntries([...HOST_NAMES, ...PROXY_NAMES, ...LOGIN_DIRS, "LC_ALL", "LC_CTYPE", "LC_RYKE_ANY"].map((k) => [k, `v:${k}`]));
   assert.deepEqual(inheritedEnv(everything), everything);
 
   for (const name of [
@@ -363,6 +365,9 @@ test("inheritedEnv keeps exactly the allow-listed host variables", () => {
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "AWS_SECRET_ACCESS_KEY",

@@ -645,7 +645,7 @@ describe("production config", () => {
     ["the runner is a process", set("vars.RYKE_RUNNER", "process"), 'vars.RYKE_RUNNER is "process", expected "container"'],
     ["Jev is recorded", set("vars.RYKE_JEV", "recorded"), 'vars.RYKE_JEV is "recorded", expected "live"'],
     ["Jev is not set", without("vars.RYKE_JEV"), 'vars.RYKE_JEV is undefined, expected "live"'],
-    ...["RYKE_TOKEN", "RYKE_INTERNAL_SECRET", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY"].map((name) => [`${name} is a var`, set(`vars.${name}`, "x"), `vars contains the secret ${name}; it belongs in \`wrangler secret put\``]),
+    ...["RYKE_TOKEN", "RYKE_INTERNAL_SECRET", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"].map((name) => [`${name} is a var`, set(`vars.${name}`, "x"), `vars contains the secret ${name}; it belongs in \`wrangler secret put\``]),
     ["the store URL is the local one", set("vars.RYKE_STORE_URL", "http://127.0.0.1:8788"), "vars.RYKE_STORE_URL points at a local address: http://127.0.0.1:8788"],
     ["the runner URL says localhost", set("vars.RYKE_RUNNER_URL", "http://localhost:8789"), "vars.RYKE_RUNNER_URL points at a local address: http://localhost:8789"],
     ["a var points at an IPv6 loopback", set("vars.OTHER", "http://[::1]:9"), "vars.OTHER points at a local address: http://[::1]:9"],

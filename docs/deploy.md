@@ -34,7 +34,12 @@ npx wrangler secret put RYKE_TOKEN --env production            # admin bearer fo
 npx wrangler secret put RYKE_INTERNAL_SECRET --env production  # internal event secret (unused by Artifacts triggers, kept for parity)
 npx wrangler secret put TYPESAFE_API_KEY --env production      # Jev, api.typesafe.ai
 npx wrangler secret put ANTHROPIC_API_KEY --env production     # Claude agents; the Outbound gateway injects it, containers never see it
+npx wrangler secret put OPENAI_API_KEY --env production        # Codex agents, the same way (api.openai.com)
 ```
+
+Agents in containers run only on these operator keys. A subscription login (Claude Pro or Max, a
+ChatGPT plan) is for its owner's own machine: `--auth subscription` is refused inside a container,
+and the gateway attaches no credential for chatgpt.com.
 
 ## 3. Deploy
 

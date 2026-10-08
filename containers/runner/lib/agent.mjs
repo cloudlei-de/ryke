@@ -1,19 +1,22 @@
-// Runner job `agent` (PLAN.md §10.4): one Claude Code session per transaction attempt, speaking only
-// the public HTTP API and git, exactly like an outside agent would. The harness has already begun
-// the transaction; this script clones the fork, lets Claude work with the lease and read-tracking
-// hooks installed, commits, pushes, submits, waits, and on stale or failed re-runs Claude against
-// the new snapshot with the delta (or the failing tests) added to the prompt.
+// Runner job `agent` (PLAN.md §10.4): one agent CLI session per transaction attempt, Claude Code or
+// Codex, speaking only the public HTTP API and git, exactly like an outside agent would. The harness has
+// already begun the transaction; this script clones the fork, lets the CLI work (Claude with the lease
+// and read-tracking hooks installed, Codex with its reads taken from its event stream), commits,
+// pushes, submits, waits, and on stale or failed re-runs it against the new snapshot with the delta
+// (or the failing tests) added to the prompt.
 //
 //   agent.sh --repo convert --txn t_… --agent agent-01 --intent "…" --criteria '["…"]' \
-//            --remote <fork url> --snapshot <sha> [--model claude-sonnet-5-5] [--max-attempts 3]
-//   env: RYKE_API_URL RYKE_TOKEN RYKE_FORK_TOKEN CLAUDE_BIN ANTHROPIC_API_KEY RYKE_CONTENTION
-//        RYKE_CLAUDE_TIMEOUT_S RYKE_WAIT_S RYKE_CLAUDE_STUB RYKE_KEEP_CHECKOUT
+//            --remote <fork url> --snapshot <sha> [--cli claude|codex] [--auth subscription|api-key|auto]
+//            [--model claude-sonnet-5-5] [--max-attempts 3]
+//   env: RYKE_API_URL RYKE_TOKEN RYKE_FORK_TOKEN CLAUDE_BIN CODEX_BIN ANTHROPIC_API_KEY CODEX_API_KEY
+//        OPENAI_API_KEY RYKE_CONTENTION RYKE_CLAUDE_TIMEOUT_S (the session timeout of either CLI)
+//        RYKE_WAIT_S RYKE_AGENT_STUB RYKE_KEEP_CHECKOUT
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { apiCallRetrying, isMain, loadConfig, READS_BATCH, readLines, rykeDir } from "../hooks/common.mjs";
+import { apiCallRetrying, appendLine, isMain, loadConfig, READS_BATCH, readLines, rykeDir } from "../hooks/common.mjs";
 import { git as run, main } from "./common.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -21,11 +24,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(HERE, "../../..");
 const RUNNER_DIR = resolve(HERE, "..");
 
+export const CLIS = ["claude", "codex"];
+export const AUTH_MODES = ["subscription", "api-key", "auto"];
+// Claude's; Codex without --model runs whatever its own default is.
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
 export const DEFAULT_MAX_ATTEMPTS = 3;
-// The Outbound gateway swaps this for the real key (docs/platform-notes.md), so Claude Code starts.
+// The Outbound gateway swaps these for the operator's real keys (docs/platform-notes.md), so the CLI starts.
 export const PLACEHOLDER_KEY = "sk-ant-api03-ryke-gateway-placeholder";
+export const CODEX_PLACEHOLDER_KEY = "sk-proj-ryke-gateway-placeholder";
 const CONTAINER_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
+export const inContainer = () => existsSync(CONTAINER_CA);
 
 // The words the stub and a human reading a transcript can rely on in a retry prompt.
 export const RETRY_STALE = "files you read changed on trunk";
@@ -55,6 +63,11 @@ function criteriaFrom(raw) {
   }
 }
 
+const oneOf = (raw, allowed, name) => {
+  if (!allowed.includes(raw)) throw new Error(`${name} must be ${allowed.join(" or ")}, got ${raw}`);
+  return raw;
+};
+
 const positive = (raw, fallback, name) => {
   if (raw === undefined || raw === "") return fallback;
   if (!(Number(raw) > 0)) throw new Error(`${name} must be a positive number, got ${raw}`);
@@ -70,11 +83,11 @@ export function budgetsFrom(env) {
   };
 }
 
-// What a run costs besides Claude and the wait: git, and the API calls that each may retry for 30 s
+// What a run costs besides the CLI session and the wait: git, and the API calls that each may retry for 30 s
 // (apiCallRetrying), several per run.
 export const ATTEMPT_OVERHEAD_MS = 5 * 60_000;
 
-// Every Claude run is followed by at most one wait, and the number of runs is capped by maxAttempts
+// Every CLI session is followed by at most one wait, and the number of runs is capped by maxAttempts
 // whether they follow a stale outcome or a refresh that could not move the change.
 export const worstCaseMs = ({ maxAttempts, claudeTimeoutMs, waitMs }) => maxAttempts * (claudeTimeoutMs + waitMs + ATTEMPT_OVERHEAD_MS);
 
@@ -83,6 +96,7 @@ export function inputsFrom(a, env = process.env) {
     if (!a[key]) throw new Error(`--${key} is required`);
     return a[key];
   };
+  const cli = oneOf(a.cli || "claude", CLIS, "--cli");
   return {
     repo: need("repo"),
     txn: need("txn"),
@@ -91,13 +105,15 @@ export function inputsFrom(a, env = process.env) {
     remote: need("remote"),
     snapshot: need("snapshot"),
     criteria: criteriaFrom(a.criteria),
-    model: a.model || DEFAULT_MODEL,
+    cli,
+    auth: oneOf(a.auth || "auto", AUTH_MODES, "--auth"),
+    model: a.model || (cli === "claude" ? DEFAULT_MODEL : ""),
     maxAttempts: positive(a["max-attempts"], DEFAULT_MAX_ATTEMPTS, "--max-attempts"),
     apiUrl: env.RYKE_API_URL || a.api || "",
     token: env.RYKE_TOKEN || "",
     forkToken: env.RYKE_FORK_TOKEN || "",
-    claudeBin: env.CLAUDE_BIN || "claude",
-    stub: env.RYKE_CLAUDE_STUB === "1",
+    bin: cli === "codex" ? env.CODEX_BIN || "codex" : env.CLAUDE_BIN || "claude",
+    stub: env.RYKE_AGENT_STUB === "1",
     contention: env.RYKE_CONTENTION !== "off",
     keepCheckout: env.RYKE_KEEP_CHECKOUT === "1",
     ...budgetsFrom(env),
@@ -107,8 +123,8 @@ export function inputsFrom(a, env = process.env) {
 // The entry point's version: the fork token is read once and removed from this process's environment, so
 // nothing started from here (git, whatever a hook or a script spawns) inherits it. It stays in
 // /proc/<pid>/environ, which records the environment of the original exec, so another process of the same
-// user can still read it there; what keeps it from Claude is that Claude gets an allow-listed
-// environment (claudeEnv), not this one.
+// user can still read it there; what keeps it from the agent is that the CLI gets an allow-listed
+// environment (agentEnv), not this one.
 export function takeInputs(a, env = process.env) {
   const inp = inputsFrom(a, env);
   delete env.RYKE_FORK_TOKEN;
@@ -156,35 +172,91 @@ export function retryNotice({ state, reason, attempt, max, snapshot, delta = [],
 }
 
 // ---------------------------------------------------------------------------------------------
-// Claude
+// Whose credentials the CLI runs on
+// ---------------------------------------------------------------------------------------------
+
+// Codex's own variable is CODEX_API_KEY; OPENAI_API_KEY is the one people have set, so it counts too
+// and is passed on under Codex's name.
+export const keyOf = (cli, env) => (cli === "codex" ? env.CODEX_API_KEY || env.OPENAI_API_KEY : env.ANTHROPIC_API_KEY) || "";
+export const KEY_NAMES = { claude: "ANTHROPIC_API_KEY", codex: "CODEX_API_KEY or OPENAI_API_KEY" };
+
+// auto is what either CLI does by itself: a key when one is set, the person's own login otherwise. A
+// container is Ryke's hosted runner, where the only credential is the operator's key that the gateway
+// attaches: a subscription is for its owner's own use of the CLI, never something a service runs
+// other people's work on (DECISIONS.md, "Bring your own subscription").
+export function resolveAuth(cli, auth, env, container = inContainer()) {
+  const key = keyOf(cli, env);
+  const mode = auth === "auto" ? (key || container ? "api-key" : "subscription") : auth;
+  if (mode === "subscription" && container) {
+    throw new Error(`--auth subscription runs ${cli} on your own login and only on your own machine; in a Ryke container ${cli} runs on the operator's API key`);
+  }
+  if (mode === "api-key" && !key && !container) throw new Error(`--auth api-key needs ${KEY_NAMES[cli]} in the environment`);
+  return mode;
+}
+
+// Every variable that carries a model credential or decides where one is sent, of either vendor. None
+// passes on its own: the CLI and auth mode of the run put back only their own (credentialsFor), so a
+// subscription run cannot fall back on a key, a key run cannot be redirected to Bedrock, and neither
+// CLI sees the other vendor's secrets.
+const CREDENTIAL = /^(ANTHROPIC_\w+|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_\w+|CODEX_API_KEY|CODEX_ACCESS_TOKEN|OPENAI_\w+)$/;
+export const isCredential = (name) => CREDENTIAL.test(name);
+
+// A subscription run takes its login from the CLI's own store under HOME (claude /login, codex login),
+// which Ryke never reads; CLAUDE_CODE_OAUTH_TOKEN is the token `claude setup-token` makes for the same
+// subscription. Without a key, ANTHROPIC_BASE_URL goes too: the login's token is for Anthropic alone.
+export function credentialsFor(cli, mode, base, container = false) {
+  if (mode === "subscription") return cli === "claude" && base.CLAUDE_CODE_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: base.CLAUDE_CODE_OAUTH_TOKEN } : {};
+  if (cli === "codex") return { CODEX_API_KEY: keyOf("codex", base) || (container ? CODEX_PLACEHOLDER_KEY : "") };
+  return {
+    ANTHROPIC_API_KEY: base.ANTHROPIC_API_KEY || (container ? PLACEHOLDER_KEY : ""),
+    ...(base.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: base.ANTHROPIC_BASE_URL } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The CLI
 // ---------------------------------------------------------------------------------------------
 
 export function claudeArgs(model, prompt) {
   return ["--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--no-session-persistence", "--model", model, "--", prompt];
 }
 
-// Claude's Bash tool, and every hook, sees exactly this environment, so it is an allow-list: a job
+// The user's ~/.codex/config.toml and rules would change how the session behaves from one machine to the
+// next, and a saved session would outlive the attempt. The checkout is the workspace, as it is Claude's.
+export function codexArgs(model, prompt, dir) {
+  return [
+    "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
+    "--dangerously-bypass-approvals-and-sandbox", "--cd", dir, ...(model ? ["--model", model] : []), "--", prompt,
+  ];
+}
+
+// The CLI's Bash tool, and every hook, sees exactly this environment, so it is an allow-list: a job
 // inherits whatever its runner has (in process mode the developer's shell, with API keys in it), and
-// none of that is Claude's business. What is named is what Claude Code, git, node and the hooks need to
-// run and to reach the network, plus the model credentials the operator chose to give the job.
+// none of that is the agent's business. What is named is what the CLI, git, node and the hooks need to
+// run and to reach the network; the model credentials come from credentialsFor.
 const PASS_EXACT = new Set([
   "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM", "SHELL",
   "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
   "NODE_USE_ENV_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
-  "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
-  // Diagnostics and the fake claude's test knobs; none of them is a credential.
+  // Diagnostics and the fake CLIs' test knobs; none of them is a credential.
   "RYKE_AGENT_VERBOSE", "RYKE_LEASE_PATIENCE_MS", "RYKE_HOOK_TIMEOUT_MS", "RYKE_HOOK_BUDGET_MS", "RYKE_CATALOGUE_DIR",
 ]);
-const PASS_PATTERN = /^(LC_\w+|CLAUDE_\w+|RYKE_STUB_\w+)$/;
+// CODEX_HOME is where `codex login` keeps its login; CLAUDE_CONFIG_DIR is the same for Claude.
+const PASS_PATTERN = { claude: /^(LC_\w+|CLAUDE_\w+|RYKE_STUB_\w+)$/, codex: /^(LC_\w+|CODEX_HOME|RYKE_STUB_\w+)$/ };
 
 // RYKE_TOKEN here is the transaction's own token (service.ts), set below from the inputs; the git token
-// for the fork and the admin and internal secrets are never part of it.
-export function claudeEnv(inp, dir, { base = process.env, container = existsSync(CONTAINER_CA) } = {}) {
+// for the fork and the admin and internal secrets are never part of it. Codex runs no hooks, so it gets
+// no Ryke token at all.
+export function agentEnv(inp, dir, { base = process.env, container = inContainer() } = {}) {
+  const cli = inp.cli ?? "claude";
+  const mode = resolveAuth(cli, inp.auth ?? "auto", base, container);
   const env = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && (PASS_EXACT.has(key) || PASS_PATTERN.test(key))) env[key] = value;
+    if (value !== undefined && !isCredential(key) && (PASS_EXACT.has(key) || PASS_PATTERN[cli].test(key))) env[key] = value;
   }
-  Object.assign(env, {
+  Object.assign(env, credentialsFor(cli, mode, base, container));
+  if (cli === "codex") return env;
+  return Object.assign(env, {
     IS_SANDBOX: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     RYKE_API_URL: inp.apiUrl,
@@ -196,13 +268,11 @@ export function claudeEnv(inp, dir, { base = process.env, container = existsSync
     RYKE_ROOT: ROOT,
     RYKE_CONTENTION: inp.contention ? "on" : "off",
   });
-  if (!env.ANTHROPIC_API_KEY && container) env.ANTHROPIC_API_KEY = PLACEHOLDER_KEY;
-  return env;
 }
 
 // A swarm runs a dozen of these at once, so by default the job log keeps only what changes the
 // checkout and the final result; RYKE_AGENT_VERBOSE=1 adds every tool call. The whole stream goes to
-// transcripts/claude-<run>.jsonl in the job's directory either way (the checkout is deleted at the end).
+// transcripts/<cli>-<run>.jsonl in the job's directory either way (the checkout is deleted at the end).
 const QUIET_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
 export function describeEvent(ev, { cwd = "", verbose = false } = {}) {
   if (ev?.type === "assistant") {
@@ -228,13 +298,75 @@ export function outcomeOf(lines, exitCode, timedOut) {
   return { isError: last.is_error !== false, text: String(last.result ?? ""), result: last };
 }
 
+const oneLine = (text, max) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+
+// `codex exec --json` (docs/platform-notes.md, "Codex"): items start and complete, and the turn ends with
+// turn.completed or turn.failed. An `error` line alone is not the end: Codex reports reconnects that way.
+export function describeCodexEvent(ev, { cwd = "", verbose = false } = {}) {
+  const item = ev?.type === "item.completed" ? ev.item : null;
+  const local = (p) => String(p ?? "").replace(cwd ? `${cwd}/` : "\0", "");
+  if (item?.type === "file_change") return `codex: patch ${(item.changes ?? []).map((c) => `${c.kind} ${local(c.path)}`).join(", ")}${item.status === "failed" ? " (failed)" : ""}`;
+  if (item?.type === "command_execution" && verbose) return `codex: $ ${oneLine(local(item.command), 100)} (exit ${item.exit_code ?? "?"})`;
+  if (item?.type === "agent_message" && verbose) return `codex: ${oneLine(item.text, 140)}`;
+  if (ev?.type === "turn.completed") return `codex: turn completed (${ev.usage?.input_tokens ?? "?"} in, ${ev.usage?.output_tokens ?? "?"} out)`;
+  if (ev?.type === "turn.failed") return `codex: turn failed: ${oneLine(ev.error?.message, 200)}`;
+  if (ev?.type === "error") return `codex: error: ${oneLine(ev.message, 200)}`;
+  return null;
+}
+
+export function codexOutcome(lines, exitCode, timedOut) {
+  const last = [...lines].reverse().find((l) => l?.type === "turn.completed" || l?.type === "turn.failed");
+  if (timedOut) return { isError: true, text: "codex timed out", result: last ?? null };
+  if (!last) {
+    const error = [...lines].reverse().find((l) => l?.type === "error");
+    return { isError: true, text: error ? `codex: ${error.message}` : `codex exited with code ${exitCode} without finishing its turn`, result: null };
+  }
+  if (last.type === "turn.failed") return { isError: true, text: String(last.error?.message ?? "turn failed"), result: last };
+  const message = [...lines].reverse().find((l) => l?.type === "item.completed" && l.item?.type === "agent_message");
+  return { isError: false, text: String(message?.item.text ?? ""), result: last };
+}
+
+// A path as Codex prints it (absolute, or relative to the checkout) as a repo path, or null outside it.
+export function inCheckout(raw, dir) {
+  let p = String(raw ?? "");
+  if (p.startsWith(`${dir}/`)) p = p.slice(dir.length + 1);
+  if (p === "" || isAbsolute(p)) return null;
+  p = posix.normalize(p);
+  return p === "." || p === ".." || p.startsWith("../") ? null : p;
+}
+
+// Codex has no hooks Ryke installs, so what it read is taken from what its commands named and printed:
+// a file of the snapshot given as an argument (cat, sed -n, head) or starting an output line (rg, grep,
+// find, rg --files), and every file it patched but did not create. As with Claude's Grep and Glob (V7),
+// a search counts as reads of what it matched. A file read some other way is missed; a transaction that
+// reports no reads at all gets the Ledger's fallback (every file next to what it wrote).
+export function codexReads(ev, { dir, tracked }) {
+  if (ev?.type !== "item.completed") return [];
+  const item = ev.item ?? {};
+  const found = new Set();
+  const take = (raw) => {
+    const p = inCheckout(raw, dir);
+    if (p !== null && tracked.has(p)) found.add(p);
+  };
+  if (item.type === "command_execution") {
+    for (const token of String(item.command ?? "").split(/[\s'"`|;&()<>]+/)) take(token);
+    for (const line of String(item.aggregated_output ?? "").split("\n")) {
+      take(line.trim());
+      if (line.indexOf(":") > 0) take(line.slice(0, line.indexOf(":")));
+    }
+  } else if (item.type === "file_change") {
+    for (const change of item.changes ?? []) if (change.kind !== "add") take(change.path);
+  }
+  return [...found];
+}
+
 // ---------------------------------------------------------------------------------------------
-// Processes Claude left behind
+// Processes the CLI left behind
 // ---------------------------------------------------------------------------------------------
 
-// Claude Code starts the commands of its Bash tool, and the dev servers and watchers they launch, in
-// processes of their own, often in a session or process group of their own, which a kill of Claude's
-// group never reaches. Their parent chain still leads back to Claude while they run, so on Linux
+// Claude Code and Codex start the commands of their shell tools, and the dev servers and watchers they
+// launch, in processes of their own, often in a session or process group of their own, which a kill of
+// the CLI's group never reaches. Their parent chain still leads back to the CLI while they run, so on Linux
 // /proc is how they are found. Elsewhere there is no /proc, the table is empty, and only the process
 // group is killed: a detached grandchild can then outlive the attempt.
 export function procTable(procDir = "/proc") {
@@ -275,10 +407,10 @@ export function descendantsOf(table, root) {
 }
 
 const SAMPLE_MS = 1000;
-// A process that outlives the `exit` of Claude while holding its output open keeps `close` from firing.
+// A process that outlives the `exit` of the CLI while holding its output open keeps `close` from firing.
 const EXIT_DRAIN_MS = 2000;
 
-// Remembers every descendant of `root` it has seen. A parent that dies first (Claude on SIGTERM) leaves
+// Remembers every descendant of `root` it has seen. A parent that dies first (the CLI on SIGTERM) leaves
 // its children reparented to init, where the parent chain no longer finds them, so what was seen while
 // the tree was whole is what gets killed. The start time guards against a recycled pid.
 export function treeTracker(root, { table = procTable, kill = (pid, signal) => process.kill(pid, signal) } = {}) {
@@ -302,14 +434,21 @@ export function treeTracker(root, { table = procTable, kill = (pid, signal) => p
   return { sample, killAll };
 }
 
-// The Claude session being run, so a signal to this process can end it too (it has its own process group
-// and would otherwise outlive a cancelled job).
+// The session being run, so a signal to this process can end it too (it has its own process group and
+// would otherwise outlive a cancelled job).
 let stopActive = null;
-export const stopActiveClaude = () => stopActive?.();
+export const stopActiveSession = () => stopActive?.();
 
-export function runClaude({ bin, model, prompt, cwd, env, timeoutMs, streamFile, verbose = env.RYKE_AGENT_VERBOSE === "1" }) {
+const SESSIONS = {
+  claude: { args: (inp, prompt) => claudeArgs(inp.model, prompt), describe: describeEvent, outcome: outcomeOf },
+  codex: { args: (inp, prompt, dir) => codexArgs(inp.model, prompt, dir), describe: describeCodexEvent, outcome: codexOutcome },
+};
+
+// `onEvent` sees every parsed line as it arrives, which is how Codex's reads reach the Ledger while it works.
+export function runSession({ cli, bin, args, cwd, env, timeoutMs, streamFile, onEvent, verbose = env.RYKE_AGENT_VERBOSE === "1" }) {
+  const { describe, outcome } = SESSIONS[cli];
   return new Promise((resolveRun) => {
-    const child = spawn(bin, claudeArgs(model, prompt), { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     const tree = treeTracker(child.pid);
     const lines = [];
     let buffer = "";
@@ -342,14 +481,17 @@ export function runClaude({ bin, model, prompt, cwd, env, timeoutMs, streamFile,
     const take = (line) => {
       if (line.trim() === "") return;
       appendFileSync(streamFile, `${line}\n`);
+      let ev;
       try {
-        const ev = JSON.parse(line);
-        lines.push(ev);
-        const text = describeEvent(ev, { cwd, verbose });
-        if (text) say(text);
+        ev = JSON.parse(line);
       } catch {
-        say(`claude (not json): ${line.slice(0, 200)}`);
+        say(`${cli} (not json): ${line.slice(0, 200)}`);
+        return;
       }
+      lines.push(ev);
+      const text = describe(ev, { cwd, verbose });
+      if (text) say(text);
+      onEvent?.(ev);
     };
     child.stdout.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
@@ -357,7 +499,7 @@ export function runClaude({ bin, model, prompt, cwd, env, timeoutMs, streamFile,
       buffer = parts.pop();
       parts.forEach(take);
     });
-    child.stderr.on("data", (chunk) => say(`claude stderr: ${chunk.toString("utf8").trimEnd().slice(0, 400)}`));
+    child.stderr.on("data", (chunk) => say(`${cli} stderr: ${chunk.toString("utf8").trimEnd().slice(0, 400)}`));
     const done = (exitCode, error) => {
       if (settled) return;
       settled = true;
@@ -368,8 +510,8 @@ export function runClaude({ bin, model, prompt, cwd, env, timeoutMs, streamFile,
       take(buffer);
       // Whatever the session left running (a dev server, a watcher) must not outlive the attempt.
       killAll();
-      if (error) say(`claude could not start: ${error.message}`);
-      resolveRun({ ...outcomeOf(lines, exitCode, timedOut), exitCode });
+      if (error) say(`${cli} could not start: ${error.message}`);
+      resolveRun({ ...outcome(lines, exitCode, timedOut), exitCode, events: lines });
     };
     child.once("error", (e) => done(127, e));
     child.once("exit", (code) => {
@@ -502,15 +644,50 @@ async function settled(inp, ledger, until) {
 // Re-sends every read the hooks saw. A hook that failed open (API blip) has still logged its paths.
 // The Ledger answers each batch with the stale warnings of the whole read set, so the union of the
 // answers says whether anything Claude read has changed on trunk since the snapshot.
-async function flushReads(inp, cfg, ledger) {
-  const paths = [...new Set(readLines(rykeDir(cfg), "reads.jsonl").flatMap((l) => l.paths ?? []))];
+async function postReads(inp, ledger, paths) {
   const stale = new Map();
   for (let i = 0; i < paths.length; i += READS_BATCH) {
     const r = await ledger("POST", `/api/txns/${inp.txn}/reads`, { paths: paths.slice(i, i + READS_BATCH) });
     for (const w of r?.staleWarnings ?? []) stale.set(`${w.path}@${w.seq}`, w);
   }
-  for (const w of stale.values()) say(`stale read: ${w.path} changed on trunk at seq ${w.seq}${w.by ? ` (${w.by})` : ""}`);
-  return { count: paths.length, stale: [...stale.values()] };
+  return [...stale.values()];
+}
+
+async function flushReads(inp, cfg, ledger) {
+  const paths = [...new Set(readLines(rykeDir(cfg), "reads.jsonl").flatMap((l) => l.paths ?? []))];
+  const stale = await postReads(inp, ledger, paths);
+  for (const w of stale) say(`stale read: ${w.path} changed on trunk at seq ${w.seq}${w.by ? ` (${w.by})` : ""}`);
+  return { count: paths.length, stale };
+}
+
+// What Claude's hooks report, reported for Codex from its event stream while it works: the reads, so the
+// footprint is on the Line before submit, and each file it starts to patch as a write intent, so another
+// agent waits on a hot file it holds. Codex itself never waits: by the time Ryke hears of a patch, it is
+// being applied. Both are logged to .ryke like the hooks' are; flushReads re-sends the reads anyway.
+function codexReporter(inp, cfg, ledger, tracked) {
+  const dir = cfg.checkout;
+  const pending = [];
+  const intended = new Set();
+  const onEvent = (ev) => {
+    const paths = codexReads(ev, { dir, tracked });
+    if (paths.length > 0) {
+      appendLine(cfg, "reads.jsonl", { at: Date.now(), tool: "codex", paths });
+      pending.push(postReads(inp, ledger, paths).catch((e) => say(`reads not reported yet, sent again before submit: ${e.message}`)));
+    }
+    if (!inp.contention || ev?.type !== "item.started" || ev.item?.type !== "file_change") return;
+    for (const change of ev.item.changes ?? []) {
+      const path = inCheckout(change.path, dir);
+      if (path === null || intended.has(path)) continue;
+      intended.add(path);
+      appendLine(cfg, "writes.jsonl", { at: Date.now(), tool: "codex", path });
+      pending.push(
+        ledger("POST", `/api/txns/${inp.txn}/intend-write`, { path })
+          .then((r) => r?.go === false && say(`${path} is leased to ${r.owner ?? "another transaction"}; codex has already written it`))
+          .catch((e) => say(`intend-write ${path} failed: ${e.message}`)),
+      );
+    }
+  };
+  return { onEvent, settle: () => Promise.all(pending) };
 }
 
 function screenshotOf(dir) {
@@ -526,10 +703,12 @@ function screenshotOf(dir) {
 // ---------------------------------------------------------------------------------------------
 
 // `dir` is for a caller that owns the checkout; without it the checkout is made under TMPDIR and removed
-// at the end. `logDir` keeps Claude's transcripts, which would not survive the checkout.
+// at the end. `logDir` keeps the CLI's transcripts, which would not survive the checkout.
 export async function runAgent(inp, { dir: given, template, settings, logDir = resolve("transcripts") } = {}) {
-  template ??= readFileSync(join(RUNNER_DIR, "prompt.md"), "utf8");
-  settings ??= JSON.parse(readFileSync(join(RUNNER_DIR, "claude", "settings.json"), "utf8"));
+  const codex = inp.cli === "codex";
+  // Codex gets the same prompt without the lines about the Read tool and hooks it does not have.
+  template ??= readFileSync(join(RUNNER_DIR, codex ? "prompt-codex.md" : "prompt.md"), "utf8");
+  settings ??= codex ? null : JSON.parse(readFileSync(join(RUNNER_DIR, "claude", "settings.json"), "utf8"));
   const base = loadConfig({ RYKE_API_URL: inp.apiUrl, RYKE_TXN: inp.txn });
   // Everything but retry may be sent again: reads, submit, wait, refresh, abort and the lookups are
   // idempotent in the Ledger, and retry would open one attempt more each time it arrived.
@@ -539,7 +718,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
   const abort = (reason) => ledger("POST", `/api/txns/${inp.txn}/abort`, { reason });
 
   let attempt = 1; // the Ledger's attempt number
-  // Claude sessions started. A change that cannot be moved onto a moved trunk starts a new session in the
+  // CLI sessions started. A change that cannot be moved onto a moved trunk starts a new session in the
   // same Ledger attempt, so this, not `attempt`, is what the budget of --max-attempts counts.
   let runs = 0;
   let from = { remote: inp.remote, token: inp.forkToken, ref: "main" };
@@ -553,9 +732,9 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
     if (inp.keepCheckout) say(`checkout kept at ${dir}`);
     else rmSync(dir, { recursive: true, force: true });
   };
-  // A cancelled job (SIGTERM from the runner) must not leave Claude running in a directory that is gone.
+  // A cancelled job (SIGTERM from the runner) must not leave the CLI running in a directory that is gone.
   const onSignal = (signal) => {
-    stopActiveClaude();
+    stopActiveSession();
     removeCheckout();
     process.exit(signal === "SIGINT" ? 130 : 143);
   };
@@ -581,7 +760,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
     }
     if (moved.snapshot === snapshot) return null;
     await run(at, ["fetch", "-q", moved.trunk.remote, moved.snapshot], { env: authEnv(moved.trunk.token) });
-    // Nothing is uncommitted any more, and Claude is done with the hooks file this may overwrite.
+    // Nothing is uncommitted any more, and the CLI is done with the hooks file this may overwrite.
     await run(at, ["checkout", "-q", "-f", "--detach", moved.snapshot]);
     const pick = await run(at, ["cherry-pick", "--keep-redundant-commits", head], { env: agentIdentity(inp.agent), allowFail: true });
     if (pick.code !== 0) {
@@ -596,34 +775,40 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
   }
 
   try {
+    // Before anything is cloned: a subscription in a container, or a key that is not there, is refused here.
+    const auth = resolveAuth(inp.cli, inp.auth, process.env);
+    say(`${inp.cli} runs on ${auth === "subscription" ? "your own login (subscription)" : "an API key"}`);
     dir ??= makeCheckoutDir();
     const cfg = { ...base, checkout: dir };
     mkdirSync(logDir, { recursive: true });
 
     session: for (;;) {
       runs++;
-      say(`attempt ${runs} of ${inp.maxAttempts}: ${inp.stub ? "stub " : ""}${inp.claudeBin} --model ${inp.model}`);
+      say(`attempt ${runs} of ${inp.maxAttempts}: ${inp.stub ? "stub " : ""}${inp.bin}${inp.model ? ` --model ${inp.model}` : ""}`);
       if (runs > 1) archiveAttempt(dir, runs - 1);
       let snapshot = await checkout(dir, from);
       inp.snapshot = snapshot;
-      await installHooks(dir, settings);
+      if (!codex) await installHooks(dir, settings);
       mkdirSync(join(dir, ".ryke"), { recursive: true });
       if (previous?.patch) writeFileSync(join(dir, ".ryke", "previous.patch"), previous.patch);
 
       const verify = policyOf(dir).verify ?? "the repo's tests";
       const prompt =
         fillPrompt(template, { agent: inp.agent, repo: inp.repo, intent: inp.intent, criteria: renderCriteria(inp.criteria), verify }) + notice;
-      const ran = await runClaude({
-        bin: inp.claudeBin,
-        model: inp.model,
-        prompt,
+      const reporter = codex ? codexReporter(inp, cfg, ledger, new Set((await out(dir, ["ls-files", "-z"])).split("\0").filter(Boolean))) : null;
+      const ran = await runSession({
+        cli: inp.cli,
+        bin: inp.bin,
+        args: SESSIONS[inp.cli].args(inp, prompt, dir),
         cwd: dir,
-        env: claudeEnv(inp, dir),
+        env: agentEnv({ ...inp, auth }, dir),
         timeoutMs: inp.claudeTimeoutMs,
-        streamFile: join(logDir, `claude-${runs}.jsonl`),
+        streamFile: join(logDir, `${inp.cli}-${runs}.jsonl`),
+        onEvent: reporter?.onEvent,
       });
+      await reporter?.settle();
       if (ran.isError) {
-        say(`claude failed: ${ran.text.slice(0, 300)}`);
+        say(`${inp.cli} failed: ${ran.text.slice(0, 300)}`);
         await abort("agent_error").catch((e) => say(`abort failed: ${e.message}`));
         return result("aborted", { ok: false, reason: "agent_error", error: ran.text.slice(0, 300) });
       }
@@ -631,8 +816,8 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
       let reads = await flushReads(inp, cfg, ledger);
       say(`reads reported: ${reads.count} file${reads.count === 1 ? "" : "s"}`);
 
-      // The harness commits, not Claude (prompt.md), so the author is the agent and the write set is whatever
-      // git says. Claude often commits anyway: its commits are dropped (they sit on the snapshot, so the
+      // The harness commits, not the CLI (prompt.md), so the author is the agent and the write set is whatever
+      // git says. An agent often commits anyway: its commits are dropped (they sit on the snapshot, so the
       // soft reset only moves HEAD back) and the tree it left is what gets committed, which also keeps the
       // Ledger from seeing a clean tree and rejecting the snapshot as empty.
       await run(dir, ["reset", "-q", "--soft", snapshot]);
@@ -647,7 +832,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
         say("no changes were made; submitting the snapshot itself, which the Ledger rejects as empty");
       }
 
-      // Trunk moved under what Claude read. Its checkout could not follow (it held uncommitted work), so
+      // Trunk moved under what the agent read. Its checkout could not follow (it held uncommitted work), so
       // the finished change is moved now: the Ledger refreshes the transaction onto the current trunk, the
       // change is rebased onto that, and the reads, which the Ledger forgets at a refresh, are sent again.
       for (let round = 0; changed && reads.stale.length > 0 && round < REFRESH_ROUNDS; round++) {
@@ -670,7 +855,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
       }
 
       const screenshot = screenshotOf(dir);
-      const evidence = { summary: `claude ${inp.stub ? "(stub) " : ""}attempt ${attempt}: ${ran.text.replace(/\s+/g, " ").slice(0, 400)}` };
+      const evidence = { summary: `${inp.cli} ${inp.stub ? "(stub) " : ""}attempt ${attempt}: ${ran.text.replace(/\s+/g, " ").slice(0, 400)}` };
       if (screenshot) evidence.screenshot = screenshot;
       let end = await ledger("POST", `/api/txns/${inp.txn}/submit`, { head, evidence });
       say(`submitted ${head.slice(0, 8)}: ${end.state}${end.reason ? ` (${end.reason})` : ""}`);

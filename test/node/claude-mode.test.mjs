@@ -20,7 +20,7 @@ import { LEASE_PATIENCE_MS, loadConfig, repoPath, runHook, touchedPaths } from "
 import * as Agent from "../../containers/runner/lib/agent.mjs";
 import {
   claudeArgs,
-  claudeEnv,
+  agentEnv,
   describeEvent,
   fillPrompt,
   inputsFrom,
@@ -34,7 +34,7 @@ import {
   RETRY_STALE,
 } from "../../containers/runner/lib/agent.mjs";
 import * as Claude from "../../harness/agents/claude.mjs";
-import { follow, relayable, runnerClient, runTask, STUB_BIN, STUB_MODEL, validateKey } from "../../harness/agents/claude.mjs";
+import { follow, relayable, runnerClient, runTask, STUB_BIN, STUB_BINS, STUB_MODEL, validateKey } from "../../harness/agents/claude.mjs";
 import { parseSwarmArgs } from "../../harness/swarm.mjs";
 import { chooseVariant, describePatch, fill, hooksFor, matches, parseArgv, subjectOf } from "../../harness/agents/claude-stub/claude.mjs";
 import { client } from "../../harness/lib/client.mjs";
@@ -255,6 +255,23 @@ describe("shipped configuration", () => {
     const block = /Agent prompt for claude mode \(`containers\/runner\/prompt\.md`\):\s*```\n([\s\S]*?)\n```/.exec(plan);
     assert.ok(block, "PLAN.md no longer has the prompt block this test reads");
     assert.equal(readFileSync(PROMPT, "utf8").trim(), block[1].trim());
+  });
+
+  it("prompt-codex.md is that prompt with the lines about Claude's Read tool and hooks swapped for how Codex's reads are tracked", () => {
+    const claude = readFileSync(PROMPT, "utf8").split("\n");
+    const codex = readFileSync(join(ROOT, "containers/runner/prompt-codex.md"), "utf8").split("\n");
+    const only = (a, b) => a.filter((l) => !b.includes(l));
+    assert.deepEqual(only(claude, codex), [
+      "Rules: work only inside this checkout. Read files with the Read tool so Ryke can track your reads.",
+      "If a hook tells you a file changed on trunk since you read it, re-read it and adapt.",
+    ]);
+    assert.deepEqual(only(codex, claude), [
+      "Rules: work only inside this checkout. Ryke tracks your reads from the commands you run, so open each",
+      "file you use by its path relative to the checkout (`cat src/a.ts`, `sed -n 1,80p src/a.ts`, `rg -n name src`).",
+    ]);
+    const filled = fillPrompt(codex.join("\n"), { agent: "A", repo: "R", intent: "I", criteria: "C", verify: "V" });
+    assert.doesNotMatch(filled, /\{\{/);
+    assert.match(filled, /^Intent: I$/m, "the stubs find their task by this line");
   });
 
   it("prompt.md only uses the placeholders agent.mjs fills", () => {
@@ -1104,12 +1121,14 @@ describe("agent.mjs inputs", () => {
       {
         ...ARGS,
         criteria: undefined,
+        cli: "claude",
+        auth: "auto",
         model: "claude-sonnet-5-5",
         maxAttempts: 3,
         apiUrl: "http://api",
         token: "tok",
         forkToken: "fork",
-        claudeBin: "claude",
+        bin: "claude",
         stub: false,
         contention: true,
         keepCheckout: false,
@@ -1153,9 +1172,9 @@ describe("agent.mjs inputs", () => {
   it("reads the overrides", () => {
     const inp = inputsFrom(
       { ...ARGS, model: "claude-opus-5", "max-attempts": "2", criteria: '["a","b"]', api: "http://flag" },
-      { CLAUDE_BIN: "/x/claude", RYKE_CLAUDE_STUB: "1", RYKE_CONTENTION: "off", RYKE_CLAUDE_TIMEOUT_S: "2.5", RYKE_WAIT_S: "30" },
+      { CLAUDE_BIN: "/x/claude", RYKE_AGENT_STUB: "1", RYKE_CONTENTION: "off", RYKE_CLAUDE_TIMEOUT_S: "2.5", RYKE_WAIT_S: "30" },
     );
-    assert.deepEqual([inp.model, inp.maxAttempts, inp.criteria, inp.apiUrl, inp.claudeBin, inp.stub, inp.contention, inp.claudeTimeoutMs, inp.waitMs], ["claude-opus-5", 2, ["a", "b"], "http://flag", "/x/claude", true, false, 2500, 30_000]);
+    assert.deepEqual([inp.model, inp.maxAttempts, inp.criteria, inp.apiUrl, inp.bin, inp.stub, inp.contention, inp.claudeTimeoutMs, inp.waitMs], ["claude-opus-5", 2, ["a", "b"], "http://flag", "/x/claude", true, false, 2500, 30_000]);
   });
 
   it("takes the API URL from the environment before the flag", () => {
@@ -1253,7 +1272,7 @@ describe("agent.mjs claude invocation", () => {
   const inp = { apiUrl: "http://api", token: "tok", txn: "t_1", repo: "convert", snapshot: "abc", contention: true };
 
   it("sets what Claude Code needs as root in a container and what the hooks need", () => {
-    const env = claudeEnv(inp, "/w/checkout", { base: { PATH: "/bin", RYKE_FORK_TOKEN: "fork-secret", NODE_TEST_CONTEXT: "child-v8", ANTHROPIC_API_KEY: "sk-real" }, container: false });
+    const env = agentEnv(inp, "/w/checkout", { base: { PATH: "/bin", RYKE_FORK_TOKEN: "fork-secret", NODE_TEST_CONTEXT: "child-v8", ANTHROPIC_API_KEY: "sk-real" }, container: false });
     assert.equal(env.IS_SANDBOX, "1");
     assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
     assert.deepEqual([env.RYKE_API_URL, env.RYKE_TOKEN, env.RYKE_TXN, env.RYKE_REPO, env.RYKE_CHECKOUT, env.RYKE_SNAPSHOT, env.RYKE_CONTENTION], ["http://api", "tok", "t_1", "convert", "/w/checkout", "abc", "on"]);
@@ -1263,7 +1282,7 @@ describe("agent.mjs claude invocation", () => {
   });
 
   it("keeps the fork's git token and the test runner's context out of Claude's environment", () => {
-    const env = claudeEnv(inp, "/w", { base: { RYKE_FORK_TOKEN: "fork-secret", NODE_TEST_CONTEXT: "child-v8" }, container: false });
+    const env = agentEnv(inp, "/w", { base: { RYKE_FORK_TOKEN: "fork-secret", NODE_TEST_CONTEXT: "child-v8" }, container: false });
     assert.equal("RYKE_FORK_TOKEN" in env, false);
     assert.equal("NODE_TEST_CONTEXT" in env, false);
   });
@@ -1297,7 +1316,6 @@ describe("agent.mjs claude invocation", () => {
     NODE_USE_ENV_PROXY: "1",
     ANTHROPIC_API_KEY: "sk-real",
     ANTHROPIC_BASE_URL: "http://anthropic",
-    CLAUDE_CODE_USE_BEDROCK: "1",
     CLAUDE_CONFIG_DIR: "/c",
     RYKE_AGENT_VERBOSE: "1",
     RYKE_LEASE_PATIENCE_MS: "250",
@@ -1320,10 +1338,18 @@ describe("agent.mjs claude invocation", () => {
     RYKE_STORE_URL: "http://store",
     GIT_CONFIG_VALUE_0: "Authorization: Bearer x",
     NODE_OPTIONS: "--require /x.js",
+    // A key run must not be sent to another provider, nor carry the other vendor's secrets.
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    CLAUDE_CODE_USE_VERTEX: "1",
+    CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-login",
+    ANTHROPIC_AUTH_TOKEN: "bearer",
+    OPENAI_API_KEY: "sk-proj-openai",
+    CODEX_API_KEY: "sk-proj-codex",
+    CODEX_HOME: "/codex",
   };
 
   it("passes on what Claude Code, git and the hooks need, and nothing else", () => {
-    const env = claudeEnv(inp, "/w/checkout", { base: { ...INHERITED, ...WITHHELD }, container: false });
+    const env = agentEnv(inp, "/w/checkout", { base: { ...INHERITED, ...WITHHELD }, container: false });
     for (const [k, v] of Object.entries(INHERITED)) assert.equal(env[k], v, `${k} must reach claude`);
     for (const k of Object.keys(WITHHELD)) assert.ok(!(k in env) || k === "RYKE_TOKEN", `${k} must not reach claude`);
     assert.equal(env.RYKE_TOKEN, "tok", "the transaction's own token replaces whatever the job inherited");
@@ -1332,13 +1358,13 @@ describe("agent.mjs claude invocation", () => {
   });
 
   it("uses a placeholder key only inside the container, where the gateway swaps it", () => {
-    assert.equal(claudeEnv(inp, "/w", { base: {}, container: true }).ANTHROPIC_API_KEY, PLACEHOLDER_KEY);
-    assert.equal(claudeEnv(inp, "/w", { base: {}, container: false }).ANTHROPIC_API_KEY, undefined);
-    assert.equal(claudeEnv(inp, "/w", { base: { ANTHROPIC_API_KEY: "sk-real" }, container: true }).ANTHROPIC_API_KEY, "sk-real");
+    assert.equal(agentEnv(inp, "/w", { base: {}, container: true }).ANTHROPIC_API_KEY, PLACEHOLDER_KEY);
+    assert.equal(agentEnv(inp, "/w", { base: {}, container: false }).ANTHROPIC_API_KEY, undefined);
+    assert.equal(agentEnv(inp, "/w", { base: { ANTHROPIC_API_KEY: "sk-real" }, container: true }).ANTHROPIC_API_KEY, "sk-real");
   });
 
   it("turns contention off for the hooks when asked", () => {
-    assert.equal(claudeEnv({ ...inp, contention: false }, "/w", { base: {}, container: false }).RYKE_CONTENTION, "off");
+    assert.equal(agentEnv({ ...inp, contention: false }, "/w", { base: {}, container: false }).RYKE_CONTENTION, "off");
   });
 
   // The outcome is read from the last result line, by is_error, never by subtype.
@@ -1908,7 +1934,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
     for (const [k, v] of Object.entries(args)) argv.push(`--${k}`, v);
     const child = spawn("bash", [AGENT_SH, ...argv], {
       cwd,
-      env: { ...BASE_ENV, TMPDIR: tmpRoot, RYKE_API_URL: api.url, RYKE_TOKEN: "dev-token", RYKE_FORK_TOKEN: "fork-secret", CLAUDE_BIN: STUB_BIN, RYKE_CLAUDE_STUB: "1", RYKE_CATALOGUE_DIR: DEMO, RYKE_STUB_LOG_DIR: logDir, RYKE_KEEP_CHECKOUT: keep ? "1" : "0", ...env },
+      env: { ...BASE_ENV, TMPDIR: tmpRoot, RYKE_API_URL: api.url, RYKE_TOKEN: "dev-token", RYKE_FORK_TOKEN: "fork-secret", CLAUDE_BIN: STUB_BIN, RYKE_AGENT_STUB: "1", RYKE_CATALOGUE_DIR: DEMO, RYKE_STUB_LOG_DIR: logDir, RYKE_KEEP_CHECKOUT: keep ? "1" : "0", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const out = { stdout: "", stderr: "" };
@@ -1931,7 +1957,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
     writeFileSync(file, node ? `#!/usr/bin/env node\n${body}` : `#!/bin/sh\n${body}`, { mode: 0o755 });
     return file;
   };
-  const withFake = (bin, env = {}) => ({ CLAUDE_BIN: bin, RYKE_CLAUDE_STUB: "0", ...env });
+  const withFake = (bin, env = {}) => ({ CLAUDE_BIN: bin, RYKE_AGENT_STUB: "0", ...env });
 
   const submitBodies = (api) => api.of(`POST /api/txns/${TXN}/submit`).map((c) => c.body);
 
@@ -2124,12 +2150,163 @@ describe("agent.sh", { concurrency: 4 }, () => {
     const snapshot = git(fork, "rev-parse", "refs/heads/main");
     const idle = join(tmp, `idle-claude-${++counter}`);
     writeFileSync(idle, '#!/bin/sh\nprintf \'{"type":"result","subtype":"success","is_error":false,"result":"nothing to change"}\\n\'\n', { mode: 0o755 });
-    const r = await job(api, fork, "cat-area", { env: { CLAUDE_BIN: idle, RYKE_CLAUDE_STUB: "0" } });
+    const r = await job(api, fork, "cat-area", { env: { CLAUDE_BIN: idle, RYKE_AGENT_STUB: "0" } });
     assert.deepEqual([r.code, r.result.ok, r.result.state, r.result.reason], [0, true, "rejected", "empty"]);
     assert.equal(submitBodies(api)[0].head, snapshot);
     assert.equal(git(fork, "rev-parse", "refs/heads/main"), snapshot, "nothing was pushed");
     assert.equal("screenshot" in submitBodies(api)[0].evidence, false, "no screenshot.txt, no screenshot");
     assert.match(submitBodies(api)[0].evidence.summary, /^claude attempt 1: nothing to change/, "a real run is not labelled as the stub");
+  });
+
+  describe("whose credentials claude runs on", () => {
+    it("on a subscription, no key from the runner's environment reaches claude", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await job(api, cloneBare("fork"), "cat-area", { args: { auth: "subscription" }, env: { ANTHROPIC_API_KEY: "sk-ant-shell", ANTHROPIC_BASE_URL: "http://elsewhere", OPENAI_API_KEY: "sk-openai-shell" } });
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(r.result.state, "landed");
+      assert.match(r.stderr, /claude runs on your own login \(subscription\)/);
+      const seen = r.stubRuns[0].envNames;
+      for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY"]) assert.ok(!seen.includes(name), `${name} must not reach claude`);
+      assert.doesNotMatch(r.stdout + r.stderr, /sk-ant-shell|sk-openai-shell/);
+    });
+
+    it("on a key, claude gets that key and nothing of Codex's", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await job(api, cloneBare("fork"), "cat-area", { args: { auth: "api-key" }, env: { ANTHROPIC_API_KEY: "sk-ant-shell", OPENAI_API_KEY: "sk-openai-shell", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-shell" } });
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stderr, /claude runs on an API key/);
+      const seen = r.stubRuns[0].envNames;
+      assert.ok(seen.includes("ANTHROPIC_API_KEY"));
+      assert.ok(!seen.includes("OPENAI_API_KEY") && !seen.includes("CLAUDE_CODE_OAUTH_TOKEN"));
+    });
+
+    it("refuses a key run without a key, before it clones anything, and aborts the transaction", async () => {
+      const api = await s.start(baseRoutes());
+      const env = { ANTHROPIC_API_KEY: "" };
+      const r = await job(api, cloneBare("fork"), "cat-area", { args: { auth: "api-key" }, env });
+      assert.equal(r.code, 1);
+      assert.match(r.result.error, /--auth api-key needs ANTHROPIC_API_KEY/);
+      assert.equal(r.stubRuns.length, 0, "claude never ran");
+      assert.deepEqual(api.of(`POST /api/txns/${TXN}/abort`).map((c) => c.body.reason), ["agent_error"]);
+    });
+  });
+
+  describe("codex", () => {
+    const codexJob = (api, fork, taskId, { args = {}, env = {}, keep = false } = {}) =>
+      job(api, fork, taskId, { keep, args: { cli: "codex", model: "codex-model-x", ...args }, env: { CODEX_BIN: STUB_BINS.codex, ...env } });
+
+    it("runs one attempt: codex works without hooks, its reads and patches reach the Ledger from its event stream", async () => {
+      const api = await s.start(baseRoutes());
+      const fork = cloneBare("fork");
+      const snapshot = git(fork, "rev-parse", "refs/heads/main");
+      const task = byId("cat-area");
+      const r = await codexJob(api, fork, "cat-area", { keep: true });
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual(r.result, { ok: true, txn: TXN, state: "landed", attempts: 1, landed: true, reason: null, seq: 5, train: "tr_1" });
+      assert.match(r.stderr, /attempt 1 of 3: stub .*codex-stub\/codex --model codex-model-x/);
+      assert.match(r.stderr, /codex: patch /);
+      assert.match(r.stderr, /codex: turn completed/);
+
+      // The change, committed by the agent on the snapshot, scaffolding left out.
+      const head = git(fork, "rev-parse", "refs/heads/main");
+      assert.equal(git(fork, "rev-parse", `${head}^`), snapshot);
+      assert.equal(git(fork, "log", "-1", "--format=%an", head), "agent-07");
+      assert.deepEqual(git(fork, "diff", "--name-only", snapshot, head).split("\n").sort(), [...task.writes].sort());
+      assert.equal(existsSync(join(r.checkout, ".claude")), false, "codex gets no Claude hooks");
+
+      // Reads: every file it cat'ed or found, and every existing file it patched; none it created.
+      const existing = task.writes.filter((p) => existsSync(join(seed(), p)));
+      const reads = [...new Set(api.of(`POST /api/txns/${TXN}/reads`).flatMap((c) => c.body.paths))].sort();
+      assert.deepEqual(reads, [...new Set([...task.reads, ...existing])].sort());
+      assert.ok(lines(readFileSync(join(r.checkout, ".ryke/reads.jsonl"), "utf8")).every((l) => l.tool === "codex"));
+      // Every file it patched asked for its lease, once.
+      assert.deepEqual(api.of(`POST /api/txns/${TXN}/intend-write`).map((c) => c.body.path).sort(), [...task.writes].sort());
+
+      const [submit] = submitBodies(api);
+      assert.equal(submit.head, head);
+      assert.match(submit.evidence.summary, /^codex \(stub\) attempt 1: Applied v1 of cat-area/);
+      assert.equal(submit.evidence.screenshot, task.screenshot_description);
+      assert.equal(r.stubRuns[0].model, "codex-model-x");
+      assert.match(r.stubRuns[0].prompt, /Ryke tracks your reads from the commands you run/);
+      assert.doesNotMatch(r.stubRuns[0].prompt, /Read tool|hook/);
+      assert.equal(existsSync(join(r.cwd, "transcripts", "codex-1.jsonl")), true);
+    });
+
+    it("gives codex neither Ryke's tokens nor Claude's credentials", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await codexJob(api, cloneBare("fork"), "cat-area", { env: { ANTHROPIC_API_KEY: "sk-ant-shell", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-shell", CLAUDE_CONFIG_DIR: "/c" } });
+      assert.equal(r.code, 0, r.stderr);
+      const seen = r.stubRuns[0].envNames;
+      for (const name of ["RYKE_TOKEN", "RYKE_FORK_TOKEN", "RYKE_API_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "IS_SANDBOX"]) assert.ok(!seen.includes(name), `${name} must not reach codex`);
+    });
+
+    it("on a subscription, no key reaches codex: it uses its own ChatGPT login", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await codexJob(api, cloneBare("fork"), "cat-area", { args: { auth: "subscription" }, env: { OPENAI_API_KEY: "sk-openai-shell", CODEX_API_KEY: "sk-codex-shell", CODEX_ACCESS_TOKEN: "pat-shell", CODEX_HOME: "/home/x/.codex" } });
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stderr, /codex runs on your own login \(subscription\)/);
+      const seen = r.stubRuns[0].envNames;
+      for (const name of ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"]) assert.ok(!seen.includes(name), `${name} must not reach codex`);
+      assert.ok(seen.includes("CODEX_HOME"), "where codex keeps its login");
+    });
+
+    it("on a key, codex gets OPENAI_API_KEY under its own name", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await codexJob(api, cloneBare("fork"), "cat-area", { args: { auth: "api-key" }, env: { OPENAI_API_KEY: "sk-openai-shell", RYKE_STUB_LOGIN: "none" } });
+      assert.equal(r.code, 0, r.stderr);
+      const seen = r.stubRuns[0].envNames;
+      assert.ok(seen.includes("CODEX_API_KEY"));
+      assert.ok(!seen.includes("OPENAI_API_KEY"));
+    });
+
+    it("aborts with codex's own reason when it cannot run, here because nobody is logged in", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await codexJob(api, cloneBare("fork"), "cat-area", { args: { auth: "subscription" }, env: { RYKE_STUB_LOGIN: "none" } });
+      assert.equal(r.code, 1);
+      assert.deepEqual([r.result.ok, r.result.state, r.result.reason], [false, "aborted", "agent_error"]);
+      assert.match(r.result.error, /codex: Not logged in/);
+      assert.deepEqual(api.of(`POST /api/txns/${TXN}/abort`).map((c) => c.body.reason), ["agent_error"]);
+      assert.equal(submitBodies(api).length, 0);
+    });
+
+    it("on stale: re-runs codex on the new trunk with the delta, and the second patch fits it", async () => {
+      const trunk = cloneBare("trunk");
+      const fork = cloneBare("fork");
+      const advanced = advanceTrunk(trunk);
+      const delta = [{ path: "src/format.ts", patch: "--- a/src/format.ts\n+++ b/src/format.ts\n@@ -4,3 +4,6 @@\n" }];
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/submit`]: (_c, n) => (n === 1 ? { state: "stale", reason: "stale_read", paths: [{ path: "src/format.ts", seq: 1, by: "t_pre" }] } : { state: "ready" }),
+          [`POST /api/txns/${TXN}/retry`]: () => ({ snapshot: advanced, attempt: 2, delta, failures: null, trunk: { remote: trunk, token: "trunk-read" }, remote: fork, token: "fork-write-2" }),
+        }),
+      );
+      const r = await codexJob(api, fork, "cat-area", { keep: true });
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual([r.result.state, r.result.attempts], ["landed", 2]);
+      const [first, second] = r.stubRuns;
+      assert.deepEqual([first.variant, second.variant], ["v1", "v2"]);
+      assert.ok(second.prompt.startsWith(first.prompt));
+      assert.ok(second.prompt.includes(RETRY_STALE));
+      assert.equal(git(fork, "rev-parse", `${git(fork, "rev-parse", "refs/heads/main")}^`), advanced);
+      assert.equal(existsSync(join(r.checkout, ".ryke/attempt-1/reads.jsonl")), true, "attempt 1's reads moved aside");
+      assert.equal(existsSync(join(r.cwd, "transcripts", "codex-2.jsonl")), true);
+    });
+
+    it("leaves leases alone when contention control is off", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await codexJob(api, cloneBare("fork"), "cat-area", { env: { RYKE_CONTENTION: "off" } });
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(api.of(`POST /api/txns/${TXN}/intend-write`).length, 0);
+      assert.ok(api.of(`POST /api/txns/${TXN}/reads`).length > 0, "reads are reported either way");
+    });
+
+    it("says so when another transaction holds the lease on a file codex patched, and goes on", async () => {
+      const api = await s.start(baseRoutes({ [`POST /api/txns/${TXN}/intend-write`]: () => ({ go: false, owner: "t_other", retryAfterMs: 500 }) }));
+      const r = await codexJob(api, cloneBare("fork"), "cat-area");
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stderr, /is leased to t_other; codex has already written it/);
+      assert.equal(r.result.state, "landed");
+    });
   });
 
   describe("claude's own commits", () => {
@@ -2599,7 +2776,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
       const task = byId("cat-area");
       const bad = join(tmp, `bad-claude-${++counter}`);
       writeFileSync(bad, '#!/bin/sh\nprintf \'{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key"}\\n\'\nexit 1\n', { mode: 0o755 });
-      const r = await job(api, cloneBare("fork"), task.id, { env: { CLAUDE_BIN: bad, RYKE_CLAUDE_STUB: "0" } });
+      const r = await job(api, cloneBare("fork"), task.id, { env: { CLAUDE_BIN: bad, RYKE_AGENT_STUB: "0" } });
       assert.equal(r.code, 1);
       assert.deepEqual([r.result.ok, r.result.state, r.result.landed, r.result.reason, r.result.error], [false, "aborted", false, "agent_error", "Invalid API key"]);
       assert.deepEqual(abortBodies(api), [{ reason: "agent_error" }]);
@@ -2620,7 +2797,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
       const api = await s.start(baseRoutes());
       const mute = join(tmp, `mute-claude-${++counter}`);
       writeFileSync(mute, "#!/bin/sh\nexit 3\n", { mode: 0o755 });
-      const r = await job(api, cloneBare("fork"), "cat-area", { env: { CLAUDE_BIN: mute, RYKE_CLAUDE_STUB: "0" } });
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: { CLAUDE_BIN: mute, RYKE_AGENT_STUB: "0" } });
       assert.deepEqual([r.result.ok, r.result.state], [false, "aborted"]);
       assert.match(r.result.error, /exited with code 3 without a result line/);
       assert.deepEqual(abortBodies(api), [{ reason: "agent_error" }]);
@@ -2628,7 +2805,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
 
     it("aborts when the claude binary does not exist", async () => {
       const api = await s.start(baseRoutes());
-      const r = await job(api, cloneBare("fork"), "cat-area", { env: { CLAUDE_BIN: "/nonexistent/claude", RYKE_CLAUDE_STUB: "0" } });
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: { CLAUDE_BIN: "/nonexistent/claude", RYKE_AGENT_STUB: "0" } });
       assert.deepEqual([r.result.ok, r.result.state], [false, "aborted"]);
       assert.match(r.stderr, /claude could not start/);
     });
@@ -2639,7 +2816,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
       const slow = join(tmp, `slow-claude-${++counter}`);
       writeFileSync(slow, `#!/bin/sh\nsleep 60 &\necho $! > ${pidFile}\nwait\n`, { mode: 0o755 });
       const started = Date.now();
-      const r = await job(api, cloneBare("fork"), "cat-area", { env: { CLAUDE_BIN: slow, RYKE_CLAUDE_STUB: "0", RYKE_CLAUDE_TIMEOUT_S: "0.5" } });
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: { CLAUDE_BIN: slow, RYKE_AGENT_STUB: "0", RYKE_CLAUDE_TIMEOUT_S: "0.5" } });
       assert.ok(Date.now() - started < 20_000);
       assert.deepEqual([r.result.ok, r.result.state], [false, "aborted"]);
       assert.equal(r.result.error, "claude timed out");
@@ -2819,7 +2996,8 @@ describe("harness/agents/claude.mjs", () => {
     const ctxFor = async (api, runnerRoutesOrServer, over = {}) => {
       const runner = runnerRoutesOrServer.url ? runnerRoutesOrServer : await s.start(runnerRoutesOrServer);
       const out = [];
-      return { runner, out, ctx: { api, repo: "convert", task, dir: DEMO, worker: "agent-03", contention: true, log: (a, l) => out.push(`${a}|${l}`), stub: true, apiUrl: "http://api.test", token: "api-token", runnerUrl: runner.url, ...over } };
+      // An explicit auth, so a key in the shell that runs the tests cannot change what they see.
+      return { runner, out, ctx: { api, repo: "convert", task, dir: DEMO, worker: "agent-03", contention: true, log: (a, l) => out.push(`${a}|${l}`), stub: true, auth: "subscription", apiUrl: "http://api.test", token: "api-token", runnerUrl: runner.url, ...over } };
     };
 
     it("begins the transaction, starts the agent job with everything it needs and returns the scripted agent's record", async () => {
@@ -2831,13 +3009,13 @@ describe("harness/agents/claude.mjs", () => {
 
       const [start] = runner.of("POST /v1/jobs");
       assert.equal(start.body.kind, "agent");
-      assert.deepEqual(start.body.args, { repo: "convert", txn: "t_9", agent: "agent-03", intent: task.intent, criteria: JSON.stringify(task.criteria), model: "claude-sonnet-5-5", remote: BEGIN.remote, snapshot: BEGIN.snapshot });
+      assert.deepEqual(start.body.args, { repo: "convert", txn: "t_9", agent: "agent-03", intent: task.intent, criteria: JSON.stringify(task.criteria), cli: "claude", auth: "subscription", model: "claude-sonnet-5-5", remote: BEGIN.remote, snapshot: BEGIN.snapshot });
       assert.deepEqual(start.body.env, {
         RYKE_API_URL: "http://api.test",
         RYKE_TOKEN: "rtx.t_9.agent",
         RYKE_FORK_TOKEN: "fork-token",
         RYKE_CONTENTION: "on",
-        RYKE_CLAUDE_STUB: "1",
+        RYKE_AGENT_STUB: "1",
         CLAUDE_BIN: STUB_BIN,
         RYKE_CATALOGUE_DIR: DEMO,
       });
@@ -2880,18 +3058,19 @@ describe("harness/agents/claude.mjs", () => {
       process.env.CLAUDE_BIN = "/opt/claude";
       try {
         const api = ledger();
-        const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { stub: false, model: "claude-opus-5", contention: false });
+        const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { stub: false, model: "claude-opus-5", contention: false, auth: "auto" });
         const r = await runTask(ctx);
         assert.equal(r.model, "claude-opus-5");
         assert.equal(api.calls.begin[0].input.model, "claude-opus-5");
         const [start] = runner.of("POST /v1/jobs");
         assert.equal(start.body.args.model, "claude-opus-5");
+        assert.equal(start.body.args.auth, "api-key", "auto takes the key that is set");
         assert.deepEqual(start.body.env, {
           RYKE_API_URL: "http://api.test",
           RYKE_TOKEN: "rtx.t_9.agent",
           RYKE_FORK_TOKEN: "fork-token",
           RYKE_CONTENTION: "off",
-          RYKE_CLAUDE_STUB: "0",
+          RYKE_AGENT_STUB: "0",
           CLAUDE_BIN: "/opt/claude",
           ANTHROPIC_API_KEY: "sk-run-key",
           ANTHROPIC_BASE_URL: anthropic.url,
@@ -2912,7 +3091,7 @@ describe("harness/agents/claude.mjs", () => {
       process.env.ANTHROPIC_BASE_URL = anthropic.url;
       try {
         const api = ledger();
-        const { runner, ctx } = await ctxFor(api, runnerRoutes({}), { stub: false });
+        const { runner, ctx } = await ctxFor(api, runnerRoutes({}), { stub: false, auth: "api-key" });
         await assert.rejects(runTask(ctx), /ANTHROPIC_API_KEY was rejected/);
         assert.equal(api.calls.begin.length, 0);
         assert.equal(runner.calls.length, 0);
@@ -2924,6 +3103,22 @@ describe("harness/agents/claude.mjs", () => {
       }
     });
 
+    it("hands a stub job the stub's knobs from this process, which the runner would not pass on", async () => {
+      await withEnv({ RYKE_STUB_DELAY_MS: "7", RYKE_STUB_LOGIN: "claude.ai" }, async () => {
+        const api = ledger();
+        const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }));
+        await runTask(ctx);
+        const env = runner.of("POST /v1/jobs")[0].body.env;
+        assert.deepEqual([env.RYKE_STUB_DELAY_MS, env.RYKE_STUB_LOGIN], ["7", "claude.ai"]);
+      });
+      await withEnv({ RYKE_STUB_DELAY_MS: "7", CLAUDE_BIN: STUB_BIN }, async () => {
+        const api = ledger();
+        const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { stub: false });
+        await runTask(ctx);
+        assert.equal("RYKE_STUB_DELAY_MS" in runner.of("POST /v1/jobs")[0].body.env, false, "a real run carries no stub knobs");
+      });
+    });
+
     it("lets a test or a caller add to the job's environment", async () => {
       const api = ledger();
       const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { env: { RYKE_STUB_GATE_DIR: "/gates", RYKE_CONTENTION: "off" } });
@@ -2931,6 +3126,86 @@ describe("harness/agents/claude.mjs", () => {
       const env = runner.of("POST /v1/jobs")[0].body.env;
       assert.equal(env.RYKE_STUB_GATE_DIR, "/gates");
       assert.equal(env.RYKE_CONTENTION, "off", "the caller's value wins");
+    });
+
+    // Sets process.env for one test and puts it back, whatever happens.
+    async function withEnv(vars, fn) {
+      const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+      for (const [k, v] of Object.entries(vars)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      try {
+        return await fn();
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    }
+
+    it("runs codex's stub, labelled codex-stub, on the codex binary and without a model of Claude's", async () => {
+      const api = ledger();
+      const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { cli: "codex" });
+      const r = await withEnv({ RYKE_CODEX_MODEL: undefined }, () => runTask(ctx));
+      assert.equal(r.model, "codex-stub");
+      assert.equal(api.calls.begin[0].input.model, "codex-stub");
+      const [start] = runner.of("POST /v1/jobs");
+      assert.deepEqual(start.body.args, { repo: "convert", txn: "t_9", agent: "agent-03", intent: task.intent, criteria: JSON.stringify(task.criteria), cli: "codex", auth: "subscription", remote: BEGIN.remote, snapshot: BEGIN.snapshot });
+      assert.deepEqual(start.body.env, { RYKE_API_URL: "http://api.test", RYKE_TOKEN: "rtx.t_9.agent", RYKE_FORK_TOKEN: "fork-token", RYKE_CONTENTION: "on", RYKE_AGENT_STUB: "1", CODEX_BIN: STUB_BINS.codex, RYKE_CATALOGUE_DIR: DEMO });
+    });
+
+    it("labels a real codex on its own default model as codex, and passes a model it was given", async () => {
+      await withEnv({ CODEX_BIN: STUB_BINS.codex, RYKE_CODEX_MODEL: undefined }, async () => {
+        const plain = ledger();
+        const first = await ctxFor(plain, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { cli: "codex", stub: false });
+        assert.equal((await runTask(first.ctx)).model, "codex");
+        assert.equal("model" in first.runner.of("POST /v1/jobs")[0].body.args, false);
+        assert.equal(first.runner.of("POST /v1/jobs")[0].body.env.CODEX_BIN, STUB_BINS.codex);
+
+        const named = ledger();
+        const second = await ctxFor(named, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { cli: "codex", stub: false, model: "codex-model-x" });
+        assert.equal((await runTask(second.ctx)).model, "codex-model-x");
+        assert.equal(second.runner.of("POST /v1/jobs")[0].body.args.model, "codex-model-x");
+      });
+    });
+
+    it("hands a subscription job no key, even when the shell has one, and checks no key either", async () => {
+      const anthropic = await s.start({ "GET /v1/models": () => ({ data: [] }) });
+      await withEnv({ ANTHROPIC_API_KEY: "sk-shell", ANTHROPIC_BASE_URL: anthropic.url, CLAUDE_BIN: STUB_BIN }, async () => {
+        const api = ledger();
+        const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { stub: false, auth: "subscription" });
+        await runTask(ctx);
+        const [start] = runner.of("POST /v1/jobs");
+        assert.equal(start.body.args.auth, "subscription");
+        assert.ok(!JSON.stringify(start.body).includes("sk-shell"), "the key appears nowhere in the job");
+        assert.equal(anthropic.calls.length, 0, "a subscription run spends no call on a key");
+      });
+    });
+
+    it("refuses a subscription on a runner that is not this machine, before it begins a transaction", async () => {
+      const api = ledger();
+      const { ctx } = await ctxFor(api, runnerRoutes({}), { runnerUrl: "http://10.0.0.5:8789" });
+      await assert.rejects(runTask(ctx), /the runner must be on this machine/);
+      assert.equal(api.calls.begin.length, 0);
+    });
+
+    it("refuses a CLI that is not logged in, before it begins a transaction", async () => {
+      await withEnv({ RYKE_STUB_LOGIN: "none" }, async () => {
+        const api = ledger();
+        const { runner, ctx } = await ctxFor(api, runnerRoutes({}), { cli: "codex" });
+        await assert.rejects(runTask(ctx), /codex is not logged in on this machine/);
+        assert.equal(api.calls.begin.length, 0);
+        assert.equal(runner.calls.length, 0);
+      });
+    });
+
+    it("refuses an unknown CLI or auth mode", async () => {
+      const { ctx } = await ctxFor(ledger(), runnerRoutes({}), { cli: "gemini" });
+      await assert.rejects(runTask(ctx), /cli must be claude or codex, got gemini/);
+      const other = await ctxFor(ledger(), runnerRoutes({}), { auth: "oauth" });
+      await assert.rejects(runTask(other.ctx), /auth must be subscription or api-key or auto, got oauth/);
     });
 
     it("returns a rejection at begin without starting a job", async () => {

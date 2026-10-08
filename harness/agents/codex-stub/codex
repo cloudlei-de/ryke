@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# The fake `codex` executable agent.mjs runs when CODEX_BIN points here (harness/agents/codex.mjs --stub).
+exec node "$(dirname "$0")/codex.mjs" "$@"

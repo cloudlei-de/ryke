@@ -17,6 +17,7 @@
     "e2e:swarm": "node harness/e2e/swarm.mjs",
     "e2e:contention": "node harness/e2e/contention.mjs",
     "e2e:claude": "node harness/e2e/claude.mjs",
+    "e2e:codex": "node harness/e2e/claude.mjs codex",
     "e2e:deploy": "node harness/e2e/deploy.mjs",
     "swarm": "node harness/swarm.mjs",
     "ryke": "node harness/ryke.mjs",

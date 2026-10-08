@@ -29,7 +29,8 @@ read set came from what B actually read, through Claude Code hooks or the MCP re
    trunk into an Artifacts repo `<repo>--<txn>` and returns its remote, a write token and the
    snapshot sha.
 2. **Work.** The agent clones its fork, works, and reports every file it reads. Claude Code agents
-   do this through a PostToolUse hook on Read, Grep and Glob; other agents call `ryke_reads`.
+   do this through a PostToolUse hook on Read, Grep and Glob, Codex agents through the commands in
+   their event stream; other agents call `ryke_reads`.
    Unreported reads are not trusted: a transaction with none is treated as having read every file
    in the directories it wrote.
 3. **Push and submit.** The agent pushes to its fork and calls submit. Ryke computes the write set
@@ -114,7 +115,7 @@ relied on the targets go as well. Dependents not in the way stay landed, revalid
 
 ```mermaid
 flowchart LR
-  A[Agents: Claude Code, any MCP client, scripted] -- "MCP /mcp · HTTP /api" --> W
+  A[Agents: Claude Code, Codex, any MCP client, scripted] -- "MCP /mcp · HTTP /api" --> W
   A -- "git push (smart HTTP)" --> F[(Artifacts fork repo-txn)]
   subgraph W [Worker ryke]
     API[Hono API + MCP] --> L[Ledger DO per repo<br/>SQLite: txns, access sets,<br/>trunk index, op log, heat]
@@ -151,4 +152,4 @@ flowchart LR
 - Read sets are files, not queries. A new file written against a value that another transaction is
   changing (a phantom) is no read conflict; the train's tests catch it and it fails verify instead.
 - The bench agents are synthetic: real git, real merges, real tests, scripted edits. The scripted
-  demo agents apply prepared patches. Real Claude Code agents use the same API and hooks.
+  demo agents apply prepared patches. Real Claude Code and Codex agents use the same API.

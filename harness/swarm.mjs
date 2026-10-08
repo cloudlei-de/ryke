@@ -7,21 +7,28 @@ import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { availableParallelism } from "node:os";
+import { AUTH_MODES } from "../containers/runner/lib/agent.mjs";
 import { brief, localVerify, runTask as scripted } from "./agents/scripted.mjs";
 import { ApiError, client } from "./lib/client.mjs";
 import { buildReport, checkPreview, evaluateCriteria, formatReport, landedCategories, verifyTrunk } from "./lib/report.mjs";
 import { loadCatalogue, makeRng, orderTasks, seedFor, selectTasks, startGates } from "./lib/tasks.mjs";
 
-const USAGE = `usage: swarm.mjs [--mode scripted|claude] [--agents N] [--repo convert] [--speed 4 (default)] [--fresh]
+const USAGE = `usage: swarm.mjs [--mode scripted|claude|codex] [--agents N] [--repo convert] [--speed 4 (default)] [--fresh]
                  [--contention on|off] [--tasks id,id] [--seed 42] [--json out.json] [--verify-slots 2]
                  [--api URL] [--token T] [--stack] [--demo convert] [--stub] [--model M]
-  --stub, --model   claude mode only: run the recorded stub instead of the real claude, or name the model
+                 [--auth subscription|api-key|auto]
+  --stub, --model   claude and codex modes: run the recorded stub instead of the real CLI, or name the model
+  --auth   claude and codex modes: subscription runs the CLI on your own login on this machine (claude
+           /login or setup-token, codex login with ChatGPT); api-key on ANTHROPIC_API_KEY, or CODEX_API_KEY /
+           OPENAI_API_KEY; auto (default) takes the key when one is set
   --verify-slots   how many agents may run their local tests at once (default half the CPUs)
   --stack   start a private local stack (store, runner, worker) for this run and stop it at the end
   --api     default $RYKE_API_URL, else http://127.0.0.1:<5173 + RYKE_PORT_OFFSET>
   --token   default $RYKE_TOKEN, else "dev"`;
 
 export class UsageError extends Error {}
+
+const MODES = ["scripted", "claude", "codex"];
 
 export function parseSwarmArgs(argv, env = process.env) {
   let values;
@@ -47,6 +54,7 @@ export function parseSwarmArgs(argv, env = process.env) {
         "verify-slots": { type: "string" },
         stub: { type: "boolean", default: false },
         model: { type: "string" },
+        auth: { type: "string", default: "auto" },
         help: { type: "boolean", short: "h", default: false },
       },
     }));
@@ -57,7 +65,8 @@ export function parseSwarmArgs(argv, env = process.env) {
   const agents = Number(values.agents);
   const speed = Number(values.speed);
   const seed = Number(values.seed);
-  if (!["scripted", "claude"].includes(values.mode)) throw new UsageError(`--mode must be scripted or claude, got ${values.mode}`);
+  if (!MODES.includes(values.mode)) throw new UsageError(`--mode must be scripted, claude or codex, got ${values.mode}`);
+  if (!AUTH_MODES.includes(values.auth)) throw new UsageError(`--auth must be subscription, api-key or auto, got ${values.auth}`);
   if (!Number.isInteger(agents) || agents < 1 || agents > 50) throw new UsageError(`--agents must be an integer from 1 to 50, got ${values.agents}`);
   if (!(speed > 0) || !Number.isFinite(speed)) throw new UsageError(`--speed must be a positive number, got ${values.speed}`);
   const verifySlots = values["verify-slots"] === undefined ? Math.max(1, Math.floor(availableParallelism() / 2)) : Number(values["verify-slots"]);
@@ -81,6 +90,7 @@ export function parseSwarmArgs(argv, env = process.env) {
     demo: values.demo ?? null,
     stub: values.stub,
     model: values.model ?? null,
+    auth: values.auth,
     verifySlots,
     offset,
     help: values.help,
@@ -143,6 +153,11 @@ async function allOps(api, repo, after = 0) {
     if (page.ops.length < 1000) return out;
     after = page.last;
   }
+}
+
+// The check a CLI mode makes once before any task begins (agents/claude.mjs preflight), or null.
+async function preflightFor(mode, dir = import.meta.dirname) {
+  return mode === "scripted" ? null : ((await import(`${dir}/agents/${mode}.mjs`)).preflight ?? null);
 }
 
 // `dir` is where agents/<mode>.mjs is looked up; only tests change it.
@@ -215,9 +230,16 @@ export async function runSwarm(opts, { log = console.log, runAgent: injected } =
   const position = new Map(queue.map((t, i) => [t.id, i]));
   const finished = new Map(queue.map((t) => [t.id, deferred()]));
 
-  say(`repo=${opts.repo} mode=${opts.mode} agents=${opts.agents} speed=${opts.speed} contention=${opts.contention ? "on" : "off"} seed=${opts.seed} tasks=${queue.length} api=${opts.api}`);
-  // Before the repo is touched, so a mode that is not built fails without side effects.
+  const cliMode = opts.mode !== "scripted";
+  say(`repo=${opts.repo} mode=${opts.mode}${cliMode ? ` auth=${opts.auth}` : ""} agents=${opts.agents} speed=${opts.speed} contention=${opts.contention ? "on" : "off"} seed=${opts.seed} tasks=${queue.length} api=${opts.api}`);
+  // Before the repo is touched, so a mode that is not built, a CLI that is not logged in or a key that is
+  // rejected fails without side effects.
   const runAgent = injected ?? (await agentFor(opts.mode));
+  const preflight = injected ? null : await preflightFor(opts.mode);
+  if (preflight) {
+    const access = await preflight({ auth: opts.auth, stub: opts.stub || undefined, model: opts.model ?? undefined });
+    say(`${opts.mode} runs on ${access.how}${access.mode === "subscription" && opts.agents > 1 ? `; all ${opts.agents} agents draw on that one plan's usage limits` : ""}`);
+  }
   await ensureRepo(api, opts, catalogue.demo, say);
   const baseline = (await allOps(api, opts.repo)).at(-1)?.seq ?? 0;
 
@@ -251,9 +273,11 @@ export async function runSwarm(opts, { log = console.log, runAgent: injected } =
             speed: opts.speed,
             contention: opts.contention,
             log: agentLog,
-            // Only the claude agent reads these; they are how --stub, --model, --api and --token reach its runner job.
+            // Only the claude and codex agents read these; they are how --stub, --model, --auth, --api and
+            // --token reach their runner job.
             stub: opts.stub || undefined,
             model: opts.model ?? undefined,
+            auth: opts.auth,
             apiUrl: opts.api,
             token: opts.token,
             verify: (dir, policy) => localSlots(() => localVerify(dir, policy)),
@@ -324,6 +348,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     return 0;
   } catch (e) {
     if (e instanceof UsageError) console.error(`${e.message}\n${USAGE}`);
+    else if (e.name === "AccessError") console.error(`swarm failed: ${e.message}`);
     else console.error(`swarm failed: ${e.stack ?? e.message}`);
     return e instanceof UsageError ? 2 : 1;
   } finally {

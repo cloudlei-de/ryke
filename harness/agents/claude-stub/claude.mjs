@@ -10,7 +10,9 @@
 // Test knobs (env): RYKE_CATALOGUE_DIR (default demo/convert), RYKE_STUB_DELAY_MS between tool calls,
 // RYKE_STUB_GATE_DIR (park after the reads until <dir>/<task>.go exists, and touch <task>.waiting),
 // RYKE_STUB_LOG_DIR (append what each run saw to <dir>/<task>.jsonl: prompt, cwd, the hooks' contexts and the
-// names of the environment variables it was given, which is how a test sees what agent.mjs let through).
+// names of the environment variables it was given, which is how a test sees what agent.mjs let through),
+// RYKE_STUB_LOGIN (the login `claude auth status` reports when no key is set: claude.ai by default,
+// oauth_token, api_key, or none for logged out).
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -144,13 +146,80 @@ export function chooseVariant(task, tasks, prompt, subjects) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// What both fake CLIs do the same way (harness/agents/codex-stub plays the same tasks)
+// ---------------------------------------------------------------------------------------------
+
+export function git(cwd, argv, input) {
+  return spawnSync("git", argv, { cwd, input, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+}
+
+// The task whose intent the prompt names, or { error }.
+export function findTask(env, prompt) {
+  const catalogue = env.RYKE_CATALOGUE_DIR ?? join(ROOT, "demo/convert");
+  const tasks = JSON.parse(readFileSync(join(catalogue, "tasks.json"), "utf8"));
+  const intent = /^Intent: (.*)$/m.exec(prompt)?.[1];
+  const task = tasks.find((t) => t.intent === intent);
+  return task ? { catalogue, tasks, task } : { error: `stub: no task in ${catalogue}/tasks.json has the intent ${JSON.stringify(intent)}` };
+}
+
+// Parked here, the stub is an agent that has read and is still thinking: other transactions can land
+// meanwhile, which is how the tests make a read go stale. Returns an error, or null once the gate opens.
+export async function waitAtGate(env, task) {
+  if (!env.RYKE_STUB_GATE_DIR) return null;
+  mkdirSync(env.RYKE_STUB_GATE_DIR, { recursive: true });
+  writeFileSync(join(env.RYKE_STUB_GATE_DIR, `${task.id}.waiting`), "");
+  const until = Date.now() + GATE_TIMEOUT_MS;
+  while (!existsSync(join(env.RYKE_STUB_GATE_DIR, `${task.id}.go`))) {
+    if (Date.now() > until) return `stub: gate ${task.id}.go never opened`;
+    await sleep(50);
+  }
+  return null;
+}
+
+// The patches to try, the one that fits this trunk first, each with its text and the files it touches.
+export function variantsFor({ catalogue, tasks, task }, prompt, cwd) {
+  const subjects = git(cwd, ["log", "--format=%s"]).stdout.split("\n");
+  const preferred = chooseVariant(task, tasks, prompt, subjects);
+  const order = preferred === "v2" ? ["v2", "v1"] : task.v2 ? ["v1", "v2"] : ["v1"];
+  return order
+    .map((variant) => ({ variant, rel: variant === "v2" ? task.v2 : task.solution }))
+    .filter((v) => v.rel)
+    .map(({ variant, rel }) => {
+      const patch = readFileSync(join(catalogue, rel), "utf8");
+      return { variant, patch, files: describePatch(patch) };
+    });
+}
+
+// Applies one variant, or leaves the checkout as it was and says false.
+export function applyPatch(cwd, patch) {
+  if (git(cwd, ["apply", "--3way", "-"], patch).status === 0) return true;
+  git(cwd, ["reset", "-q", "--hard", "HEAD"]);
+  git(cwd, ["clean", "-fdq"]);
+  return false;
+}
+
+export function finishTask(cwd, env, task, record) {
+  mkdirSync(join(cwd, ".ryke"), { recursive: true });
+  writeFileSync(join(cwd, ".ryke", "screenshot.txt"), `${task.screenshot_description}\n`);
+  if (!env.RYKE_STUB_LOG_DIR) return;
+  mkdirSync(env.RYKE_STUB_LOG_DIR, { recursive: true });
+  const seen = { RYKE_FORK_TOKEN: env.RYKE_FORK_TOKEN ?? null, RYKE_TOKEN: env.RYKE_TOKEN ?? null };
+  appendFileSync(join(env.RYKE_STUB_LOG_DIR, `${task.id}.jsonl`), `${JSON.stringify({ task: task.id, ...record, cwd, env: seen, envNames: Object.keys(env).sort() })}\n`);
+}
+
+// ---------------------------------------------------------------------------------------------
 // The session
 // ---------------------------------------------------------------------------------------------
 
 const out = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
-function git(cwd, argv, input) {
-  return spawnSync("git", argv, { cwd, input, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+// `claude auth status` (Claude Code 2.1): JSON on stdout, exit 1 when not logged in. A key in the
+// environment wins over any login, as in the real CLI; RYKE_STUB_LOGIN stands for the stored login.
+export function authStatus(env) {
+  const login = env.RYKE_STUB_LOGIN ?? "claude.ai";
+  const authMethod = env.ANTHROPIC_API_KEY ? "api_key" : env.CLAUDE_CODE_OAUTH_TOKEN ? "oauth_token" : login;
+  const status = { loggedIn: authMethod !== "none", authMethod, apiProvider: "firstParty", ...(env.ANTHROPIC_API_KEY ? { apiKeySource: "ANTHROPIC_API_KEY" } : {}) };
+  return { code: status.loggedIn ? 0 : 1, stdout: `${JSON.stringify(status, null, 2)}\n` };
 }
 
 export async function session(argv, env = process.env, cwd = process.cwd()) {
@@ -174,11 +243,9 @@ export async function session(argv, env = process.env, cwd = process.cwd()) {
     return fail(`stub: unexpected invocation: ${e.message}`, 2);
   }
 
-  const catalogue = env.RYKE_CATALOGUE_DIR ?? join(ROOT, "demo/convert");
-  const tasks = JSON.parse(readFileSync(join(catalogue, "tasks.json"), "utf8"));
-  const intent = /^Intent: (.*)$/m.exec(args.prompt)?.[1];
-  const task = tasks.find((t) => t.intent === intent);
-  if (!task) return fail(`stub: no task in ${catalogue}/tasks.json has the intent ${JSON.stringify(intent)}`);
+  const found = findTask(env, args.prompt);
+  if (found.error) return fail(found.error);
+  const { task } = found;
 
   let settings = {};
   try {
@@ -258,28 +325,14 @@ export async function session(argv, env = process.env, cwd = process.cwd()) {
     await finish(grep, `Found 1 file\n${join(cwd, first)}`, grepResponse);
   }
 
-  // Parked here, the stub is an agent that has read and is still thinking: other transactions can
-  // land meanwhile, which is how the tests make a read go stale.
-  if (env.RYKE_STUB_GATE_DIR) {
-    mkdirSync(env.RYKE_STUB_GATE_DIR, { recursive: true });
-    writeFileSync(join(env.RYKE_STUB_GATE_DIR, `${task.id}.waiting`), "");
-    const until = Date.now() + GATE_TIMEOUT_MS;
-    while (!existsSync(join(env.RYKE_STUB_GATE_DIR, `${task.id}.go`))) {
-      if (Date.now() > until) return fail(`stub: gate ${task.id}.go never opened`);
-      await sleep(50);
-    }
-  }
+  const gated = await waitAtGate(env, task);
+  if (gated) return fail(gated);
 
-  const subjects = git(cwd, ["log", "--format=%s"]).stdout.split("\n");
-  const preferred = chooseVariant(task, tasks, args.prompt, subjects);
-  const order = preferred === "v2" ? ["v2", "v1"] : task.v2 ? ["v1", "v2"] : ["v1"];
   let applied = null;
   let files = [];
-  for (const variant of order) {
-    const rel = variant === "v2" ? task.v2 : task.solution;
-    if (!rel) continue;
-    const patch = readFileSync(join(catalogue, rel), "utf8");
-    files = describePatch(patch);
+  for (const v of variantsFor(found, args.prompt, cwd)) {
+    const { variant, patch } = v;
+    files = v.files;
     // Intents first, then the writes: the hook may make this wait for a lease.
     const calls = files.map((f) =>
       f.isNew && !existsSync(join(cwd, f.path))
@@ -291,12 +344,7 @@ export async function session(argv, env = process.env, cwd = process.cwd()) {
       const verdict = hooks("PreToolUse", c.tool, { tool_use_id: c.tool_use_id, tool_input: c.input });
       if (verdict.deny) return fail(`stub: a hook blocked ${c.tool} of ${c.input.file_path}: ${verdict.deny}`);
     }
-    const r = git(cwd, ["apply", "--3way", "-"], patch);
-    if (r.status !== 0) {
-      git(cwd, ["reset", "-q", "--hard", "HEAD"]);
-      git(cwd, ["clean", "-fdq"]);
-      continue;
-    }
+    if (!applyPatch(cwd, patch)) continue;
     for (const c of calls) {
       const response =
         c.tool === "Write"
@@ -310,16 +358,7 @@ export async function session(argv, env = process.env, cwd = process.cwd()) {
   }
   if (!applied) return fail(`stub: neither patch of ${task.id} applies to this checkout`);
 
-  mkdirSync(join(cwd, ".ryke"), { recursive: true });
-  writeFileSync(join(cwd, ".ryke", "screenshot.txt"), `${task.screenshot_description}\n`);
-
-  if (env.RYKE_STUB_LOG_DIR) {
-    mkdirSync(env.RYKE_STUB_LOG_DIR, { recursive: true });
-    appendFileSync(
-      join(env.RYKE_STUB_LOG_DIR, `${task.id}.jsonl`),
-      `${JSON.stringify({ task: task.id, variant: applied, prompt: args.prompt, model: args.model, cwd, files: files.map((f) => f.path), contexts, hooks: hookRuns, env: { RYKE_FORK_TOKEN: env.RYKE_FORK_TOKEN ?? null, RYKE_TOKEN: env.RYKE_TOKEN ?? null }, envNames: Object.keys(env).sort() })}\n`,
-    );
-  }
+  finishTask(cwd, env, task, { variant: applied, prompt: args.prompt, model: args.model, files: files.map((f) => f.path), contexts, hooks: hookRuns });
 
   const text = `Applied ${applied} of ${task.id}; ${files.length} files changed. The tests pass.`;
   for (const e of render("text", vars({ text }))) out(e);
@@ -327,4 +366,13 @@ export async function session(argv, env = process.env, cwd = process.cwd()) {
   return 0;
 }
 
-if (isMain(import.meta.url)) process.exitCode = await session(process.argv.slice(2));
+async function cli(argv) {
+  if (argv[0] === "auth" && argv[1] === "status") {
+    const { code, stdout } = authStatus(process.env);
+    process.stdout.write(stdout);
+    return code;
+  }
+  return session(argv);
+}
+
+if (isMain(import.meta.url)) process.exitCode = await cli(process.argv.slice(2));

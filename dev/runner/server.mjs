@@ -59,6 +59,11 @@ const INHERITED_NAMES = new Set([
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "NODE_USE_ENV_PROXY",
+  // Where Claude Code and Codex keep their own login, when it is not under HOME. A subscription agent job
+  // runs the CLI on that login (containers/runner/lib/agent.mjs); the directory is a path, not a secret,
+  // and HOME already gives a job of the same user the same reach.
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
 ]);
 // Node refuses --test flags in NODE_OPTIONS, and a runner started under `node --test` can carry them;
 // a job's own `node --test` would then die before running anything.
