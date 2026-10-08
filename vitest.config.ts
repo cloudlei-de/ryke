@@ -33,6 +33,8 @@ export default defineConfig(async () => {
             RYKE_TOKEN: "test-token",
             RYKE_INTERNAL_SECRET: "test-secret",
             TYPESAFE_API_KEY: "",
+            // test/store-contract.test.ts runs against a real Artifacts binding when this says "artifacts" (docs/deploy.md).
+            RYKE_STORE_CONTRACT: process.env.RYKE_STORE_CONTRACT ?? "",
           },
         },
       }),

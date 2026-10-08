@@ -2,7 +2,7 @@
 
 PLAN.md §9.4 asks for the Jev questions to be calibrated against labelled cases, for the question wording (not the thresholds) to be tuned until accuracy is at least 85 %, and for the before and after numbers to be recorded. This file is that record. The section between the two markers is rewritten by `npm run jev:calibrate`; everything else is hand-written and is the story of how the wording got where it is.
 
-**Outcome.** On all 89 cases the original wording scored 87 % and the final wording scores 94 % (mean of two runs each; a single run varies by a few points, see Noise, and the generated section below shows the latest one). The 27 holdout cases, written before the first change of wording, went from 85 % to 89 % on average, but the latest single run below scores them at 85 %, so the holdout gain is within run-to-run noise; the honest claim is that the new wording generalises no worse. Evidence went from 79 % to 94 %, and on the real demo catalogue the original wording sent 20 to 22 of 39 reference solutions to a human where the final one sends 1 to 3. Two things Ryke relies on do not depend on wording at all and are listed under Findings: the trigram prefilter drops some true duplicates and some conflicts before Jev sees them, and the evidence gate cannot see the numbers a criterion quotes.
+**Outcome.** On all 89 cases the original wording scored 87 % and the final wording scores 94 % (mean of two runs each; a single run varies by a few points, see Noise, and the generated section below shows the latest one). The 27 holdout cases, written before the first change of wording, went from 85 % to 89 % on average, and single runs have scored them from 85 % to 89 % (the latest, below, at 89 %), so the holdout gain is within run-to-run noise; the honest claim is that the new wording generalises no worse. Evidence went from 79 % to 94 %, and on the real demo catalogue the original wording sent 20 to 22 of 39 reference solutions to a human where the final one sent 1 to 3, and none since the reference tests that could not show their criteria (sloppy-a, t-search, t-dark, t-share, t-favorites) were named after them (the latest run, below: 39 of 39 land). Two things Ryke relies on do not depend on wording at all and are listed under Findings: the trigram prefilter drops some true duplicates and some conflicts before Jev sees them, and the evidence gate cannot see the numbers a criterion quotes.
 
 ## Method
 
@@ -32,7 +32,7 @@ npm run jev:record                           # refresh test/fixtures/jev for the
 <!-- jev:generated:start -->
 ## Results of the current wording
 
-Run 2026-10-08 against `jev-1.13.0`, wording id `759869d037ea`, 89 cases, 128 live requests. This section is rewritten by `npm run jev:calibrate`; the rest of the file is hand-written.
+Run 2026-10-08 against `jev-1.13.0`, wording id `4e1d36d29df3`, 89 cases, 128 live requests. This section is rewritten by `npm run jev:calibrate`; the rest of the file is hand-written.
 
 ### Accuracy
 
@@ -40,8 +40,8 @@ Run 2026-10-08 against `jev-1.13.0`, wording id `759869d037ea`, 89 cases, 128 li
 |---|---|---|---|---|
 | duplicate | dup >= 0.5 against the label | 22/23 (96 %) | 9/10 (90 %) | 31/33 (94 %) |
 | conflict | round(mean score) equals the 0/1/2 label | 16/16 (100 %) | 8/9 (89 %) | 24/25 (96 %) |
-| evidence | criterion >= 0.7 is met, < 0.35 is unmet, in between counts as wrong | 22/23 (96 %) | 6/8 (75 %) | 28/31 (90 %) |
-| **overall** | duplicate + conflict + evidence | **60/62 (97 %)** | **23/27 (85 %)** | **83/89 (93 %)** |
+| evidence | criterion >= 0.7 is met, < 0.35 is unmet, in between counts as wrong | 22/23 (96 %) | 7/8 (88 %) | 29/31 (94 %) |
+| **overall** | duplicate + conflict + evidence | **60/62 (97 %)** | **24/27 (89 %)** | **84/89 (94 %)** |
 
 Reported for information, not part of the overall figure (all cases):
 
@@ -57,7 +57,7 @@ Reported for information, not part of the overall figure (all cases):
 - Conflicting or overlapping pairs (label 1 or 2) that pass: 13/16 (81 %).
 - End to end, with the prefilter in front of Jev: duplicate 29/33 (88 %), conflict 21/25 (84 %).
 
-**Finding.** 3 true duplicates never reach Jev because the prefilter drops them: `dup-velocity~cat-speed` (0.148), `dup-kmh~cat-speed` (0.085), `multi-velocity+kmh` (0.148). Such duplicates are not rejected at `begin` whatever the wording is; they are caught later, as a stale or text conflict when the second transaction lands. These cases keep the catalogue's original G3 wording; the catalogue itself was reworded afterwards so the demo's G3 intents reach Jev (DECISIONS, 2026-10-08 M3), and the four cases are kept as hand-written ones.
+**Finding.** 3 true duplicates never reach Jev because the prefilter drops them: `dup-velocity~cat-speed` (0.148), `dup-kmh~cat-speed` (0.085), `multi-velocity+kmh` (0.148). Such duplicates are not rejected at `begin` whatever the wording is; they are caught later, as a stale or text conflict when the second transaction lands.
 
 **Finding.** 2 conflicting pairs (label 2) never reach Jev either: `h-footer-only~t-dark` (0.106), `h-alphabetical~t-favorites` (0.134). Two intents can contradict each other in few shared words, so no conflict warning is raised for them at `begin`.
 
@@ -65,7 +65,7 @@ Reported for information, not part of the overall figure (all cases):
 
 | | reject (>= 0.80) | warn (0.35 to 0.80) | silent (< 0.35) |
 |---|---|---|---|
-| true duplicates (16) | 6 | 10 | 0 |
+| true duplicates (16) | 7 | 9 | 0 |
 | non-duplicates (17) | 0 | 0 | 17 |
 
 A non-duplicate in the reject column would wrongly block an agent, the costly mistake; one in the warn column only adds a warning.
@@ -75,37 +75,32 @@ A non-duplicate in the reject column would wrongly block an agent, the costly mi
 | Label | met (>= 0.70) | uncertain (0.35 to 0.70) | unmet (< 0.35) |
 |---|---|---|---|
 | met (17) | 16 | 1 | 0 |
-| unmet (14) | 0 | 2 | 12 |
+| unmet (14) | 0 | 1 | 13 |
 
 ### Demo catalogue sweep
 
 Every reference patch of `demo/convert/tasks.json` (the 39 tasks that reach the gate) is turned into evidence the way the land job does it: its diff stat, the test names it adds, the catalogue's screenshot line as the agent-provided one and all of the task's criteria. Each is built to satisfy its criteria, so the gate should land it.
 
-- Land without a human: **37/39**; needs_human: 2; failed: 0.
-- Criteria answered >= 0.7: 115/117.
-
-| Task | Decision | Reason | Criteria | Scope creep |
-|---|---|---|---|---|
-| t-share | needs_human | criterion_uncertain | 0.97, 0.69, 0.93 | 0.14 |
-| sloppy-a | needs_human | criterion_uncertain | 0.72, 0.61, 0.80 | 0.05 |
+- Land without a human: **39/39**; needs_human: 0; failed: 0.
+- Criteria answered >= 0.7: 117/117.
 
 ### Confidence distribution
 
-Jev answers a yes/no question with a probability, so how decisive the answers are is the share that falls in the band where Ryke asks a human or warns: 10/33 duplicate answers in 0.35 to 0.80, 3/31 criterion answers in 0.35 to 0.70. Conflict answers carry a reported confidence; 0/25 cases average below 0.3 (the "coordinate instead of guess" warning).
+Jev answers a yes/no question with a probability, so how decisive the answers are is the share that falls in the band where Ryke asks a human or warns: 9/33 duplicate answers in 0.35 to 0.80, 2/31 criterion answers in 0.35 to 0.70. Conflict answers carry a reported confidence; 0/25 cases average below 0.3 (the "coordinate instead of guess" warning).
 
 Duplicate answers (probability of yes), all cases:
 
 ```
-0.0-0.1  13  #############
-0.1-0.2   4  ####
+0.0-0.1  14  ##############
+0.1-0.2   3  ###
 0.2-0.3   0  
 0.3-0.4   0  
 0.4-0.5   2  ##
 0.5-0.6   0  
-0.6-0.7   4  ####
-0.7-0.8   4  ####
-0.8-0.9   2  ##
-0.9-1.0   4  ####
+0.6-0.7   2  ##
+0.7-0.8   5  #####
+0.8-0.9   4  ####
+0.9-1.0   3  ###
 ```
 
 Criterion answers (probability that the criterion is met), all evidence cases:
@@ -115,11 +110,11 @@ Criterion answers (probability that the criterion is met), all evidence cases:
 0.1-0.2   1  #
 0.2-0.3   3  ###
 0.3-0.4   1  #
-0.4-0.5   1  #
-0.5-0.6   1  #
+0.4-0.5   0  
+0.5-0.6   2  ##
 0.6-0.7   0  
-0.7-0.8   5  #####
-0.8-0.9   6  ######
+0.7-0.8   2  ##
+0.8-0.9   9  #########
 0.9-1.0   5  #####
 ```
 
@@ -128,8 +123,8 @@ Scope creep answers (probability of yes), all evidence cases:
 ```
 0.0-0.1   5  #####
 0.1-0.2  14  ##############
-0.2-0.3   3  ###
-0.3-0.4   1  #
+0.2-0.3   4  ####
+0.3-0.4   0  
 0.4-0.5   0  
 0.5-0.6   0  
 0.6-0.7   0  
@@ -148,9 +143,9 @@ Conflict confidence (mean of both orders), all conflict cases:
 0.4-0.5   1  #
 0.5-0.6   1  #
 0.6-0.7   2  ##
-0.7-0.8   3  ###
-0.8-0.9   5  #####
-0.9-1.0  11  ###########
+0.7-0.8   4  ####
+0.8-0.9   2  ##
+0.9-1.0  13  #############
 ```
 
 ### Cases
@@ -159,105 +154,105 @@ Conflict confidence (mean of both orders), all conflict cases:
 
 | Case | Set | Label | dup | Predicted | Right | Prefilter similarity |
 |---|---|---|---|---|---|---|
-| dup-speed~cat-speed | tune | duplicate | 0.81 | duplicate | yes | 0.236 |
-| dup-velocity~cat-speed | tune | duplicate | 0.82 | duplicate | yes | 0.148 (dropped) |
-| dup-kmh~cat-speed | tune | duplicate | 0.48 | different | NO | 0.085 (dropped) |
-| para-search~t-search | tune | duplicate | 0.79 | duplicate | yes | 0.317 |
+| dup-speed~cat-speed | tune | duplicate | 0.82 | duplicate | yes | 0.236 |
+| dup-velocity~cat-speed | tune | duplicate | 0.81 | duplicate | yes | 0.148 (dropped) |
+| dup-kmh~cat-speed | tune | duplicate | 0.41 | different | NO | 0.085 (dropped) |
+| para-search~t-search | tune | duplicate | 0.78 | duplicate | yes | 0.317 |
 | para-dark~t-dark | tune | duplicate | 0.96 | duplicate | yes | 0.361 |
-| para-locale~t-locale | tune | duplicate | 0.66 | duplicate | yes | 0.237 |
+| para-locale~t-locale | tune | duplicate | 0.67 | duplicate | yes | 0.237 |
 | para-torque~cat-torque | tune | duplicate | 0.98 | duplicate | yes | 0.188 |
 | para-share~t-share | tune | duplicate | 0.96 | duplicate | yes | 0.377 |
-| cat-volume~cat-area | tune | different | 0.10 | different | yes | 0.311 |
+| cat-volume~cat-area | tune | different | 0.09 | different | yes | 0.311 |
 | t-locale~t-precision | tune | different | 0.08 | different | yes | 0.129 (dropped) |
 | t-favorites~t-search | tune | different | 0.03 | different | yes | 0.257 |
 | kelvin-remove~kelvin-first | tune | different | 0.03 | different | yes | 0.209 |
-| cat-acceleration~cat-speed | tune | different | 0.09 | different | yes | 0.553 |
-| cat-power~cat-pressure | tune | different | 0.17 | different | yes | 0.381 |
-| cat-cooking~cat-volume | tune | different | 0.07 | different | yes | 0.421 |
+| cat-acceleration~cat-speed | tune | different | 0.08 | different | yes | 0.553 |
+| cat-power~cat-pressure | tune | different | 0.13 | different | yes | 0.381 |
+| cat-cooking~cat-volume | tune | different | 0.08 | different | yes | 0.421 |
 | t-share~t-dark | tune | different | 0.02 | different | yes | 0.084 (dropped) |
-| cat-speed~dup-kmh | tune | different | 0.08 | different | yes | 0.085 (dropped) |
+| cat-speed~dup-kmh | tune | different | 0.07 | different | yes | 0.085 (dropped) |
 | cat-power~small-power | tune | different | 0.10 | different | yes | 0.301 |
 | multi-speed+gauge | tune | duplicate | 0.68 | duplicate | yes | 0.236 |
-| multi-velocity+kmh | tune | duplicate | 0.69 | duplicate | yes | 0.148 (dropped) |
-| multi-speed+unrelated | tune | duplicate | 0.79 | duplicate | yes | 0.236 |
-| multi-power+energy | tune | different | 0.10 | different | yes | 0.381 |
-| multi-area+speed-angle | tune | different | 0.08 | different | yes | 0.311 |
-| h-power~cat-power | holdout | duplicate | 0.43 | different | NO | 0.204 |
-| h-footer-dark~t-dark | holdout | duplicate | 0.63 | duplicate | yes | 0.241 |
-| h-copy-link~t-share | holdout | duplicate | 0.75 | duplicate | yes | 0.493 |
-| h-fahrenheit~sloppy-a | holdout | duplicate | 0.90 | duplicate | yes | 0.453 |
-| h-energy~cat-power | holdout | different | 0.07 | different | yes | 0.431 |
+| multi-velocity+kmh | tune | duplicate | 0.73 | duplicate | yes | 0.148 (dropped) |
+| multi-speed+unrelated | tune | duplicate | 0.82 | duplicate | yes | 0.236 |
+| multi-power+energy | tune | different | 0.11 | different | yes | 0.381 |
+| multi-area+speed-angle | tune | different | 0.06 | different | yes | 0.311 |
+| h-power~cat-power | holdout | duplicate | 0.48 | different | NO | 0.204 |
+| h-footer-dark~t-dark | holdout | duplicate | 0.71 | duplicate | yes | 0.241 |
+| h-copy-link~t-share | holdout | duplicate | 0.74 | duplicate | yes | 0.493 |
+| h-fahrenheit~sloppy-a | holdout | duplicate | 0.89 | duplicate | yes | 0.453 |
+| h-energy~cat-power | holdout | different | 0.06 | different | yes | 0.431 |
 | h-search~t-share | holdout | different | 0.02 | different | yes | 0.156 |
-| h-data~cat-frequency | holdout | different | 0.07 | different | yes | 0.330 |
-| h-kelvin~sloppy-a | holdout | different | 0.05 | different | yes | 0.172 |
-| h-multi-footer-dark | holdout | duplicate | 0.73 | duplicate | yes | 0.241 |
-| h-multi-data | holdout | different | 0.05 | different | yes | 0.330 |
+| h-data~cat-frequency | holdout | different | 0.06 | different | yes | 0.330 |
+| h-kelvin~sloppy-a | holdout | different | 0.06 | different | yes | 0.172 |
+| h-multi-footer-dark | holdout | duplicate | 0.75 | duplicate | yes | 0.241 |
+| h-multi-data | holdout | different | 0.06 | different | yes | 0.330 |
 
 #### Conflict (label: 0 independent, 1 overlapping but compatible, 2 conflicting)
 
 | Case | Set | Label | Mean score | Confidence | Rounded | Right | Warn rule right | Prefilter similarity |
 |---|---|---|---|---|---|---|---|---|
-| kelvin-first~kelvin-remove | tune | 2 | 1.93 | 0.90 | 2 | yes | yes | 0.209 |
+| kelvin-first~kelvin-remove | tune | 2 | 1.93 | 0.91 | 2 | yes | yes | 0.209 |
 | fahrenheit-first~kelvin-first | tune | 2 | 1.99 | 0.98 | 2 | yes | yes | 0.642 |
 | no-dark~t-dark | tune | 2 | 2.00 | 1.00 | 2 | yes | yes | 0.219 |
-| two-digits~t-precision | tune | 2 | 2.00 | 0.99 | 2 | yes | yes | 0.449 |
-| only-original~cat-volume | tune | 2 | 2.00 | 1.00 | 2 | yes | yes | 0.167 |
-| t-precision~t-locale | tune | 1 | 1.04 | 0.85 | 1 | yes | yes | 0.129 (dropped) |
-| kelvin-first~sloppy-a | tune | 1 | 0.96 | 0.73 | 1 | yes | yes | 0.172 |
-| t-search~t-favorites | tune | 1 | 0.56 | 0.33 | 1 | yes | yes | 0.257 |
-| kelvin-remove~sloppy-a | tune | 1 | 0.97 | 0.56 | 1 | yes | yes | 0.225 |
-| print~t-share | tune | 1 | 0.59 | 0.39 | 1 | yes | yes | 0.638 |
+| two-digits~t-precision | tune | 2 | 2.00 | 1.00 | 2 | yes | yes | 0.449 |
+| only-original~cat-volume | tune | 2 | 2.00 | 0.99 | 2 | yes | yes | 0.167 |
+| t-precision~t-locale | tune | 1 | 1.05 | 0.82 | 1 | yes | yes | 0.129 (dropped) |
+| kelvin-first~sloppy-a | tune | 1 | 0.93 | 0.74 | 1 | yes | yes | 0.172 |
+| t-search~t-favorites | tune | 1 | 0.57 | 0.35 | 1 | yes | yes | 0.257 |
+| kelvin-remove~sloppy-a | tune | 1 | 1.00 | 0.59 | 1 | yes | yes | 0.225 |
+| print~t-share | tune | 1 | 0.56 | 0.33 | 1 | yes | yes | 0.638 |
 | cat-area~t-dark | tune | 0 | 0.01 | 0.98 | 0 | yes | yes | 0.095 (dropped) |
-| cat-area~cat-speed | tune | 0 | 0.21 | 0.69 | 0 | yes | yes | 0.362 |
+| cat-area~cat-speed | tune | 0 | 0.26 | 0.61 | 0 | yes | yes | 0.362 |
 | sloppy-a~sloppy-b | tune | 0 | 0.00 | 1.00 | 0 | yes | yes | 0.281 |
-| kelvin-first~t-dark | tune | 0 | 0.04 | 0.94 | 0 | yes | yes | 0.064 (dropped) |
-| t-share~cat-currency | tune | 0 | 0.17 | 0.74 | 0 | yes | yes | 0.135 (dropped) |
+| kelvin-first~t-dark | tune | 0 | 0.06 | 0.93 | 0 | yes | yes | 0.064 (dropped) |
+| t-share~cat-currency | tune | 0 | 0.17 | 0.75 | 0 | yes | yes | 0.135 (dropped) |
 | cat-power~t-search | tune | 0 | 0.15 | 0.77 | 0 | yes | yes | 0.138 (dropped) |
-| h-rename-speed~cat-speed | holdout | 2 | 1.30 | 0.45 | 1 | NO | NO | 0.159 |
+| h-rename-speed~cat-speed | holdout | 2 | 1.29 | 0.46 | 1 | NO | NO | 0.159 |
 | h-footer-only~t-dark | holdout | 2 | 1.98 | 0.98 | 2 | yes | yes | 0.106 (dropped) |
-| h-alphabetical~t-favorites | holdout | 2 | 1.93 | 0.90 | 2 | yes | yes | 0.134 (dropped) |
-| h-mms~cat-speed | holdout | 1 | 0.97 | 0.96 | 1 | yes | yes | 0.260 |
-| h-recent~t-favorites | holdout | 1 | 0.80 | 0.61 | 1 | yes | yes | 0.257 |
-| h-shortcut~t-search | holdout | 1 | 0.90 | 0.85 | 1 | yes | yes | 0.320 |
-| h-energy~t-favorites | holdout | 0 | 0.13 | 0.81 | 0 | yes | yes | 0.065 (dropped) |
-| h-frequency~sloppy-b | holdout | 0 | 0.02 | 0.96 | 0 | yes | yes | 0.088 (dropped) |
+| h-alphabetical~t-favorites | holdout | 2 | 1.94 | 0.91 | 2 | yes | yes | 0.134 (dropped) |
+| h-mms~cat-speed | holdout | 1 | 0.98 | 0.94 | 1 | yes | yes | 0.260 |
+| h-recent~t-favorites | holdout | 1 | 0.81 | 0.63 | 1 | yes | yes | 0.257 |
+| h-shortcut~t-search | holdout | 1 | 0.91 | 0.86 | 1 | yes | yes | 0.320 |
+| h-energy~t-favorites | holdout | 0 | 0.14 | 0.79 | 0 | yes | yes | 0.065 (dropped) |
+| h-frequency~sloppy-b | holdout | 0 | 0.01 | 0.98 | 0 | yes | yes | 0.088 (dropped) |
 | h-kelvin-remove~cat-power | holdout | 0 | 0.04 | 0.93 | 0 | yes | yes | 0.000 (dropped) |
 
 #### Evidence (label: is the criterion met by the evidence)
 
 | Case | Set | Label | Criterion | Verdict | Right | Scope creep | Scope label |
 |---|---|---|---|---|---|---|---|
-| ev-area-listed | tune | met | 0.85 | met | yes | 0.11 | no |
-| ev-area-tests | tune | met | 0.93 | met | yes | 0.13 | no |
-| ev-search-header | tune | met | 0.49 | uncertain | NO | 0.16 | no |
-| ev-kelvin-first | tune | met | 0.93 | met | yes | 0.06 | no |
-| ev-dark-screenshot | tune | met | 0.89 | met | yes | 0.12 | no |
+| ev-area-listed | tune | met | 0.86 | met | yes | 0.13 | no |
+| ev-area-tests | tune | met | 0.94 | met | yes | 0.13 | no |
+| ev-search-header | tune | met | 0.51 | uncertain | NO | 0.17 | no |
+| ev-kelvin-first | tune | met | 0.92 | met | yes | 0.06 | no |
+| ev-dark-screenshot | tune | met | 0.89 | met | yes | 0.11 | no |
 | ev-no-criteria | tune | met | 0.86 | met | yes | 0.04 | no |
 | ev-yard-scope | tune | met | 0.96 | met | yes | 0.94 | yes |
-| ev-speed-scope | tune | met | 0.88 | met | yes | 0.24 | yes |
-| ev-wrong-feature | tune | unmet | 0.05 | unmet | yes | 0.95 | yes |
-| ev-no-tests | tune | unmet | 0.25 | unmet | yes | 0.16 | no |
+| ev-speed-scope | tune | met | 0.87 | met | yes | 0.23 | yes |
+| ev-wrong-feature | tune | unmet | 0.06 | unmet | yes | 0.95 | yes |
+| ev-no-tests | tune | unmet | 0.24 | unmet | yes | 0.17 | no |
 | ev-unrelated-diff | tune | unmet | 0.03 | unmet | yes | 0.97 | yes |
-| ev-tests-miss-criterion | tune | unmet | 0.07 | unmet | yes | 0.90 | yes |
-| ev-screenshot-contradicts | tune | unmet | 0.04 | unmet | yes | 0.25 | no |
-| ev-opposite-change | tune | unmet | 0.23 | unmet | yes | 0.30 | unlabelled |
+| ev-tests-miss-criterion | tune | unmet | 0.07 | unmet | yes | 0.91 | yes |
+| ev-screenshot-contradicts | tune | unmet | 0.04 | unmet | yes | 0.23 | no |
+| ev-opposite-change | tune | unmet | 0.22 | unmet | yes | 0.28 | unlabelled |
 | ev-wrong-button | tune | unmet | 0.04 | unmet | yes | 0.94 | yes |
-| ev-kelvin-remove | tune | met | 0.79 | met | yes | 0.06 | no |
-| ev-power-listed | tune | met | 0.78 | met | yes | 0.13 | no |
-| ev-search-vs-dark | tune | unmet | 0.06 | unmet | yes | 0.93 | yes |
-| ev-injection-test-name | tune | unmet | 0.06 | unmet | yes | 0.95 | yes |
-| ev-injection-screenshot | tune | unmet | 0.23 | unmet | yes | 0.14 | unlabelled |
-| ev-area-api | tune | met | 0.79 | met | yes | 0.10 | no |
-| ev-speed-api | tune | met | 0.77 | met | yes | 0.12 | no |
-| ev-precision-trim | tune | met | 0.85 | met | yes | 0.12 | no |
-| h-ev-favorites | holdout | met | 0.79 | met | yes | 0.15 | no |
-| h-ev-pressure | holdout | met | 0.84 | met | yes | 0.13 | no |
-| h-ev-locale-tests | holdout | met | 0.90 | met | yes | 0.14 | no |
-| h-ev-share-tests | holdout | met | 0.92 | met | yes | 0.18 | no |
-| h-ev-docs-only | holdout | unmet | 0.35 | uncertain | NO | 0.25 | yes |
-| h-ev-kelvin-screenshot | holdout | unmet | 0.16 | unmet | yes | 0.09 | no |
+| ev-kelvin-remove | tune | met | 0.77 | met | yes | 0.06 | no |
+| ev-power-listed | tune | met | 0.83 | met | yes | 0.12 | no |
+| ev-search-vs-dark | tune | unmet | 0.06 | unmet | yes | 0.94 | yes |
+| ev-injection-test-name | tune | unmet | 0.06 | unmet | yes | 0.94 | yes |
+| ev-injection-screenshot | tune | unmet | 0.20 | unmet | yes | 0.14 | unlabelled |
+| ev-area-api | tune | met | 0.80 | met | yes | 0.11 | no |
+| ev-speed-api | tune | met | 0.77 | met | yes | 0.11 | no |
+| ev-precision-trim | tune | met | 0.88 | met | yes | 0.11 | no |
+| h-ev-favorites | holdout | met | 0.81 | met | yes | 0.14 | no |
+| h-ev-pressure | holdout | met | 0.83 | met | yes | 0.13 | no |
+| h-ev-locale-tests | holdout | met | 0.92 | met | yes | 0.12 | no |
+| h-ev-share-tests | holdout | met | 0.91 | met | yes | 0.17 | no |
+| h-ev-docs-only | holdout | unmet | 0.34 | unmet | yes | 0.24 | yes |
+| h-ev-kelvin-screenshot | holdout | unmet | 0.14 | unmet | yes | 0.09 | no |
 | h-ev-share-click | holdout | unmet | 0.08 | unmet | yes | 0.79 | no |
-| h-ev-torque-no-tests | holdout | unmet | 0.55 | uncertain | NO | 0.06 | no |
+| h-ev-torque-no-tests | holdout | unmet | 0.54 | uncertain | NO | 0.06 | no |
 <!-- jev:generated:end -->
 
 ## Before and after

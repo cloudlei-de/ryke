@@ -36,7 +36,8 @@ in-flight change that read `src/format.ts` stale, duplicates are flagged at begi
 change is rejected, and a sloppy model's changes wait to be recalled with
 `npm run ryke -- recall --model sloppy-v0`. The swarm prints which of its acceptance criteria held.
 
-Node 22.18+ (or 24) and git are the only requirements. Jev, the judge, runs live when
+Node 22.18 or later (tested on 22.22) and git 2.40 or later (tested on 2.43; trains merge with
+`git merge-tree --merge-base`) are the only requirements. Jev, the judge, runs live when
 `TYPESAFE_API_KEY` is set in your environment. Without it the evidence gate runs only its hard checks
 and begin screening is off, so duplicates are not flagged at begin.
 
@@ -87,8 +88,8 @@ Two parts of Ryke switched off one at a time, on the same bench
 - **Speculative pipelining** (the next train verifies on the candidate of the train landing). Without
   it Ryke lands 58 against 67 per minute at 50 agents and 55.5 against 73 at 100. At 200 agents three
   runs gave 28.5, 44.5 and 53 with it, against 36, 36.5 and 37.5 without
-  ([repeats](bench/results/ablation/repeats)). It wins on average there too, but the result swings
-  with whether a train has to bisect, which throws away the train verifying behind it.
+  ([repeats](bench/results/ablation/repeats)). It wins on average there too, but varies more from run
+  to run: a train that bisects also throws away the train verifying behind it.
 
 ## Commands
 
@@ -101,7 +102,7 @@ Two parts of Ryke switched off one at a time, on the same bench
 | `npm run swarm -- --mode claude --agents 3 --stub` | The Claude Code agent mode with its hooks, against a stub binary |
 | `npm run bench` | Lock vs merge queue vs Ryke at 10–200 synthetic agents |
 | `npm run jev:calibrate` | Jev accuracy on labelled cases → [docs/jev-calibration.md](docs/jev-calibration.md) |
-| `npm run shots` | Dashboard screenshots of every view, failing on any console error → [docs/shots](docs/shots) |
+| `npm run shots` | Dashboard screenshots of every view, failing on any console or page error (a blocked Google Fonts request excepted) → [docs/shots](docs/shots) |
 | `npm run deploy:dry` | Production build and `wrangler deploy --dry-run` |
 
 ## Honest limits

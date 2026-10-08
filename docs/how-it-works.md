@@ -35,7 +35,7 @@ read set came from what B actually read, through Claude Code hooks or the MCP re
 3. **Push and submit.** The agent pushes to its fork and calls submit. Ryke computes the write set
    from git, not from the agent.
 4. **Validate.** The Ledger checks the read and write sets against an index of every path changed on
-   trunk since the snapshot. No git is involved, only an indexed lookup and a pure function:
+   trunk since the snapshot. No git is involved, only an indexed lookup:
    - a modified or deleted **protected** path (existing tests, `ryke.json`) → `rejected`;
    - any read or written path that changed since the snapshot → `stale`, with the path, the trunk
      sequence number that changed it and the transaction responsible;
@@ -48,7 +48,7 @@ read set came from what B actually read, through Claude Code hooks or the MCP re
 
 Ryke also warns early: when the trunk advances, every open transaction that read one of the changed
 paths gets a `stale.warning`, which the Claude Code hook injects into the agent's context on its next
-tool call. The agent can adapt before it even submits.
+tool call, before it submits.
 
 ## Trains and bisection
 
@@ -68,27 +68,22 @@ not touch what another member writes (two members may read the same file). The L
    rejected and the train is formed again: a compare-and-swap.
 6. **commit**: the Ledger records one trunk row per transaction and the paths it changed.
 
-Exactly one train lands at a time per repo, so trunk writes are serial while all the work before
-them is parallel. The next train need not wait for the landing, though. Once a train has prepared its
-candidate, the Ledger may form a second train on top of that candidate, from the ready changes the
-first one would not make stale, and the second prepares and verifies while the first still verifies
-or is judged. It records nothing (no conflict, failure, verdict or push) until trunk is exactly the
-candidate it was built on. If the first train bisects, loses a member or fails, the second is thrown
-away and its changes wait for the next train, with no attempt or land error charged. Two trains is the
-limit, and `"pipeline": false` in `ryke.json` turns this off.
+Exactly one train lands at a time per repo, so trunk writes are serial. The next train need not wait,
+though: once a train has prepared its candidate, a second one forms on top of it from the ready
+changes the first would not make stale, and verifies while the first is still verifying. It records
+and pushes nothing until trunk is exactly its base; if the first train bisects or fails, the second
+is thrown away and its changes wait, uncharged. `"pipeline": false` in `ryke.json` turns this off.
 
 ## Contention control
 
 Ryke measures heat per file: an exponentially decayed count (half-life 5 minutes) of stale aborts and
-text conflicts. A file is hot at heat 2. Writes stay fully optimistic everywhere except on hot files:
-a PreToolUse hook asks for a short admission lease before an agent edits a file, and the Ledger makes
-the agent wait only if the file is hot **and** another transaction that has not yet landed holds a
-live lease on it. When the wait ends, a scripted agent refreshes its transaction onto the trunk the holder just
-moved and works there; a Claude agent adapts to the diff its hook shows, and before it submits Ryke
-refreshes the transaction and moves the finished commit onto the new trunk.
-Leases last 90 seconds and agents give up waiting after 90 seconds, so a lease never deadlocks
-anyone. A global lock serialises everything; Ryke serialises only where its own data says conflicts
-happen.
+text conflicts. A file is hot at heat 2. Writes stay optimistic everywhere except on hot files: a
+PreToolUse hook asks for a short admission lease before an agent edits one, and the agent waits only
+if another transaction that has not landed holds a live lease on it. When the wait ends, the agent
+moves onto the trunk the holder just changed. A lease lapses 90 seconds after its holder's last edit
+while the holder is still working; a holder that has submitted keeps it until it lands or fails.
+Waiters give up after 90 seconds, so nobody deadlocks. A global lock serialises everything; Ryke
+serialises only where its own data says conflicts happen.
 
 ## The evidence gate
 
@@ -108,13 +103,12 @@ names the other transaction and its live footprint.
 
 ## Recall
 
-`ryke recall --model sloppy-v0` (or `--agent`, or explicit transaction ids) removes everything that
+`npm run ryke -- recall --model sloppy-v0` (or `--agent`, or transaction ids) removes everything that
 selector landed. Ryke plans the targets and every transitive dependent (anything that later read or
-wrote what a target wrote), reverts the targets newest first, and when a revert conflicts, reverts
-the dependent that caused the conflict first. That dependent is recalled too and its intent comes
-back as a new transaction for the same agent. The reverted trunk is verified before it is pushed;
-if it fails, the dependents that relied on the targets go as well. Dependents that are not in
-the way of a revert stay landed, revalidated by that verify run.
+wrote what a target wrote) and reverts the targets newest first. Where a revert conflicts, it first
+reverts the dependent in the way, which is recalled too and comes back as a new transaction for the
+same agent. The reverted trunk is verified before it is pushed; if that fails, the dependents that
+relied on the targets go as well. Dependents not in the way stay landed, revalidated by that run.
 
 ## On Cloudflare
 
@@ -139,13 +133,12 @@ flowchart LR
   and the replay are projections of that op log.
 - **Workflows**: `ryke-land` runs one train with retryable steps; `ryke-ingest` turns Artifacts push
   events into fork heads.
-- **Containers**: a Runner Durable Object per job slot drives a container that runs the same job
-  scripts as local development. An outbound gateway attaches Artifacts tokens and the Anthropic key,
-  each scoped to the job (a verify job can only read, in a fresh container each time), so no
-  long-lived secret enters a container. An agent job carries its own transaction's token, which works
-  on that one transaction but cannot approve, reject or recall.
-- **Dynamic Workers** bundle the demo app at any commit and serve a live preview of any commit Ryke knows, train candidates included (the dashboard links
-  each landed transaction's), sandboxed with a Content Security Policy.
+- **Containers**: a Runner Durable Object per job slot drives a container running the same job
+  scripts as local development. An outbound gateway attaches job-scoped Artifacts tokens and the
+  Anthropic key (a verify job can only read, in a fresh container), so no long-lived secret enters a
+  container; an agent job's token works only on its own transaction.
+- **Dynamic Workers** bundle the demo app and serve a live preview of any commit Ryke knows, train
+  candidates included, sandboxed with a Content Security Policy.
 - **MCP**: nine tools, `ryke_repo` to `ryke_abort`, so any agent can join.
 
 ## What is real and what is not
