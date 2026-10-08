@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import latestBench from "../../bench/results/latest.json";
 import type { Res } from "./ledger/ledger";
 import { begin, createRepo, deleteRepo, ledger, txnLedger } from "./service";
 import { storeFor, StoreError } from "./store/store";
@@ -35,6 +36,9 @@ api.use("*", async (c, next) => {
 
 api.get("/health", (c) => c.json({ ok: true }));
 
+// Bundled at build time: the bench runs on a developer machine and its committed JSON ships with the Worker.
+api.get("/bench", (c) => c.json(latestBench));
+
 api.post("/repos", async (c) => {
   const b = await body(c);
   if (!b) return c.json({ error: "body must be a JSON object" }, 422);
@@ -62,6 +66,16 @@ api.get("/repos/:repo/stream", async (c) => {
   const summary = await ledger(c.env, c.req.param("repo")).summary();
   if (!summary.ok) return respond(c, summary);
   return ledger(c.env, c.req.param("repo")).fetch(c.req.raw);
+});
+
+api.post("/repos/:repo/recall", async (c) => {
+  const b = await body(c);
+  if (!b) return c.json({ error: "body must be a JSON object" }, 422);
+  const repo = c.req.param("repo");
+  const res = await ledger(c.env, repo).recall(b.selector, b.dryRun !== false);
+  // Re-queued transactions are new, so the txn → repo index has to learn them like any begin.
+  if (res.ok) for (const q of res.value.requeued ?? []) await ledger(c.env, "__index").indexPut(q.txn, repo);
+  return respond(c, res);
 });
 
 api.get("/repos/:repo/files", async (c) => {

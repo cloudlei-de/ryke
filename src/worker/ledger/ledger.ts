@@ -16,6 +16,9 @@ import {
 } from "../../shared/types";
 import { StoreError, storeFor, type RepoStore } from "../store/store";
 import { bump, decayed, HEAT_EMIT_MS, isHot, leaseDecision, shouldEmit } from "./heat";
+import { runnerFor, runToCompletion } from "../runner/runner";
+import { authRemote } from "../service";
+import { planRecall, RecallError, type LandedTxn, type RecallPlan, type RecallSelector } from "./recall";
 import { migrate } from "./schema";
 import { selectTrain } from "./trains";
 import { validate } from "./validate";
@@ -114,6 +117,26 @@ export type RepoSummary = {
   inflight: { txn: string; agent: string; intent: string; state: string; footprint: string[] }[];
   heat: { path: string; value: number; hot: boolean }[];
   train: string | null;
+};
+type RevertJob = {
+  ok: boolean;
+  pass: boolean;
+  outcome: "pushed" | "verified" | "verify_failed" | "conflict" | "cas_rejected";
+  head?: string;
+  commits: { sha: string; txn: string | null; paths: string[] }[];
+  cascade: string[];
+  conflict?: { txn: string; paths: string[] };
+  tests?: { passed: number; failed: number; failures: { name: string; message: string }[] };
+};
+export type RecallResult = {
+  dryRun: boolean;
+  plan: { targets: string[]; dependents: string[]; order: string[] };
+  recall?: string;
+  outcome?: string;
+  head?: string;
+  cascade?: string[];
+  requeued?: { from: string; txn: string; remote: string; token: string; trunk: { remote: string; token: string }; snapshot: string }[];
+  failures?: { name: string; message: string }[];
 };
 export type Screen = { reject?: { other: string; value: number }; warnings: Warning[] };
 
@@ -575,17 +598,24 @@ export class Ledger extends DurableObject<Env> {
           warnings: screen.warnings,
         };
       }
-      await this.store.fork(repo, fork);
-      const info = await this.store.info(fork);
-      if (!info.head) fail(409, `trunk ${repo} has no commits`);
-      const snapshotSeq = await this.seqOf(info.head);
-      const [token, trunk] = await Promise.all([this.store.token(fork, "write", FORK_TOKEN_TTL), this.trunk()]);
-      insert(info.head, snapshotSeq);
+      const f = await this.openFork(fork);
+      insert(f.snapshot, f.snapshotSeq);
       const r = this.row(id);
-      this.op("txn.open", r, { attempt: 1, intent: r.intent, model: r.model, snapshot: info.head, snapshotSeq, criteria, fork });
+      this.op("txn.open", r, { attempt: 1, intent: r.intent, model: r.model, snapshot: f.snapshot, snapshotSeq: f.snapshotSeq, criteria, fork });
       for (const w of screen.warnings) this.op(w.kind === "duplicate" ? "dup.warning" : "conflict.warning", r, w);
-      return { txn: id, state: "open" as const, attempt: 1, snapshot: info.head, remote: info.remote, token, trunk, policy, warnings: screen.warnings };
+      return { txn: id, state: "open" as const, attempt: 1, snapshot: f.snapshot, remote: f.remote, token: f.token, trunk: f.trunk, policy, warnings: screen.warnings };
     });
+  }
+
+  // Forks the trunk for a transaction; the snapshot is whatever head the fork actually got.
+  private async openFork(fork: string) {
+    const repo = this.repo();
+    await this.store.fork(repo, fork);
+    const info = await this.store.info(fork);
+    if (!info.head) fail(409, `trunk ${repo} has no commits`);
+    const snapshotSeq = await this.seqOf(info.head);
+    const [token, trunk] = await Promise.all([this.store.token(fork, "write", FORK_TOKEN_TTL), this.trunk()]);
+    return { snapshot: info.head, snapshotSeq, remote: info.remote, token, trunk };
   }
 
   // Candidates for the duplicate/conflict screen at begin (§7.3): live work plus the last 30 minutes of landings.
@@ -969,7 +999,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private async startTrain(manual: boolean): Promise<TrainParams | null> {
-    if (this.meta("train")) return null;
+    if (this.meta("train") || this.meta("recall")) return null;
     const policy = this.policy();
     const ready = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE state = 'ready' ORDER BY submitted_at, id").toArray();
     if (ready.length === 0) return null;
@@ -1202,6 +1232,154 @@ export class Ledger extends DurableObject<Env> {
       this.endTrain(trainId, t.state === "landed" ? "landed" : outcome, JSON.parse(t.txns) as string[], extra);
       return { ok: true as const };
     });
+  }
+
+  // ---------------------------------------------------------------- recall (§8)
+
+  private landed(): LandedTxn[] {
+    return this.sql
+      .exec<TxnRow>("SELECT * FROM txn WHERE state = 'landed' AND commit_sha IS NOT NULL ORDER BY landed_seq")
+      .toArray()
+      .map((r) => ({
+        id: r.id,
+        agent: r.agent,
+        model: r.model,
+        landedSeq: r.landed_seq!,
+        commit: r.commit_sha!,
+        reads: this.access(r.id, r.attempt, "read"),
+        writes: this.access(r.id, r.attempt, "write"),
+      }));
+  }
+
+  async recall(selector: unknown, dryRun: boolean): Promise<Res<RecallResult>> {
+    return this.run(() =>
+      this.locked("__recall", async () => {
+        if (typeof selector !== "object" || selector === null || Array.isArray(selector)) fail(422, "selector must be an object");
+        const landed = this.landed();
+        let plan: RecallPlan;
+        try {
+          plan = planRecall(landed, selector as RecallSelector);
+        } catch (e) {
+          if (e instanceof RecallError) fail(422, e.message);
+          throw e;
+        }
+        const summary = { targets: plan.targets, dependents: plan.dependents, order: plan.order };
+        if (dryRun) return { dryRun: true, plan: summary };
+        if (plan.targets.length === 0) fail(422, "the selector matches no landed transaction");
+        // Recall writes trunk, so it waits for the lander and holds it like a train.
+        for (const until = this.now() + 120_000; this.meta("train"); ) {
+          if (this.now() > until) fail(409, "a train is still landing; try again");
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        const id = newId("rc_");
+        this.setMeta("recall", id);
+        this.op("recall.planned", null, { recall: id, selector: selector as RecallSelector, ...summary });
+        try {
+          return await this.executeRecall(id, plan, landed);
+        } finally {
+          this.setMeta("recall", null);
+          this.scheduleSoon();
+        }
+      }),
+    );
+  }
+
+  private async executeRecall(id: string, plan: RecallPlan, landed: LandedTxn[]): Promise<RecallResult> {
+    const repo = this.repo();
+    const policy = this.policy();
+    const seqs = Object.fromEntries(landed.map((l) => [l.id, l.landedSeq]));
+    const commits = Object.fromEntries(landed.map((l) => [l.id, l.commit]));
+    const firstTarget = (dep: string) => plan.targets.find((t) => seqs[t]! < seqs[dep]!) ?? plan.targets[0]!;
+    const revert = async (order: string[]) => {
+      const trunk = authRemote(this.env, (await this.store.info(repo)).remote, await this.store.token(repo, "write", 3600));
+      const script = {
+        recall: id,
+        order,
+        commits,
+        seqs,
+        cascadeCandidates: plan.cascadeCandidates,
+        targetOf: Object.fromEntries(order.map((t) => [t, plan.targets.includes(t) ? t : firstTarget(t)])),
+      };
+      const job = await runToCompletion(
+        runnerFor(this.env),
+        "revert",
+        { trunk, plan: JSON.stringify(script), verify: policy.verify, timeout: String(policy.verifyTimeoutSeconds), push: "true" },
+        {},
+        (policy.verifyTimeoutSeconds + 120) * 1000,
+      );
+      const r = job.result as RevertJob | undefined;
+      if (!r || r.ok === false) fail(503, `revert job failed: ${(r as { error?: string } | undefined)?.error ?? job.exitCode}`);
+      return r;
+    };
+    let forced = false;
+    let result = await revert(plan.order);
+    // §8.4: if the reverted trunk fails its tests, the dependents that relied on the targets go too.
+    if (result.outcome === "verify_failed" && plan.dependents.length > 0) {
+      forced = true;
+      result = await revert([...plan.targets, ...plan.dependents].sort((a, b) => seqs[b]! - seqs[a]!));
+    }
+    const summary = { targets: plan.targets, dependents: plan.dependents, order: plan.order };
+    if (result.outcome !== "pushed") {
+      this.op("recall.done", null, { recall: id, outcome: result.outcome, conflict: result.conflict ?? null, failures: result.tests?.failures ?? [], forced });
+      return { dryRun: false, recall: id, plan: summary, outcome: result.outcome, cascade: [], requeued: [], failures: result.tests?.failures ?? [] };
+    }
+    let seq = this.head().seq;
+    const now = this.now();
+    const changed = new Set<string>();
+    for (const c of result.commits) {
+      seq++;
+      this.sql.exec("INSERT INTO trunk (seq, sha, txn, at) VALUES (?, ?, NULL, ?)", seq, c.sha, now);
+      for (const p of c.paths) {
+        this.sql.exec("INSERT OR IGNORE INTO changed (seq, path) VALUES (?, ?)", seq, p);
+        changed.add(p);
+      }
+    }
+    const cascade = forced ? plan.dependents : result.cascade;
+    for (const t of plan.targets) this.transition(this.row(t), "recalled", { reason: "target", data: { recall: id } });
+    for (const t of cascade) {
+      const r = this.row(t);
+      if (r.state === "landed") this.transition(r, "recalled", { reason: "cascade", data: { recall: id } });
+    }
+    this.op("trunk.advanced", null, { seq, sha: result.head, txns: [], train: null, recall: id });
+    this.warnOpen(changed, seq);
+    for (const wake of this.trunkWaiters.splice(0)) wake();
+    // Cascaded work is not lost: each intent comes back as a new transaction for the same agent.
+    const requeued: RecallResult["requeued"] = [];
+    for (const from of cascade) {
+      const r = this.row(from);
+      const txn = newId("t_");
+      const fork = `${repo}--${txn}`;
+      const f = await this.openFork(fork);
+      const at = this.now();
+      this.sql.exec(
+        `INSERT INTO txn (id, agent, model, intent, criteria, state, attempt, snapshot, snapshot_seq, fork, created_at, updated_at, detail)
+         VALUES (?, ?, ?, ?, ?, 'open', 1, ?, ?, ?, ?, ?, ?)`,
+        txn,
+        r.agent,
+        r.model,
+        r.intent,
+        r.criteria,
+        f.snapshot,
+        f.snapshotSeq,
+        fork,
+        at,
+        at,
+        JSON.stringify({ requeuedFrom: from, recall: id }),
+      );
+      const nr = this.row(txn);
+      this.op("txn.open", nr, { attempt: 1, intent: nr.intent, model: nr.model, snapshot: f.snapshot, snapshotSeq: f.snapshotSeq, criteria: JSON.parse(nr.criteria), fork, requeuedFrom: from, recall: id });
+      requeued.push({ from, txn, remote: f.remote, token: f.token, trunk: f.trunk, snapshot: f.snapshot });
+    }
+    this.op("recall.done", null, {
+      recall: id,
+      outcome: "pass",
+      recalled: plan.targets,
+      cascade,
+      forced,
+      requeued: requeued.map((q) => ({ from: q.from, txn: q.txn })),
+      head: result.head,
+    });
+    return { dryRun: false, recall: id, plan: summary, outcome: "pass", head: result.head, cascade, requeued, failures: [] };
   }
 
   // ---------------------------------------------------------------- op stream
