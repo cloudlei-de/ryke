@@ -98,6 +98,9 @@ export function stateIcon(state: string): IconName {
   return STATE_ICON[state] ?? "pulse";
 }
 
+// "needs human" reads "Needs human" in a pill: sentence case, not title case.
+export const sentence = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
+
 export function Pill({ tone, icon, children, large }: { tone: Signal | null; icon?: IconName; children: ReactNode; large?: boolean }) {
   return (
     <span className={large ? "pill pill-lg" : "pill"} data-tone={tone && tone !== "none" ? tone : undefined}>

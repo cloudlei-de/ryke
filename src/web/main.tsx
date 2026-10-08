@@ -71,7 +71,7 @@ function App() {
         {route.name !== "bench" && (
           <span className="conn" title={live.connected ? "Receiving the op stream" : "Not connected to the op stream; retrying"}>
             <span className="status-dot" data-live={String(live.connected)} />
-            <span className="conn-text">{live.connected ? "Live" : "Offline"}</span>
+            <span className="conn-text">{live.connected ? "Live" : "Reconnecting"}</span>
           </span>
         )}
         <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={cycleTheme} title={THEME_LABEL[theme]} aria-label={THEME_LABEL[theme]}>
@@ -79,7 +79,7 @@ function App() {
         </button>
       </header>
       <main className="view" data-route={route.name}>
-        {route.name === "line" && <LineView repo={repo} state={live.state} ops={live.ops} mode="live" />}
+        {route.name === "line" && <LineView repo={repo} state={live.state} ops={live.ops} mode="live" connected={live.connected} />}
         {route.name === "txn" && <TxnView repo={repo} id={route.id} live={live} />}
         {route.name === "bench" && <BenchView />}
         {route.name === "replay" && <ReplayView repo={repo} live={live} />}

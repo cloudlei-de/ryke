@@ -139,9 +139,8 @@
   width: 6px;
   height: 6px;
 }
-.split .sep {
-  margin: 0 5px 0 3px;
-  color: var(--border-strong);
+.split:not(:last-child) {
+  margin-right: 10px;
 }
 .spark {
   flex: none;

@@ -98,3 +98,11 @@ describe("Line: the trunk", () => {
     expect(html.match(/seed · seq/g)).toHaveLength(1);
   });
 });
+
+describe("Line: the live pill", () => {
+  it("says Live while the socket is connected and Reconnecting when it is not", () => {
+    const at = (connected: boolean) => render(createElement(LineView, { repo: "convert", state: fold([]), ops: [], mode: "live", connected }));
+    expect(at(true)).toMatch(/data-tone="go"[^>]*><i class="dot" data-tone="go"><\/i>Live</);
+    expect(at(false)).toMatch(/data-tone="stop"[^>]*><i class="dot" data-tone="stop"><\/i>Reconnecting</);
+  });
+});

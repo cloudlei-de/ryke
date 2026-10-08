@@ -39,9 +39,8 @@ function Split({ items }: { items: [string, number, string][] }) {
   if (shown.length === 0) return <>nothing in flight</>;
   return (
     <>
-      {shown.map(([label, n, tone], i) => (
+      {shown.map(([label, n, tone]) => (
         <span key={label} className="split">
-          {i > 0 && <span className="sep">·</span>}
           <i className="dot" data-tone={tone} />
           {n} {label}
         </span>

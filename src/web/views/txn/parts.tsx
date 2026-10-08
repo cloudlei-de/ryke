@@ -3,7 +3,7 @@ import type { TxnView } from "../../../shared/reducers";
 import { MAX_ATTEMPTS } from "../../../shared/types";
 import { simulationOf } from "../../agents";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
-import { Icon, Pill, stateIcon, type IconName } from "../../ui";
+import { Icon, Pill, sentence, stateIcon, type IconName } from "../../ui";
 import { layoutBar } from "../line/geometry";
 import { useSize } from "../line/hooks";
 import { Glyph } from "../line/Timeline";
@@ -33,7 +33,7 @@ import {
 export function Chip({ state, large }: { state: string; large?: boolean }) {
   return (
     <Pill tone={stateSignal(state)} icon={stateIcon(state)} large={large}>
-      <span className="chip-text">{stateLabel(state)}</span>
+      {sentence(stateLabel(state))}
     </Pill>
   );
 }

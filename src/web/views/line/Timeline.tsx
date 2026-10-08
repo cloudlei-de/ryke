@@ -1,6 +1,6 @@
 import { useState, type FocusEvent, type MouseEvent } from "react";
 import type { LineState } from "../../../shared/reducers";
-import { Icon, Pill, stateIcon } from "../../ui";
+import { Icon, Pill, sentence, stateIcon } from "../../ui";
 import { stateSignal } from "../txn/format";
 import {
   agentStatus,
@@ -230,7 +230,7 @@ function Card({ hover, state, now }: { hover: Hover; state: LineState; now: numb
     <div className="tip" style={{ left, top, width: w }} role="tooltip">
       <div className="tip-title">
         <Pill tone={stateSignal(tip.status)} icon={stateIcon(tip.status)}>
-          {stateLabel(tip.status).replace(/_/g, " ")}
+          {sentence(stateLabel(tip.status).replace(/_/g, " "))}
         </Pill>
         <span className="mono">{tip.id}</span>
         {txn.attempts.length > 1 && <span className="muted">attempt {tip.attempt}</span>}
@@ -280,6 +280,8 @@ export function Lanes(props: {
     }
   };
   const showNow = nowX >= x0 && nowX <= x1 + 1;
+  // The flag fits its label: "now" live, the clock time in a replay.
+  const flagW = nowLabel.length * 6.6 + 16;
   const total = rows.length * rowH;
   return (
     <>
@@ -287,7 +289,7 @@ export function Lanes(props: {
         <svg className="axis" width={width} height={AXIS_H} aria-hidden="true">
           {/* A clock label under the "now" flag would be half hidden; the flag says the time instead. */}
           {ticks
-            .filter((k) => !showNow || Math.abs(k.x - nowX) > 46)
+            .filter((k) => !showNow || Math.abs(k.x - nowX) > flagW / 2 + 28)
             .map((k) => (
               <text key={k.t} x={k.x} y={16} textAnchor="middle">
                 {k.label}
@@ -295,7 +297,7 @@ export function Lanes(props: {
             ))}
           {showNow && (
             <g className="now-flag">
-              <rect x={nowX - nowLabel.length * 3.3 - 8} y={5} width={nowLabel.length * 6.6 + 16} height={16} rx={8} />
+              <rect x={nowX - flagW / 2} y={5} width={flagW} height={16} rx={8} />
               <text x={nowX} y={16.5} textAnchor="middle">
                 {nowLabel}
               </text>

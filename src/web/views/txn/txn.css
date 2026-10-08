@@ -34,9 +34,6 @@
   flex-wrap: wrap;
   gap: 10px;
 }
-.chip-text {
-  text-transform: capitalize;
-}
 .txn-reason-text {
   color: var(--text-2);
   font-weight: 500;

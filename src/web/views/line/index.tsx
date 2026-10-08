@@ -74,7 +74,8 @@ function DemoButton({ repo }: { repo: string }) {
 }
 
 // Renders the Line from any folded state: live (now = wall clock) or replay (now = scrubbed time).
-export function LineView({ repo, state, ops, mode, now: nowProp }: { repo: string; state: LineState; ops: Op[]; mode: "live" | "replay"; now?: number }) {
+// `connected` is the live socket's state; a live Line that lost it says so instead of claiming to be live.
+export function LineView({ repo, state, ops, mode, now: nowProp, connected = true }: { repo: string; state: LineState; ops: Op[]; mode: "live" | "replay"; now?: number; connected?: boolean }) {
   const now = useNow(mode, nowProp, state.now);
   const [bodyRef, { width, height }] = useSize<HTMLDivElement>();
   const files = useFiles(repo, state.head ? (mode === "live" ? state.head.sha : "replay") : null);
@@ -105,9 +106,9 @@ export function LineView({ repo, state, ops, mode, now: nowProp }: { repo: strin
         <div className="line-title">
           <h1>{repo}</h1>
           {mode === "live" ? (
-            <span className="pill" data-tone="go">
-              <i className="dot" data-tone="go" />
-              Live
+            <span className="pill" data-tone={connected ? "go" : "stop"} title={connected ? "Receiving the op stream" : "The op stream is not connected; reconnecting"}>
+              <i className="dot" data-tone={connected ? "go" : "stop"} />
+              {connected ? "Live" : "Reconnecting"}
             </span>
           ) : (
             <span className="pill">

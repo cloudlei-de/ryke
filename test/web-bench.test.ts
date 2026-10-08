@@ -22,6 +22,7 @@ import {
   peaks,
   POLICY_NAME,
   ratio,
+  noteDetail,
 } from "../src/web/views/bench/chart";
 import sample from "./fixtures/bench/sample.json";
 
@@ -495,4 +496,13 @@ describe("ratio", () => {
 
 describe("POLICY_NAME", () => {
   it("names every policy", () => expect(POLICIES.map((p) => POLICY_NAME[p])).toEqual(["Global lock", "Merge queue", "Ryke"]));
+});
+
+describe("noteDetail", () => {
+  it.each([
+    ["drops the sentence that restates the notice", "Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1, seed 7.", "Time factor 1, seed 7."],
+    ["keeps a note that says something else", "Seed 7 on a 4-vCPU VM.", "Seed 7 on a 4-vCPU VM."],
+    ["leaves nothing when the note only restates it", "Synthetic agents: real git, real merges, real tests, scripted edits.", ""],
+    ["handles an empty note", "", ""],
+  ])("%s", (_n, note, out) => expect(noteDetail(note, BENCH_SYNTHETIC_NOTICE)).toBe(out));
 });

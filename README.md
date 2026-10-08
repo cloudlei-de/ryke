@@ -41,6 +41,20 @@ Node 22.18 or later (tested on 22.22) and git 2.40 or later (tested on 2.43; tra
 `TYPESAFE_API_KEY` is set in your environment. Without it the evidence gate runs only its hard checks
 and begin screening is off, so duplicates are not flagged at begin.
 
+## Dashboard
+
+![The Line during a scripted swarm](docs/shots/line-mid-1440-light.png)
+
+The **Line** (`#/`) puts every agent's transactions on one time axis under trunk: grey while the agent
+works, striped while it waits for a train, blue under test, green when it lands. A red notch is a read
+that went stale, and a guide runs from the landing that caused it down through every change it caught.
+Counters, the hot files and a feed of what just happened sit beside it; hover a bar for its story, click
+it for the **Transaction** (`#/t/:id`): each attempt, the read and write sets with the trunk delta of a
+stale path, the judge's verdict on each acceptance criterion, the tests and the verify screenshot.
+**Replay** (`#/replay`) draws the Line at any point of the op log at 1×, 4× or 16×, **Bench** (`#/bench`)
+compares the three landing policies, and **Recall…** plans and runs a recall. Light and dark follow the
+system, or the switch in the top bar. Every view, both sizes and both schemes: [docs/shots](docs/shots).
+
 ## Architecture
 
 ```mermaid

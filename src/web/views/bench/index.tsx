@@ -17,6 +17,7 @@ import {
   makeXScale,
   measuredAgents,
   niceTicks,
+  noteDetail,
   peaks,
   POLICY_NAME,
   ratio,
@@ -453,7 +454,7 @@ export function BenchView() {
         <Icon name="info" size={15} />
         <div>
           <p className="notice">{BENCH_SYNTHETIC_NOTICE}</p>
-          {data && <p>{data.note}</p>}
+          {data && noteDetail(data.note, BENCH_SYNTHETIC_NOTICE) && <p>{noteDetail(data.note, BENCH_SYNTHETIC_NOTICE)}</p>}
         </div>
       </aside>
       {load.status === "loading" && <p className="muted bench-status">Loading the latest bench run.</p>}

@@ -233,3 +233,14 @@ export function ratio(ryke: number, baseline: number): string | null {
   if (!(baseline > 0) || !Number.isFinite(ryke)) return null;
   return `${(ryke / baseline).toFixed(1)}×`;
 }
+
+// The page states BENCH_SYNTHETIC_NOTICE itself, so the results file's note loses any sentence that only says it
+// again ("Synthetic agents: real git, …"); the run settings after it stay.
+export function noteDetail(note: string, notice: string): string {
+  const tail = notice.slice(notice.indexOf(":") + 1).trim().toLowerCase();
+  return note
+    .split(/(?<=\.)\s+/)
+    .filter((sentence) => !(tail && sentence.trim().toLowerCase().endsWith(tail)))
+    .join(" ")
+    .trim();
+}
