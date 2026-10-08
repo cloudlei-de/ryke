@@ -110,6 +110,8 @@ describe("reasonLabel", () => {
     ["agent_abort", "aborted by the agent"],
     ["rejected_by_human", "rejected by a human"],
     ["approved", "approved by a human"],
+    ["target", "selected by the recall"],
+    ["cascade", "taken along: its revert conflicted with a target"],
     ["duplicate_of:t_abc123", "duplicate of t_abc123"],
     ["brand_new_reason", "brand new reason"],
   ];

@@ -49,6 +49,9 @@ const REASONS: Record<string, string> = {
   agent_abort: "aborted by the agent",
   rejected_by_human: "rejected by a human",
   approved: "approved by a human",
+  // txn.recalled: a change the recall selected, or a dependent whose revert conflicted with a target's.
+  target: "selected by the recall",
+  cascade: "taken along: its revert conflicted with a target",
 };
 
 export function reasonLabel(reason: string | null | undefined): string {
