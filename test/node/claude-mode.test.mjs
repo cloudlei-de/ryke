@@ -3,10 +3,10 @@
 // and one end-to-end run of the stub against a real local stack.
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,9 @@ import { startStack } from "../../dev/stack.mjs";
 import { acquire, handle as intendWrite } from "../../containers/runner/hooks/intend-write.mjs";
 import { handle as recordWrite } from "../../containers/runner/hooks/record-write.mjs";
 import { handle as readsHook } from "../../containers/runner/hooks/reads.mjs";
+import * as H from "../../containers/runner/hooks/common.mjs";
 import { LEASE_PATIENCE_MS, loadConfig, repoPath, runHook, touchedPaths } from "../../containers/runner/hooks/common.mjs";
+import * as Agent from "../../containers/runner/lib/agent.mjs";
 import {
   claudeArgs,
   claudeEnv,
@@ -31,7 +33,9 @@ import {
   RETRY_FAILED,
   RETRY_STALE,
 } from "../../containers/runner/lib/agent.mjs";
+import * as Claude from "../../harness/agents/claude.mjs";
 import { follow, relayable, runnerClient, runTask, STUB_BIN, STUB_MODEL, validateKey } from "../../harness/agents/claude.mjs";
+import { parseSwarmArgs } from "../../harness/swarm.mjs";
 import { chooseVariant, describePatch, fill, hooksFor, matches, parseArgv, subjectOf } from "../../harness/agents/claude-stub/claude.mjs";
 import { client } from "../../harness/lib/client.mjs";
 import { Workspace } from "../../harness/lib/gitops.mjs";
@@ -94,6 +98,18 @@ function advanceTrunk(trunk) {
   git(work, "apply", "--3way", join(DEMO, t.solution));
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", subjectOf(t.intent));
+  git(work, "push", "-q", "origin", "HEAD:refs/heads/main");
+  return git(work, "rev-parse", "HEAD");
+}
+
+// One more commit on a bare trunk that touches only its own file, so it can never conflict with an agent's work.
+function commitOnTrunk(trunk, path, text) {
+  const work = fresh("advance");
+  git(tmp, "clone", "-q", trunk, work);
+  mkdirSync(dirname(join(work, path)), { recursive: true });
+  writeFileSync(join(work, path), text);
+  git(work, "add", "-A");
+  git(work, "commit", "-q", "-m", `trunk: ${path}`);
   git(work, "push", "-q", "origin", "HEAD:refs/heads/main");
   return git(work, "rev-parse", "HEAD");
 }
@@ -196,6 +212,8 @@ const editPayload = (co, tool = "Edit", file = "src/format.ts") => ({
   tool_input: { file_path: join(co.dir, file), old_string: "a", new_string: "b" },
 });
 
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const until = async (fn, ms = 20_000, what = "condition") => {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -283,6 +301,20 @@ describe("shipped configuration", () => {
     }
   });
 
+  it("every hook has a time budget under its timeout, so it answers before Claude Code kills it", () => {
+    for (const groups of Object.values(settings.hooks)) {
+      for (const g of groups) {
+        for (const h of g.hooks) {
+          const script = /hooks\/([\w-]+\.mjs)/.exec(h.command)[1];
+          const budget = H.HOOK_BUDGET_MS?.[script];
+          assert.ok(budget > 0, `${script} has no budget`);
+          assert.ok(budget < h.timeout * 1000, `${script}: ${budget} ms budget against a ${h.timeout} s timeout`);
+        }
+      }
+    }
+    assert.ok(H.HOOK_BUDGET_MS["intend-write.mjs"] >= LEASE_PATIENCE_MS + 30_000, "after the lease wait there must be time left to poll for stale reads");
+  });
+
   it("runs the shipped commands through a shell like Claude Code does", async () => {
     const api = await fakeServer({ "POST /api/txns/t_1/reads": () => ({ recorded: 1, staleWarnings: [] }) });
     try {
@@ -359,6 +391,21 @@ describe("hook paths", () => {
       ["src/format.ts", "src/a.ts"],
     ],
     ["Grep, content mode on one file prints no names", { tool_name: "Grep", tool_input: { pattern: "x", path: abs("src/a.ts"), output_mode: "content" }, ...response({ mode: "content", numFiles: 0, filenames: [], content: "1:export const a = 1;" }) }, ["src/a.ts"]],
+    [
+      "Grep, count mode names its files in the text, as path:count",
+      { tool_name: "Grep", tool_input: { pattern: "x", output_mode: "count" }, ...response({ mode: "count", numFiles: 0, filenames: [], content: `src/format.ts:2\n${abs("src/a.ts")}:1\nnot a file:3\nsrc/ghost.ts:4\n\nFound 10 total occurrences across 4 files.` }) },
+      ["src/format.ts", "src/a.ts"],
+    ],
+    ["Grep, count mode on one file prints only the count", { tool_name: "Grep", tool_input: { pattern: "x", path: abs("src/a.ts"), output_mode: "count" }, ...response({ mode: "count", numFiles: 0, filenames: [], content: "3" }) }, ["src/a.ts"]],
+    [
+      "Grep, content mode without line numbers prints path:text, believed only for files that exist",
+      {
+        tool_name: "Grep",
+        tool_input: { pattern: "x", output_mode: "content", "-n": false },
+        ...response({ mode: "content", numFiles: 0, filenames: [], content: `src/format.ts:export function formatValue\n${abs("src/a.ts")}:export const a: number = 1;\nsrc/ghost.ts:const b = 2;\nplain text: with a colon\nno colon at all` }),
+      },
+      ["src/format.ts", "src/a.ts"],
+    ],
     ["Grep of one file with no hit is not a read of it", { tool_name: "Grep", tool_input: { pattern: "zzz", path: abs("src/a.ts") }, ...response({ mode: "content", numFiles: 0, filenames: [], content: "" }) }, []],
     ["Grep of a directory names only the matches", { tool_name: "Grep", tool_input: { pattern: "digits", path: abs("src") }, ...response({ numFiles: 1, filenames: ["src/format.ts"] }) }, ["src/format.ts"]],
     ["Bash is not a read", { tool_name: "Bash", tool_input: { command: "cat src/format.ts" }, ...response({ stdout: "x" }) }, []],
@@ -462,6 +509,10 @@ describe("reads hook (PostToolUse on Read, Grep, Glob)", () => {
       assert.match(text, /a file you read changed on trunk after your snapshot/);
       assert.match(text, /- src\/format\.ts, changed by t_k3x9a1b2 at trunk seq 4/);
       assert.match(text, /still at the snapshot, so Read, Grep and Glob show the old version/);
+      // What really happens at the end of the session: the change is moved onto trunk, not aborted as stale.
+      assert.match(text, /Adapt your edits to what trunk has now\. When you stop, Ryke moves your change onto the current trunk and submits it there/);
+      assert.match(text, /starts you again from the new trunk with these changes/);
+      assert.doesNotMatch(text, /aborts the transaction as stale|will be rebased|re-read it/);
       assert.match(text, /^--- a\/src\/format\.ts\n\+\+\+ b\/src\/format\.ts$/m);
       assert.match(text, /^-export function formatValue\(n: number, digits = 2\)/m);
       assert.match(text, /^\+export function formatValue\(n: number, digits = 3\)/m);
@@ -526,6 +577,100 @@ describe("reads hook (PostToolUse on Read, Grep, Glob)", () => {
       const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
       const text = JSON.parse((await drive(readsHook, readPayload(co), hookEnv(api.url, co))).stdout).hookSpecificOutput.additionalContext;
       assert.match(text, /- src\/format\.ts at trunk seq 2/);
+    });
+  });
+
+  describe("time and concurrency", () => {
+    const warning = { path: "src/format.ts", seq: 4, by: "t_k3x9a1b2" };
+    const claude = (api, co, extra = {}) => hookEnv(api.url, co, extra);
+
+    it("fetches the diffs of several files at once, not one after the other", async () => {
+      const names = ["src/a.ts", "src/b.ts", "src/c.ts"];
+      const api = await s.start({
+        "POST /api/txns/t_1/reads": () => ({ recorded: 3, staleWarnings: names.map((path, i) => ({ path, seq: i + 1 })) }),
+        "GET /api/repos/convert/files": async () => {
+          await pause(500);
+          return { content: "new\n" };
+        },
+      });
+      const co = checkoutWith(Object.fromEntries(names.map((n) => [n, "old\n"])));
+      const started = Date.now();
+      const text = JSON.parse((await drive(readsHook, readPayload(co, "src/a.ts"), claude(api, co))).stdout).hookSpecificOutput.additionalContext;
+      assert.ok(Date.now() - started < 1100, `took ${Date.now() - started} ms for three 500 ms fetches`);
+      for (const n of names) assert.match(text, new RegExp(`^--- a/${n}`, "m"));
+    });
+
+    it("lets exactly one of two hooks that race announce a warning", async () => {
+      const api = await s.start({
+        "POST /api/txns/t_1/reads": () => ({ recorded: 1, staleWarnings: [warning] }),
+        "GET /api/repos/convert/files": async () => {
+          await pause(200);
+          return { content: FORMAT_V2 };
+        },
+      });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+      const input = readPayload(co);
+      const cfg = loadConfig(claude(api, co), input);
+      const replies = await Promise.all([readsHook(input, cfg), readsHook(input, cfg), readsHook(input, cfg)]);
+      assert.equal(replies.filter(Boolean).length, 1, "the same warning three times teaches the agent to ignore it");
+      assert.match(replies.find(Boolean), /trunk seq 4/);
+    });
+
+    it("announces only after the text is built: a hook killed on the way leaves the warning for the next one", async () => {
+      let hang = true;
+      const api = await s.start({
+        "POST /api/txns/t_1/reads": () => ({ recorded: 1, staleWarnings: [warning] }),
+        "GET /api/repos/convert/files": () => (hang ? new Promise(() => {}) : { content: FORMAT_V2 }),
+      });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+      const child = spawn(process.execPath, [join(ROOT, "containers/runner/hooks/reads.mjs")], { cwd: co.dir, env: { ...BASE_ENV, ...claude(api, co, { RYKE_HOOK_TIMEOUT_MS: "60000" }) }, stdio: ["pipe", "pipe", "ignore"] });
+      let stdout = "";
+      child.stdout.on("data", (c) => (stdout += c));
+      child.stdin.end(JSON.stringify(readPayload(co)));
+      await until(() => api.of("GET /api/repos/convert/files").length > 0, 10_000, "the hook to ask for the diff");
+      child.kill("SIGKILL");
+      await new Promise((r) => child.on("close", r));
+      assert.equal(stdout, "");
+      hang = false;
+      const second = JSON.parse((await drive(readsHook, readPayload(co), claude(api, co))).stdout);
+      assert.match(second.hookSpecificOutput.additionalContext, /trunk seq 4/, "the killed hook announced nothing");
+    });
+
+    it("answers inside RYKE_HOOK_BUDGET_MS with the warning but no diff when the diff never arrives", { timeout: 15_000 }, async () => {
+      const api = await s.start({ "POST /api/txns/t_1/reads": () => ({ recorded: 1, staleWarnings: [warning] }), "GET /api/repos/convert/files": () => new Promise(() => {}) });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+      const started = Date.now();
+      const { stdout } = await drive(readsHook, readPayload(co), claude(api, co, { RYKE_HOOK_BUDGET_MS: "700", RYKE_HOOK_TIMEOUT_MS: "60000" }));
+      assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+      const text = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      assert.match(text, /src\/format\.ts, changed by t_k3x9a1b2/);
+      assert.doesNotMatch(text, /^@@/m);
+    });
+
+    it("cannot wait on the Ledger for longer than the budget either", { timeout: 15_000 }, async () => {
+      const api = await s.start({ "POST /api/txns/t_1/reads": () => new Promise(() => {}) });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+      const started = Date.now();
+      const { stdout, stderr } = await drive(readsHook, readPayload(co), claude(api, co, { RYKE_HOOK_BUDGET_MS: "300", RYKE_HOOK_TIMEOUT_MS: "60000" }));
+      assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+      assert.equal(stdout, "");
+      assert.match(stderr, /failed open/);
+    });
+
+    it("claims each (path, seq) once, exclusively", () => {
+      const co = checkoutWith({ "a.txt": "x\n" });
+      const cfg = loadConfig({ RYKE_CHECKOUT: co.dir });
+      const rows = [
+        ["src/a.ts", 1, true],
+        ["src/a.ts", 1, false],
+        ["src/a.ts", 2, true],
+        ["src/b.ts", 1, true],
+        ["src/b.ts", 1, false],
+        [`${"deep/".repeat(60)}file.ts`, 7, true],
+      ];
+      for (const [path, seq, want] of rows) assert.equal(H.claimAnnouncement(cfg, path, seq), want, `${path}@${seq}`);
+      assert.equal(H.isAnnounced(cfg, "src/a.ts", 2), true);
+      assert.equal(H.isAnnounced(cfg, "src/c.ts", 1), false);
     });
   });
 
@@ -616,7 +761,8 @@ describe("intend-write hook (PreToolUse on Edit, Write, MultiEdit)", () => {
         const api = await s.start({ "POST /api/txns/t_1/intend-write": (_c, n) => answers[Math.min(n, answers.length) - 1] });
         let clock = 0;
         const waits = [];
-        const cfg = { ...loadConfig({ RYKE_API_URL: api.url, RYKE_TXN: "t_1", RYKE_TOKEN: "tok" }), patienceMs };
+        // Giving up is remembered in the checkout's .ryke, so every row needs a checkout of its own.
+        const cfg = { ...loadConfig({ RYKE_API_URL: api.url, RYKE_TXN: "t_1", RYKE_TOKEN: "tok", RYKE_CHECKOUT: checkoutWith({ "a.txt": "x\n" }).dir }), patienceMs };
         const got = await acquire(cfg, "src/format.ts", { now: () => clock, wait: async (ms) => ((clock += ms), waits.push(ms)) });
         assert.deepEqual({ requests: api.calls.length, waits, gaveUp: got.gaveUp, waitedMs: got.waitedMs }, want);
         assert.equal(got.denied, want.requests - (want.gaveUp ? 0 : 1), "every answer but a final grant was a denial");
@@ -624,6 +770,73 @@ describe("intend-write hook (PreToolUse on Edit, Write, MultiEdit)", () => {
         if (want.requests > 1) assert.equal(got.owner, "t_a");
       });
     }
+  });
+
+  describe("a lease the agent gave up on", () => {
+    const intendUrl = "POST /api/txns/t_1/intend-write";
+
+    it("is not waited for again by the next request of the same owner, on a fake clock", async () => {
+      const api = await s.start({ [intendUrl]: () => ({ go: false, owner: "t_a", retryAfterMs: 40_000 }) });
+      const cfg = { ...loadConfig({ RYKE_API_URL: api.url, RYKE_TXN: "t_1", RYKE_CHECKOUT: checkoutWith({ "a.txt": "x\n" }).dir }), patienceMs: 90_000 };
+      let clock = 0;
+      const deps = { now: () => clock, wait: async (ms) => void (clock += ms) };
+      const first = await acquire(cfg, "src/format.ts", deps);
+      assert.deepEqual([first.gaveUp, first.waitedMs, first.remembered], [true, 90_000, undefined]);
+      const requests = api.calls.length;
+      const second = await acquire(cfg, "src/format.ts", deps);
+      assert.deepEqual([second.gaveUp, second.waitedMs, second.remembered, second.owner, second.denied], [true, 0, true, "t_a", 1]);
+      assert.equal(api.calls.length - requests, 1, "one request to learn who holds it");
+      assert.equal(clock, 90_000, "no second wait");
+    });
+
+    it("is not waited for again by the next edit of the same path, and says so briefly", async () => {
+      const api = await s.start({ [intendUrl]: () => ({ go: false, owner: "t_other", retryAfterMs: 60 }), ...NO_STALE });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+      const env = hookEnv(api.url, co, { RYKE_LEASE_PATIENCE_MS: "400" });
+      const first = JSON.parse((await drive(intendWrite, editPayload(co), env)).stdout).hookSpecificOutput;
+      assert.match(first.permissionDecisionReason, /gave up after 0\.\d s waiting for the lease on src\/format\.ts held by t_other/);
+      assert.match(first.additionalContext, /src\/format\.ts is being edited by t_other/);
+
+      const before = api.of(intendUrl).length;
+      const started = Date.now();
+      const second = JSON.parse((await drive(intendWrite, editPayload(co), env)).stdout).hookSpecificOutput;
+      assert.ok(Date.now() - started < 300, `the second edit waited ${Date.now() - started} ms`);
+      assert.equal(api.of(intendUrl).length - before, 1);
+      assert.equal(second.permissionDecision, "allow");
+      assert.equal(second.permissionDecisionReason, "ryke: already gave up on the lease on src/format.ts held by t_other; writing anyway");
+      assert.equal(second.additionalContext, undefined, "the agent was told once");
+    });
+
+    it("is waited for again when another transaction holds it, or for another path", async () => {
+      let owner = "t_other";
+      const api = await s.start({ [intendUrl]: () => ({ go: false, owner, retryAfterMs: 60 }), ...NO_STALE });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1, "src/ui/layout.ts": "x\n" });
+      const env = hookEnv(api.url, co, { RYKE_LEASE_PATIENCE_MS: "400" });
+      await drive(intendWrite, editPayload(co), env);
+
+      const timed = async (payload) => {
+        const started = Date.now();
+        const out = JSON.parse((await drive(intendWrite, payload, env)).stdout).hookSpecificOutput;
+        return { ms: Date.now() - started, out };
+      };
+      const other = await timed(editPayload(co, "Edit", "src/ui/layout.ts"));
+      assert.ok(other.ms >= 350, `another path waited only ${other.ms} ms`);
+      owner = "t_third";
+      const third = await timed(editPayload(co));
+      assert.ok(third.ms >= 350, `another owner waited only ${third.ms} ms`);
+      assert.match(third.out.permissionDecisionReason, /gave up after 0\.\d s .* held by t_third/);
+    });
+
+    it("is granted at once when the holder is gone, whatever was remembered", async () => {
+      let go = false;
+      const api = await s.start({ [intendUrl]: () => (go ? { go: true } : { go: false, owner: "t_other", retryAfterMs: 60 }), ...NO_STALE });
+      const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+      const env = hookEnv(api.url, co, { RYKE_LEASE_PATIENCE_MS: "200" });
+      await drive(intendWrite, editPayload(co), env);
+      go = true;
+      const out = JSON.parse((await drive(intendWrite, editPayload(co), env)).stdout).hookSpecificOutput;
+      assert.equal(out.permissionDecisionReason, "ryke: lease on src/format.ts granted");
+    });
   });
 
   it("allows the edit at once when the lease is granted, in the documented PreToolUse shape", async () => {
@@ -683,6 +896,16 @@ describe("intend-write hook (PreToolUse on Edit, Write, MultiEdit)", () => {
     assert.ok(n >= 4 && n <= 7, `${n} requests while waiting`);
   });
 
+  it("never outlives its budget, whatever the patience: the edit goes through undecided", { timeout: 15_000 }, async () => {
+    const api = await s.start({ "POST /api/txns/t_1/intend-write": () => ({ go: false, owner: "t_other", retryAfterMs: 100 }), ...NO_STALE });
+    const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
+    const started = Date.now();
+    const { stdout, stderr } = await drive(intendWrite, editPayload(co), hookEnv(api.url, co, { RYKE_LEASE_PATIENCE_MS: "600000", RYKE_HOOK_BUDGET_MS: "600" }));
+    assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+    assert.equal(stdout, "", "no decision means the normal flow: the edit proceeds");
+    assert.match(stderr, /time budget is used up/);
+  });
+
   it("passes through the lease when contention control is off, without calling intend-write", async () => {
     const api = await s.start({ ...NO_STALE });
     const co = checkoutWith({ "src/format.ts": FORMAT_V1 });
@@ -731,7 +954,8 @@ describe("intend-write hook (PreToolUse on Edit, Write, MultiEdit)", () => {
       assert.match(out.additionalContext, /^Ryke: you waited 0\.\d s for the write lease on src\/format\.ts, held by t_holder\. While you waited, a file you read changed on trunk after your snapshot/);
       assert.match(out.additionalContext, /- src\/ui\/layout\.ts, changed by t_search at trunk seq 3/);
       assert.match(out.additionalContext, /^\+new layout$/m, "with the change itself");
-      assert.match(out.additionalContext, /Your edits will be rebased onto the new trunk/);
+      assert.match(out.additionalContext, /Adapt your edits to what trunk has now\. When you stop, Ryke moves your change onto the current trunk and submits it there/);
+      assert.doesNotMatch(out.additionalContext, /will be rebased|if these reads are still out of date/);
       assert.equal(api.of("POST /api/txns/t_1/refresh").length, 0, "the checkout holds uncommitted work, so the hook never refreshes the snapshot");
     });
 
@@ -764,7 +988,7 @@ describe("intend-write hook (PreToolUse on Edit, Write, MultiEdit)", () => {
       const api = await s.start({ "POST /api/txns/t_1/intend-write": (_c, n) => holder(n), "POST /api/txns/t_1/reads": () => ({ recorded: 1, staleWarnings: [changedLayout] }), "GET /api/repos/convert/files": () => ({ content: "new\n" }) });
       const co = checkoutWith({ "src/format.ts": FORMAT_V1, "src/ui/layout.ts": "old\n" });
       seedReads(co, [["src/ui/layout.ts"]]);
-      writeFileSync(join(co.dir, ".ryke/announced.jsonl"), `${JSON.stringify({ path: "src/ui/layout.ts", seq: 3 })}\n`);
+      H.claimAnnouncement(loadConfig({ RYKE_CHECKOUT: co.dir }), "src/ui/layout.ts", 3);
       const out = JSON.parse((await drive(intendWrite, editPayload(co), hookEnv(api.url, co))).stdout).hookSpecificOutput;
       assert.equal(out.additionalContext, undefined);
     });
@@ -888,11 +1112,42 @@ describe("agent.mjs inputs", () => {
         claudeBin: "claude",
         stub: false,
         contention: true,
+        keepCheckout: false,
         claudeTimeoutMs: 1_500_000,
         waitMs: 900_000,
       },
     );
     assert.deepEqual(inp.criteria, []);
+  });
+
+  it("takes the fork token out of its own environment once it has read it", () => {
+    const env = { RYKE_FORK_TOKEN: "fork-secret", RYKE_TOKEN: "tok", PATH: "/bin" };
+    const inp = Agent.takeInputs(ARGS, env);
+    assert.equal(inp.forkToken, "fork-secret");
+    assert.deepEqual(env, { RYKE_TOKEN: "tok", PATH: "/bin" }, "nothing this process starts, git included, inherits it");
+  });
+
+  it("keeps the checkout only when asked", () => {
+    assert.equal(inputsFrom(ARGS, { RYKE_KEEP_CHECKOUT: "1" }).keepCheckout, true);
+    assert.equal(inputsFrom(ARGS, { RYKE_KEEP_CHECKOUT: "0" }).keepCheckout, false);
+  });
+
+  // The job's longest possible life, which the harness must outlast (PLAN.md §10.4: it follows the job).
+  const BUDGETS = [
+    ["the defaults", {}, { claudeTimeoutMs: 1_500_000, waitMs: 900_000 }],
+    ["overrides", { RYKE_CLAUDE_TIMEOUT_S: "10", RYKE_WAIT_S: "20" }, { claudeTimeoutMs: 10_000, waitMs: 20_000 }],
+  ];
+  for (const [name, env, want] of BUDGETS) {
+    it(`budgetsFrom reads ${name}`, () => {
+      assert.deepEqual(Agent.budgetsFrom(env), want);
+    });
+  }
+
+  it("worstCaseMs covers every run's Claude session, its wait and the overhead of git and API retries", () => {
+    const one = Agent.worstCaseMs({ maxAttempts: 1, claudeTimeoutMs: 10_000, waitMs: 20_000 });
+    assert.equal(one, 10_000 + 20_000 + Agent.ATTEMPT_OVERHEAD_MS);
+    assert.equal(Agent.worstCaseMs({ maxAttempts: 3, claudeTimeoutMs: 10_000, waitMs: 20_000 }), 3 * one);
+    assert.ok(Agent.ATTEMPT_OVERHEAD_MS >= 5 * 30_000, "at least five API calls that each retry for their full 30 s");
   });
 
   it("reads the overrides", () => {
@@ -955,6 +1210,16 @@ describe("agent.mjs prompt", () => {
     assert.match(text, /\.ryke\/screenshot\.txt/);
   });
 
+  it("a conflict notice says nothing was aborted: the change did not apply on the trunk that moved", () => {
+    const text = retryNotice({ state: "conflict", attempt: 2, max: 3, snapshot: "0123456789abcdef", delta, hasPrevious: true });
+    assert.ok(text.includes(RETRY_STALE));
+    assert.match(text, /does not apply cleanly on the new trunk, so Ryke started you again from it/);
+    assert.doesNotMatch(text, /aborted/);
+    assert.match(text, /### src\/format\.ts\n```diff/);
+    assert.match(text, /fresh copy of trunk at 01234567; the diff of your previous attempt is saved at \.ryke\/previous\.patch/);
+    assert.match(retryNotice({ state: "conflict", attempt: 2, max: 3, snapshot: "abcdef012", delta: [], hasPrevious: false }), /\(no delta was recorded\)/);
+  });
+
   it("a retry after a failed verification lists the failing tests", () => {
     const text = retryNotice({ state: "failed", attempt: 2, max: 3, snapshot: "0123456789abcdef", failures: [{ name: "area converts ha", message: "expected 10000.00" }, { name: "bare", message: "" }], hasPrevious: true });
     assert.ok(text.includes(RETRY_FAILED));
@@ -1001,6 +1266,69 @@ describe("agent.mjs claude invocation", () => {
     const env = claudeEnv(inp, "/w", { base: { RYKE_FORK_TOKEN: "fork-secret", NODE_TEST_CONTEXT: "child-v8" }, container: false });
     assert.equal("RYKE_FORK_TOKEN" in env, false);
     assert.equal("NODE_TEST_CONTEXT" in env, false);
+  });
+
+  // Claude's Bash tool sees this environment, so it is an allow-list: whatever a job inherits that is
+  // not named here (host secrets above all) never reaches the model.
+  const INHERITED = {
+    PATH: "/bin",
+    HOME: "/home/a",
+    USER: "a",
+    LOGNAME: "a",
+    LANG: "C.UTF-8",
+    LC_ALL: "C",
+    LC_CTYPE: "C",
+    TZ: "UTC",
+    TMPDIR: "/t",
+    TERM: "dumb",
+    SHELL: "/bin/sh",
+    HTTPS_PROXY: "http://p:1",
+    https_proxy: "http://p:1",
+    HTTP_PROXY: "http://p:1",
+    http_proxy: "http://p:1",
+    NO_PROXY: "localhost",
+    no_proxy: "localhost",
+    ALL_PROXY: "http://p:1",
+    NODE_EXTRA_CA_CERTS: "/ca.crt",
+    SSL_CERT_FILE: "/ca.crt",
+    SSL_CERT_DIR: "/certs",
+    CURL_CA_BUNDLE: "/ca.crt",
+    GIT_SSL_CAINFO: "/ca.crt",
+    NODE_USE_ENV_PROXY: "1",
+    ANTHROPIC_API_KEY: "sk-real",
+    ANTHROPIC_BASE_URL: "http://anthropic",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    CLAUDE_CONFIG_DIR: "/c",
+    RYKE_AGENT_VERBOSE: "1",
+    RYKE_LEASE_PATIENCE_MS: "250",
+    RYKE_HOOK_TIMEOUT_MS: "75",
+    RYKE_HOOK_BUDGET_MS: "900",
+    RYKE_CATALOGUE_DIR: "/cat",
+    RYKE_STUB_GATE_DIR: "/gates",
+    RYKE_STUB_DELAY_MS: "5",
+  };
+  const WITHHELD = {
+    RYKE_FORK_TOKEN: "fork-secret",
+    RYKE_INTERNAL_SECRET: "internal",
+    RYKE_TOKEN: "admin-token",
+    TYPESAFE_API_KEY: "tsk",
+    NODE_TEST_CONTEXT: "child-v8",
+    GITHUB_TOKEN: "ghp",
+    AWS_SECRET_ACCESS_KEY: "aws",
+    CLOUDFLARE_API_TOKEN: "cf",
+    RYKE_STATE_DIR: "/state",
+    RYKE_STORE_URL: "http://store",
+    GIT_CONFIG_VALUE_0: "Authorization: Bearer x",
+    NODE_OPTIONS: "--require /x.js",
+  };
+
+  it("passes on what Claude Code, git and the hooks need, and nothing else", () => {
+    const env = claudeEnv(inp, "/w/checkout", { base: { ...INHERITED, ...WITHHELD }, container: false });
+    for (const [k, v] of Object.entries(INHERITED)) assert.equal(env[k], v, `${k} must reach claude`);
+    for (const k of Object.keys(WITHHELD)) assert.ok(!(k in env) || k === "RYKE_TOKEN", `${k} must not reach claude`);
+    assert.equal(env.RYKE_TOKEN, "tok", "the transaction's own token replaces whatever the job inherited");
+    const known = new Set([...Object.keys(INHERITED), "IS_SANDBOX", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "RYKE_API_URL", "RYKE_TOKEN", "RYKE_TXN", "RYKE_REPO", "RYKE_CHECKOUT", "RYKE_SNAPSHOT", "RYKE_ROOT", "RYKE_CONTENTION"]);
+    assert.deepEqual(Object.keys(env).filter((k) => !known.has(k)), [], "nothing unlisted slipped through");
   });
 
   it("uses a placeholder key only inside the container, where the gateway swaps it", () => {
@@ -1085,6 +1413,195 @@ describe("agent.mjs hook installation", () => {
     writeFileSync(join(co.dir, ".claude/settings.json"), "{ nope");
     await installHooks(co.dir, template);
     assert.deepEqual(JSON.parse(readFileSync(join(co.dir, ".claude/settings.json"), "utf8")), template);
+  });
+});
+
+describe("agent.mjs API calls", () => {
+  const s = servers();
+  after(() => s.closeAll());
+  const cfgFor = (api) => ({ api: api.url, token: "tok", txn: "t_1", timeoutMs: 2000 });
+  const noSleep = () => {
+    const waits = [];
+    return { waits, sleep: async (ms) => void waits.push(ms) };
+  };
+
+  it("retries a 5xx with a doubling backoff and returns the answer that finally comes", async () => {
+    const api = await s.start({ "POST /api/txns/t_1/submit": (_c, n) => (n < 4 ? [503, { error: "restarting" }] : { state: "ready" }) });
+    const { waits, sleep } = noSleep();
+    const got = await H.apiCallRetrying(cfgFor(api), "POST", "/api/txns/t_1/submit", { head: "h" }, { sleep });
+    assert.deepEqual(got, { state: "ready" });
+    assert.deepEqual(waits, [500, 1000, 2000]);
+    assert.deepEqual(api.calls.map((c) => c.body), [{ head: "h" }, { head: "h" }, { head: "h" }, { head: "h" }], "the same request every time");
+  });
+
+  it("retries a dropped connection", async () => {
+    const dead = await fakeServer();
+    const url = dead.url;
+    await dead.close();
+    const { waits, sleep } = noSleep();
+    await assert.rejects(H.apiCallRetrying({ api: url, token: "t", txn: "t_1", timeoutMs: 500 }, "GET", "/api/txns/t_1", undefined, { sleep }), /fetch failed/);
+    assert.ok(waits.length > 0, "a refused connection is transient");
+  });
+
+  it("retries a request that times out", async () => {
+    const api = await s.start({ "GET /api/txns/t_1": () => new Promise(() => {}) });
+    const { waits, sleep } = noSleep();
+    await assert.rejects(H.apiCallRetrying({ ...cfgFor(api), timeoutMs: 80 }, "GET", "/api/txns/t_1", undefined, { sleep }));
+    assert.deepEqual(waits, [500, 1000, 2000, 4000, 8000, 8000], "a hung server is as transient as a dropped connection");
+  });
+
+  it("gives up after about 30 s of waiting and reports the last error", async () => {
+    const api = await s.start({ "GET /api/txns/t_1": (_c, n) => [502, { error: `bad gateway ${n}` }] });
+    const { waits, sleep } = noSleep();
+    await assert.rejects(H.apiCallRetrying(cfgFor(api), "GET", "/api/txns/t_1", undefined, { sleep }), /GET \/api\/txns\/t_1 -> 502 bad gateway 7/);
+    assert.deepEqual(waits, [500, 1000, 2000, 4000, 8000, 8000]);
+    assert.ok(waits.reduce((a, b) => a + b) <= 30_000);
+    assert.equal(api.calls.length, 7);
+  });
+
+  for (const status of [400, 401, 404, 409, 422, 429]) {
+    it(`never retries a ${status}`, async () => {
+      const api = await s.start({ "POST /api/txns/t_1/submit": () => [status, { error: "no" }] });
+      const { waits, sleep } = noSleep();
+      await assert.rejects(H.apiCallRetrying(cfgFor(api), "POST", "/api/txns/t_1/submit", {}, { sleep }), new RegExp(`-> ${status} no`));
+      assert.deepEqual(waits, []);
+      assert.equal(api.calls.length, 1);
+    });
+  }
+
+  it("does not retry what is not a network failure, or when told not to", async () => {
+    const { waits, sleep } = noSleep();
+    await assert.rejects(H.apiCallRetrying({ api: "", token: "", txn: "t_1", timeoutMs: 500 }, "GET", "/x", undefined, { sleep }), /Failed to parse URL|Invalid URL/);
+    const api = await s.start({ "POST /api/txns/t_1/retry": () => [503, { error: "boom" }] });
+    await assert.rejects(H.apiCallRetrying(cfgFor(api), "POST", "/api/txns/t_1/retry", {}, { sleep, retry: false }), /503 boom/);
+    assert.deepEqual(waits, []);
+    assert.equal(api.calls.length, 1, "retry creates an attempt, so repeating it is not safe");
+  });
+
+  it("says what it is waiting for", async () => {
+    const api = await s.start({ "GET /api/txns/t_1": (_c, n) => (n < 2 ? [500, { error: "boom" }] : { txn: {} }) });
+    const notes = [];
+    await H.apiCallRetrying(cfgFor(api), "GET", "/api/txns/t_1", undefined, { sleep: async () => {}, onRetry: (m) => notes.push(m) });
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /GET \/api\/txns\/t_1 failed \(.*500 boom\); retrying in 0\.5 s/);
+  });
+});
+
+describe("hook API calls and their budget", () => {
+  const s = servers();
+  after(() => s.closeAll());
+
+  it("refuses a call once the hook's budget is used up, and cuts a call to what is left of it", async () => {
+    const api = await s.start({ "GET /x": () => new Promise(() => {}) });
+    const cfg = { api: api.url, token: "t", txn: "t_1", timeoutMs: 60_000 };
+    await assert.rejects(H.apiCall({ ...cfg, deadline: Date.now() - 1 }, "GET", "/x"), /GET \/x: the hook's time budget is used up/);
+    assert.equal(api.calls.length, 0);
+    const started = Date.now();
+    await assert.rejects(H.apiCall({ ...cfg, deadline: Date.now() + 150 }, "GET", "/x"), (e) => e.name === "TimeoutError");
+    assert.ok(Date.now() - started < 3000, "not the 60 s of the call's own timeout");
+    assert.equal(H.remaining({ deadline: undefined }), Infinity);
+  });
+});
+
+describe("agent.mjs checkout and attempt files", () => {
+  it("treeTracker kills what it saw below the root, even after the parent is gone, and never a recycled pid", () => {
+    const row = (ppid, start) => ({ ppid, start });
+    let table = new Map([[100, row(1, "a")], [101, row(100, "b")], [102, row(101, "c")], [200, row(1, "z")]]);
+    const killed = [];
+    const tracker = Agent.treeTracker(100, { table: () => table, kill: (pid, signal) => killed.push([pid, signal]) });
+    tracker.sample();
+    // Claude and its Bash child die; the grandchild is reparented to init and a new process takes 101's pid.
+    table = new Map([[102, row(1, "c")], [101, row(1, "other")], [103, row(102, "d")], [200, row(1, "z")]]);
+    tracker.killAll();
+    assert.deepEqual(killed, [[102, "SIGKILL"]], "102 is the same process, 101 is a stranger, 200 was never below the root");
+    killed.length = 0;
+    // A process that appeared below the root since the last sample is found by the sweep itself.
+    table = new Map([[100, row(1, "a")], [104, row(100, "e")]]);
+    tracker.killAll();
+    assert.deepEqual(killed, [[104, "SIGKILL"]]);
+    assert.doesNotThrow(() => Agent.treeTracker(undefined).killAll(), "a claude that never started has no tree");
+  });
+
+  it("treeTracker shrugs off a process that is gone already", () => {
+    const table = new Map([[100, { ppid: 1, start: "a" }], [101, { ppid: 100, start: "b" }]]);
+    const tracker = Agent.treeTracker(100, { table: () => table, kill: () => { throw Object.assign(new Error("ESRCH"), { code: "ESRCH" }); } });
+    assert.doesNotThrow(() => tracker.killAll());
+  });
+
+  it("memoryAbove finds the CLAUDE.md of any ancestor, and ignores the directory itself", () => {
+    const root = fresh("memory");
+    const deep = join(root, "a", "b", "c");
+    mkdirSync(deep, { recursive: true });
+    assert.equal(Agent.memoryAbove(deep), null);
+    writeFileSync(join(deep, "CLAUDE.md"), "the checkout's own\n");
+    assert.equal(Agent.memoryAbove(deep), null, "the checkout's own memory is the repo's business");
+    const rows = [
+      ["CLAUDE.md", join(root, "a", "CLAUDE.md")],
+      ["CLAUDE.local.md", join(root, "a", "b", "CLAUDE.local.md")],
+      [join(".claude", "CLAUDE.md"), join(root, ".claude", "CLAUDE.md")],
+    ];
+    for (const [name, found] of rows) {
+      mkdirSync(dirname(found), { recursive: true });
+      writeFileSync(found, "x\n");
+      assert.equal(Agent.memoryAbove(deep), found, name);
+      rmSync(found);
+    }
+    assert.equal(Agent.memoryAbove(deep), null);
+  });
+
+  it("makeCheckoutDir makes a private directory under the base and refuses a base inside a project with a CLAUDE.md", () => {
+    const base = fresh("base");
+    mkdirSync(base);
+    const dir = Agent.makeCheckoutDir(base);
+    assert.equal(dirname(dir), base);
+    assert.equal(existsSync(dir), true);
+    assert.equal(Agent.makeCheckoutDir(base) === dir, false, "a directory per call");
+    writeFileSync(join(base, "CLAUDE.md"), "x\n");
+    assert.throws(() => Agent.makeCheckoutDir(base), (e) => e.message.includes(join(realpathSync(base), "CLAUDE.md")) && /TMPDIR/.test(e.message));
+    assert.equal(readdirSync(base).filter((n) => n.startsWith("ryke-agent-")).length, 2, "the refused directory was removed again");
+  });
+
+  it("archiveAttempt moves the attempt's tracking files and directories aside", () => {
+    const dir = fresh("archive");
+    const ryke = join(dir, ".ryke");
+    mkdirSync(join(ryke, "announced"), { recursive: true });
+    mkdirSync(join(ryke, "gaveup"), { recursive: true });
+    for (const f of ["reads.jsonl", "writes.jsonl", "screenshot.txt", "previous.patch", "announced/aa", "gaveup/bb", "claude.log"]) writeFileSync(join(ryke, f), "x\n");
+    Agent.archiveAttempt(dir, 1);
+    for (const f of ["reads.jsonl", "writes.jsonl", "screenshot.txt", "previous.patch", "announced/aa", "gaveup/bb"]) {
+      assert.equal(existsSync(join(ryke, f)), false, `${f} left in place`);
+      assert.equal(existsSync(join(ryke, "attempt-1", f)), true, `${f} not archived`);
+    }
+    assert.equal(existsSync(join(ryke, "claude.log")), true, "files that are not per-attempt stay");
+    Agent.archiveAttempt(dir, 2);
+    assert.equal(existsSync(join(ryke, "attempt-2")), true, "an attempt with nothing to archive is fine");
+  });
+
+  it("procTable reads the process tree and descendantsOf walks children of children", () => {
+    const proc = fresh("proc");
+    const entry = (pid, comm, state, ppid, start) => {
+      mkdirSync(join(proc, String(pid)), { recursive: true });
+      // field 22 is the start time; comm may hold spaces and parentheses.
+      writeFileSync(join(proc, String(pid), "stat"), `${pid} (${comm}) ${state} ${ppid} 1 1 0 -1 4194560 100 0 0 0 0 0 0 0 20 0 1 0 ${start} 1000 100 18446744073709551615\n`);
+    };
+    entry(100, "claude", "S", 1, 1000);
+    entry(101, "bash (tool)", "S", 100, 1010);
+    entry(102, "sleep", "S", 101, 1020);
+    entry(103, "dev server", "S", 102, 1030);
+    entry(104, "defunct", "Z", 100, 1040);
+    entry(200, "other", "S", 1, 2000);
+    mkdirSync(join(proc, "self"));
+    writeFileSync(join(proc, "not-a-pid"), "x");
+    const table = Agent.procTable(proc);
+    assert.deepEqual([...table.keys()].sort(), [100, 101, 102, 103, 200], "zombies and non-pids are left out");
+    assert.deepEqual(table.get(101), { ppid: 100, start: "1010" });
+    assert.deepEqual(Agent.descendantsOf(table, 100).map(([pid]) => pid).sort(), [101, 102, 103]);
+    assert.deepEqual(Agent.descendantsOf(table, 200), []);
+    assert.deepEqual(Agent.descendantsOf(table, 999), []);
+  });
+
+  it("procTable is empty where there is no /proc", () => {
+    assert.equal(Agent.procTable(join(fresh("nowhere"), "proc")).size, 0);
   });
 });
 
@@ -1377,28 +1894,44 @@ describe("agent.sh", { concurrency: 4 }, () => {
     ...over,
   });
 
-  // Runs bin/agent.sh as the runner does: arguments plus environment, in a fresh working directory.
-  async function job(api, fork, taskId, { env = {}, args = {} } = {}) {
+  // Runs bin/agent.sh as the runner does: arguments plus environment, in a fresh working directory. The
+  // checkout lives under TMPDIR, which the test points into its own scratch space; `keep` leaves it there
+  // (RYKE_KEEP_CHECKOUT) and reports where, so a test can look at what agent.mjs left in .ryke.
+  function startJob(api, fork, taskId, { env = {}, args = {}, keep = false } = {}) {
     const task = byId(taskId);
     const cwd = fresh("job");
     mkdirSync(cwd);
+    const tmpRoot = fresh("job-tmp");
+    mkdirSync(tmpRoot);
     const logDir = fresh("stub-log");
     const argv = ["--repo", "convert", "--txn", TXN, "--agent", "agent-07", "--intent", task.intent, "--criteria", JSON.stringify(task.criteria), "--remote", fork, "--snapshot", git(fork, "rev-parse", "refs/heads/main"), "--model", "claude-sonnet-5-5"];
     for (const [k, v] of Object.entries(args)) argv.push(`--${k}`, v);
     const child = spawn("bash", [AGENT_SH, ...argv], {
       cwd,
-      env: { ...BASE_ENV, RYKE_API_URL: api.url, RYKE_TOKEN: "dev-token", RYKE_FORK_TOKEN: "fork-secret", CLAUDE_BIN: STUB_BIN, RYKE_CLAUDE_STUB: "1", RYKE_CATALOGUE_DIR: DEMO, RYKE_STUB_LOG_DIR: logDir, ...env },
+      env: { ...BASE_ENV, TMPDIR: tmpRoot, RYKE_API_URL: api.url, RYKE_TOKEN: "dev-token", RYKE_FORK_TOKEN: "fork-secret", CLAUDE_BIN: STUB_BIN, RYKE_CLAUDE_STUB: "1", RYKE_CATALOGUE_DIR: DEMO, RYKE_STUB_LOG_DIR: logDir, RYKE_KEEP_CHECKOUT: keep ? "1" : "0", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (c) => (stdout += c));
-    child.stderr.on("data", (c) => (stderr += c));
-    const code = await new Promise((r) => child.on("close", r));
-    const last = stdout.trim().split("\n").at(-1);
-    const stubRuns = existsSync(join(logDir, `${taskId}.jsonl`)) ? lines(readFileSync(join(logDir, `${taskId}.jsonl`), "utf8")) : [];
-    return { code, result: JSON.parse(last), stdout, stderr, cwd, checkout: join(cwd, "checkout"), stubRuns };
+    const out = { stdout: "", stderr: "" };
+    child.stdout.on("data", (c) => (out.stdout += c));
+    child.stderr.on("data", (c) => (out.stderr += c));
+    const done = new Promise((r) => child.on("close", r)).then((code) => {
+      const last = out.stdout.trim().split("\n").at(-1);
+      const stubRuns = existsSync(join(logDir, `${taskId}.jsonl`)) ? lines(readFileSync(join(logDir, `${taskId}.jsonl`), "utf8")) : [];
+      const checkout = /checkout kept at (.+)$/m.exec(out.stderr)?.[1] ?? null;
+      return { code, result: last?.startsWith("{") ? JSON.parse(last) : null, stdout: out.stdout, stderr: out.stderr, cwd, tmpRoot, checkout, stubRuns };
+    });
+    return { child, done, out, cwd, tmpRoot };
   }
+  const job = (...args) => startJob(...args).done;
+
+  // A `claude` written as a script, for tests that need it to do something particular.
+  const RESULT_LINE = '{"type":"result","subtype":"success","is_error":false,"result":"done"}';
+  const fakeClaude = (body, { node = false } = {}) => {
+    const file = join(tmp, `fake-claude-${++counter}${node ? ".mjs" : ""}`);
+    writeFileSync(file, node ? `#!/usr/bin/env node\n${body}` : `#!/bin/sh\n${body}`, { mode: 0o755 });
+    return file;
+  };
+  const withFake = (bin, env = {}) => ({ CLAUDE_BIN: bin, RYKE_CLAUDE_STUB: "0", ...env });
 
   const submitBodies = (api) => api.of(`POST /api/txns/${TXN}/submit`).map((c) => c.body);
 
@@ -1407,7 +1940,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
     const fork = cloneBare("fork");
     const snapshot = git(fork, "rev-parse", "refs/heads/main");
     const task = byId("cat-area");
-    const r = await job(api, fork, "cat-area");
+    const r = await job(api, fork, "cat-area", { keep: true });
     assert.equal(r.code, 0, r.stderr);
     assert.deepEqual(r.result, { ok: true, txn: TXN, state: "landed", attempts: 1, landed: true, reason: null, seq: 5, train: "tr_1" });
 
@@ -1471,7 +2004,7 @@ describe("agent.sh", { concurrency: 4 }, () => {
       }),
     );
     const task = byId("cat-area");
-    const r = await job(api, fork, "cat-area");
+    const r = await job(api, fork, "cat-area", { keep: true });
     assert.equal(r.code, 0, r.stderr);
     assert.deepEqual([r.result.ok, r.result.state, r.result.attempts, r.result.landed], [true, "landed", 2, true]);
 
@@ -1597,6 +2130,465 @@ describe("agent.sh", { concurrency: 4 }, () => {
     assert.equal(git(fork, "rev-parse", "refs/heads/main"), snapshot, "nothing was pushed");
     assert.equal("screenshot" in submitBodies(api)[0].evidence, false, "no screenshot.txt, no screenshot");
     assert.match(submitBodies(api)[0].evidence.summary, /^claude attempt 1: nothing to change/, "a real run is not labelled as the stub");
+  });
+
+  describe("claude's own commits", () => {
+    // Claude often ignores "Do not commit". Only the tree it leaves counts, and the agent commits it.
+    it("are dropped and the tree it left is committed by the agent on top of the snapshot", async () => {
+      const api = await s.start(baseRoutes());
+      const fork = cloneBare("fork");
+      const snapshot = git(fork, "rev-parse", "refs/heads/main");
+      const claude = fakeClaude(
+        [
+          "echo 'export const extra = 1;' > src/extra.ts",
+          "git add -A",
+          "git -c user.name=claude -c user.email=claude@example.com commit -q -m \"claude's own commit\"",
+          "echo '// edited after the commit' >> src/extra.ts",
+          "echo 'export const second = 2;' > src/second.ts",
+          `printf '%s\\n' '${RESULT_LINE}'`,
+        ].join("\n"),
+      );
+      const r = await job(api, fork, "cat-area", { env: withFake(claude) });
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(r.result.state, "landed");
+      assert.doesNotMatch(r.stderr, /no changes were made/);
+      const [submit] = submitBodies(api);
+      assert.notEqual(submit.head, snapshot, "the Ledger would reject the snapshot itself as empty");
+      assert.equal(git(fork, "rev-parse", "refs/heads/main"), submit.head, "and it was pushed");
+      assert.equal(git(fork, "rev-parse", `${submit.head}^`), snapshot, "one commit on the snapshot: Claude's is gone");
+      assert.equal(git(fork, "log", "-1", "--format=%an <%ae>|%cn|%s", submit.head), `agent-07 <agent-07@agents.ryke.ai>|agent-07|${byId("cat-area").intent}`);
+      assert.deepEqual(git(fork, "diff", "--name-only", snapshot, submit.head).split("\n").sort(), ["src/extra.ts", "src/second.ts"]);
+      assert.equal(git(fork, "show", `${submit.head}:src/extra.ts`), "export const extra = 1;\n// edited after the commit");
+    });
+
+    it("count even when that is all there is: nothing uncommitted left", async () => {
+      const api = await s.start(baseRoutes());
+      const fork = cloneBare("fork");
+      const snapshot = git(fork, "rev-parse", "refs/heads/main");
+      const claude = fakeClaude(["echo 'export const extra = 1;' > src/extra.ts", "git add -A", "git -c user.name=c -c user.email=c@example.com commit -q -m mine", `printf '%s\\n' '${RESULT_LINE}'`].join("\n"));
+      const r = await job(api, fork, "cat-area", { env: withFake(claude) });
+      assert.equal(r.result.state, "landed");
+      assert.equal(git(fork, "diff", "--name-only", snapshot, submitBodies(api)[0].head), "src/extra.ts");
+    });
+
+    it("that are undone leave nothing to submit, as before", async () => {
+      const api = await s.start(baseRoutes({ [`POST /api/txns/${TXN}/submit`]: () => ({ state: "rejected", reason: "empty" }) }));
+      const fork = cloneBare("fork");
+      const snapshot = git(fork, "rev-parse", "refs/heads/main");
+      const claude = fakeClaude(["echo x > src/extra.ts", "git add -A", "git -c user.name=c -c user.email=c@example.com commit -q -m mine", "git reset -q --hard HEAD~1", `printf '%s\\n' '${RESULT_LINE}'`].join("\n"));
+      const r = await job(api, fork, "cat-area", { env: withFake(claude) });
+      assert.equal(r.result.reason, "empty");
+      assert.equal(submitBodies(api)[0].head, snapshot);
+      assert.equal(git(fork, "rev-parse", "refs/heads/main"), snapshot);
+    });
+  });
+
+  describe("the checkout", () => {
+    it("is a fresh directory under TMPDIR, outside the job's directory and the repo, with no CLAUDE.md above it", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await job(api, cloneBare("fork"), "cat-area");
+      assert.equal(r.code, 0, r.stderr);
+      // The run has ended and removed the directory, so only its parent can be resolved.
+      const cwd = join(realpathSync(dirname(r.stubRuns[0].cwd)), basename(r.stubRuns[0].cwd));
+      assert.equal(dirname(cwd), realpathSync(r.tmpRoot), "made by mkdtemp under TMPDIR");
+      assert.match(basename(cwd), /^ryke-agent-/);
+      for (const [name, base] of [["the job's directory", r.cwd], ["the repo root", ROOT]]) {
+        assert.ok(relative(realpathSync(base), cwd).startsWith(".."), `${cwd} is inside ${name}`);
+      }
+      for (let d = dirname(cwd); ; d = dirname(d)) {
+        for (const f of ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]) assert.equal(existsSync(join(d, f)), false, `${join(d, f)} would be loaded into claude's context`);
+        if (dirname(d) === d) break;
+      }
+    });
+
+    it("is removed when the run ends, and its transcript is kept next to the job", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await job(api, cloneBare("fork"), "cat-area");
+      assert.equal(existsSync(r.stubRuns[0].cwd), false);
+      assert.deepEqual(readdirSync(r.tmpRoot), []);
+      const transcript = lines(readFileSync(join(r.cwd, "transcripts", "claude-1.jsonl"), "utf8"));
+      assert.equal(transcript.at(-1).type, "result");
+    });
+
+    it("is removed when claude fails, and when the API goes wrong", async () => {
+      const api = await s.start(baseRoutes({ [`POST /api/txns/${TXN}/submit`]: () => [422, { error: "head is not in fork" }] }));
+      const pwd = join(tmp, `pwd-${++counter}`);
+      const claude = fakeClaude(`pwd > ${pwd}\necho x > src/extra.ts\nprintf '%s\\n' '${RESULT_LINE}'`);
+      const failed = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude) });
+      assert.equal(failed.result.ok, false);
+      assert.equal(existsSync(readFileSync(pwd, "utf8").trim()), false, "removed after an API failure");
+
+      const bad = fakeClaude(`pwd > ${pwd}\necho x > src/extra.ts\nexit 1`);
+      const second = await job(api, cloneBare("fork"), "cat-area", { env: withFake(bad) });
+      assert.equal(second.result.ok, false);
+      assert.equal(existsSync(readFileSync(pwd, "utf8").trim()), false, "removed after claude failed");
+      assert.deepEqual(readdirSync(second.tmpRoot), []);
+    });
+
+    it("stays when RYKE_KEEP_CHECKOUT=1, and the log says where", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await job(api, cloneBare("fork"), "cat-area", { keep: true });
+      assert.ok(r.checkout && existsSync(join(r.checkout, ".ryke")), r.stderr);
+      assert.equal(r.checkout, r.stubRuns[0].cwd);
+    });
+
+    for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130]]) {
+    it(`is removed, and claude with it, when the job is cancelled with ${signal}`, async () => {
+      const api = await s.start(baseRoutes());
+      const pid = join(tmp, `claude-pid-${++counter}`);
+      const pwd = join(tmp, `pwd-${++counter}`);
+      const claude = fakeClaude(`pwd > ${pwd}\necho $$ > ${pid}\nsleep 300 &\nwait`);
+      const run = startJob(api, cloneBare("fork"), "cat-area", { env: withFake(claude) });
+      await until(() => existsSync(pid) && readFileSync(pid, "utf8").trim() !== "", 10_000, "claude to start");
+      const claudePid = Number(readFileSync(pid, "utf8"));
+      const dir = readFileSync(pwd, "utf8").trim();
+      assert.equal(existsSync(dir), true);
+      run.child.kill(signal);
+      const r = await run.done;
+      assert.equal(r.code, code);
+      assert.equal(existsSync(dir), false);
+      await until(() => !isRunning(claudePid), 5000, "claude to be killed with the job");
+    });
+    }
+
+    it("is refused, before claude starts, when a CLAUDE.md sits above TMPDIR", async () => {
+      const api = await s.start(baseRoutes());
+      const project = fresh("project");
+      mkdirSync(join(project, "tmp"), { recursive: true });
+      writeFileSync(join(project, "CLAUDE.md"), "project rules\n");
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: { TMPDIR: join(project, "tmp") } });
+      assert.equal(r.code, 1);
+      assert.equal(r.result.ok, false);
+      assert.match(r.result.error, /CLAUDE\.md would be loaded into claude's context.*TMPDIR/s);
+      assert.equal(r.stubRuns.length, 0);
+      assert.deepEqual(api.of(`POST /api/txns/${TXN}/abort`).map((c) => c.body), [{ reason: "agent_error" }], "the transaction does not stay open");
+    });
+  });
+
+  describe("a transient API failure after claude has finished", () => {
+    it("is ridden out: a 503 on submit and a 502 on wait cost a retry each, not the transaction", async () => {
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/submit`]: (_c, n) => (n === 1 ? [503, { error: "restarting" }] : { state: "ready" }),
+          [`GET /api/txns/${TXN}/wait`]: (_c, n) => (n === 1 ? [502, { error: "bad gateway" }] : { txn: { id: TXN, state: "landed", landedSeq: 5, train: "tr_1" }, changed: true, staleWarnings: [], detail: {} }),
+        }),
+      );
+      const r = await job(api, cloneBare("fork"), "cat-area");
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual([r.result.ok, r.result.state, r.result.attempts], [true, "landed", 1]);
+      assert.equal(api.of(`POST /api/txns/${TXN}/submit`).length, 2);
+      assert.equal(api.of(`GET /api/txns/${TXN}/wait`).length, 2);
+      assert.deepEqual(submitBodies(api)[0], submitBodies(api)[1], "submit is idempotent: the same head, the same evidence");
+      assert.equal(api.of(`POST /api/txns/${TXN}/abort`).length, 0);
+      assert.match(r.stderr, /POST \/api\/txns\/t_1\/submit failed \(.*503 restarting\); retrying in 0\.5 s/);
+    });
+
+    it("is ridden out on the transaction lookup after a 409 on retry, too", async () => {
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/submit`]: () => ({ state: "stale", reason: "stale_read", paths: [] }),
+          [`POST /api/txns/${TXN}/retry`]: () => [409, { error: "transaction t_1 is aborted" }],
+          [`GET /api/txns/${TXN}`]: (_c, n) => (n === 1 ? [503, { error: "restarting" }] : { txn: { id: TXN, state: "aborted", reason: "max_attempts" } }),
+        }),
+      );
+      const r = await job(api, cloneBare("fork"), "cat-area");
+      assert.deepEqual([r.result.ok, r.result.state, r.result.reason], [true, "aborted", "max_attempts"]);
+      assert.equal(api.of(`GET /api/txns/${TXN}`).length, 2);
+    });
+
+    it("is not ridden out on retry, which creates an attempt: one 503 aborts the transaction", async () => {
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/submit`]: () => ({ state: "stale", reason: "stale_read", paths: [] }),
+          [`POST /api/txns/${TXN}/retry`]: () => [503, { error: "restarting" }],
+        }),
+      );
+      const r = await job(api, cloneBare("fork"), "cat-area");
+      assert.equal(r.result.ok, false);
+      assert.equal(api.of(`POST /api/txns/${TXN}/retry`).length, 1);
+      assert.deepEqual(api.of(`POST /api/txns/${TXN}/abort`).map((c) => c.body), [{ reason: "agent_error" }]);
+    });
+
+    it("does not make a 4xx wait: a 422 on submit is one request", async () => {
+      const api = await s.start(baseRoutes({ [`POST /api/txns/${TXN}/submit`]: () => [422, { error: "head is not in fork" }] }));
+      const started = Date.now();
+      const r = await job(api, cloneBare("fork"), "cat-area");
+      assert.equal(r.result.ok, false);
+      assert.equal(api.of(`POST /api/txns/${TXN}/submit`).length, 1);
+      assert.ok(Date.now() - started < 20_000);
+    });
+  });
+
+  describe("reads that went stale while claude worked", () => {
+    const stale = [{ path: "src/format.ts", seq: 1, by: "t_pre" }];
+    const DELTA = [{ path: "src/format.ts", patch: "--- a/src/format.ts\n+++ b/src/format.ts\n@@ -1 +1 @@\n-// delta from trunk: old\n+// delta from trunk: new\n" }];
+    const READS = '{"at":1,"tool":"Read","paths":["src/format.ts","src/registry.ts"]}';
+    const sequence = (api) => api.calls.map((c) => c.key).filter((k) => /\/(reads|refresh|retry|submit|abort)$|\/wait$/.test(k)).map((k) => k.split(" ")[1].replace(`/api/txns/${TXN}`, ""));
+    const promptsOf = (file) => readFileSync(file, "utf8").split("\n----\n").filter(Boolean);
+
+    // A claude that reads two files and then writes `body`; $last is the prompt.
+    const worker = (runs, body) =>
+      fakeClaude(["for a; do last=\"$a\"; done", `printf '%s\\n----\\n' "$last" >> ${runs}`, "mkdir -p .ryke", `printf '%s\\n' '${READS}' >> .ryke/reads.jsonl`, body, `printf '%s\\n' '${RESULT_LINE}'`].join("\n"));
+
+    const refreshOnto = (trunk, snapshot, delta = DELTA) => ({ snapshot, attempt: 1, delta, trunk: { remote: trunk, token: "trunk-read" } });
+
+    it("moves the agent's change onto the new trunk, re-sends the reads and submits there, on attempt 1", async () => {
+      const trunk = cloneBare("trunk");
+      const fork = cloneBare("fork");
+      const advanced = advanceTrunk(trunk);
+      const runs = join(tmp, `runs-${++counter}`);
+      const claude = worker(runs, "echo 'export const extra = 1;' > src/extra.ts");
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/reads`]: (_c, n) => ({ recorded: 2, staleWarnings: n === 1 ? stale : [] }),
+          [`POST /api/txns/${TXN}/refresh`]: () => refreshOnto(trunk, advanced),
+        }),
+      );
+      const r = await job(api, fork, "cat-area", { env: withFake(claude) });
+      assert.equal(r.code, 0, r.stderr);
+      assert.deepEqual([r.result.ok, r.result.state, r.result.attempts, r.result.landed], [true, "landed", 1, true]);
+      assert.deepEqual(sequence(api), ["/reads", "/refresh", "/reads", "/submit", "/wait"], "stale reads are moved before submitting, and nothing is retried");
+      assert.deepEqual(api.of(`POST /api/txns/${TXN}/reads`).map((c) => c.body.paths), [["src/format.ts", "src/registry.ts"], ["src/format.ts", "src/registry.ts"]], "the Ledger forgot the reads at the refresh, so all of them are sent again");
+      assert.equal(api.of(`POST /api/txns/${TXN}/refresh`)[0].auth, "Bearer dev-token", "the job's own token may refresh");
+
+      const [submit] = submitBodies(api);
+      assert.equal(git(fork, "rev-parse", "refs/heads/main"), submit.head);
+      assert.equal(git(fork, "rev-parse", `${submit.head}^`), advanced, "on top of the snapshot the Ledger now holds");
+      assert.equal(git(fork, "show", `${submit.head}:src/extra.ts`), "export const extra = 1;");
+      assert.match(git(fork, "show", `${submit.head}:src/format.ts`), /digits = 3/, "and trunk's own change is still there");
+      assert.deepEqual(git(fork, "diff", "--name-only", advanced, submit.head), "src/extra.ts", "the write set is the agent's, not trunk's");
+      assert.equal(git(fork, "log", "-1", "--format=%an|%s", submit.head), `agent-07|${byId("cat-area").intent}`);
+      assert.equal(promptsOf(runs).length, 1, "claude ran once");
+      assert.match(r.stderr, /moved onto trunk/);
+    });
+
+    it("rides out a transient failure of refresh", async () => {
+      const trunk = cloneBare("trunk");
+      const advanced = advanceTrunk(trunk);
+      const claude = worker(join(tmp, `runs-${++counter}`), "echo 'export const extra = 1;' > src/extra.ts");
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/reads`]: (_c, n) => ({ recorded: 2, staleWarnings: n === 1 ? stale : [] }),
+          [`POST /api/txns/${TXN}/refresh`]: (_c, n) => (n === 1 ? [503, { error: "restarting" }] : refreshOnto(trunk, advanced)),
+        }),
+      );
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude) });
+      assert.equal(r.result.state, "landed");
+      assert.equal(api.of(`POST /api/txns/${TXN}/refresh`).length, 2);
+    });
+
+    it("does not touch the trunk when claude changed nothing", async () => {
+      const api = await s.start(baseRoutes({ [`POST /api/txns/${TXN}/reads`]: () => ({ recorded: 2, staleWarnings: stale }), [`POST /api/txns/${TXN}/submit`]: () => ({ state: "rejected", reason: "empty" }) }));
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(worker(join(tmp, `runs-${++counter}`), ":")) });
+      assert.equal(r.result.reason, "empty");
+      assert.equal(api.of(`POST /api/txns/${TXN}/refresh`).length, 0, "there is no work to move");
+    });
+
+    it("takes a change that trunk already holds as an empty submit, which the Ledger rejects", async () => {
+      const trunk = cloneBare("trunk");
+      const fork = cloneBare("fork");
+      const advanced = commitOnTrunk(trunk, "src/extra.ts", "export const extra = 1;\n");
+      const claude = worker(join(tmp, `runs-${++counter}`), "printf 'export const extra = 1;\\n' > src/extra.ts");
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/reads`]: (_c, n) => ({ recorded: 2, staleWarnings: n === 1 ? stale : [] }),
+          [`POST /api/txns/${TXN}/refresh`]: () => refreshOnto(trunk, advanced),
+          [`POST /api/txns/${TXN}/submit`]: () => ({ state: "rejected", reason: "empty" }),
+        }),
+      );
+      const r = await job(api, fork, "cat-area", { env: withFake(claude) });
+      assert.deepEqual([r.result.ok, r.result.state, r.result.reason], [true, "rejected", "empty"]);
+      assert.equal(git(fork, "rev-parse", `${submitBodies(api)[0].head}^{tree}`), git(fork, "rev-parse", `${advanced}^{tree}`), "no change on top of trunk");
+    });
+
+    it("asks again after moving, and stops after three rounds with what it has", async () => {
+      const trunk = cloneBare("trunk");
+      const fork = cloneBare("fork");
+      const commits = [1, 2, 3, 4].map((i) => commitOnTrunk(trunk, `trunk-${i}.txt`, `${i}\n`));
+      const claude = worker(join(tmp, `runs-${++counter}`), "echo 'export const extra = 1;' > src/extra.ts");
+      const api = await s.start(
+        baseRoutes({
+          [`POST /api/txns/${TXN}/reads`]: () => ({ recorded: 2, staleWarnings: stale }),
+          [`POST /api/txns/${TXN}/refresh`]: (_c, n) => refreshOnto(trunk, commits[n - 1]),
+          [`POST /api/txns/${TXN}/submit`]: () => ({ state: "stale", reason: "stale_read", paths: stale }),
+          [`POST /api/txns/${TXN}/retry`]: () => [409, { error: "transaction t_1 is aborted" }],
+          [`GET /api/txns/${TXN}`]: () => ({ txn: { id: TXN, state: "aborted", reason: "max_attempts" } }),
+        }),
+      );
+      await job(api, fork, "cat-area", { env: withFake(claude) });
+      assert.equal(api.of(`POST /api/txns/${TXN}/refresh`).length, 3);
+      assert.equal(git(fork, "rev-parse", `${submitBodies(api)[0].head}^`), commits[2], "on the third trunk it moved to");
+      assert.deepEqual(sequence(api).slice(0, 8), ["/reads", "/refresh", "/reads", "/refresh", "/reads", "/refresh", "/reads", "/submit"]);
+    });
+
+    it("submits where it stands when nothing moved, or when the Ledger will not refresh", async () => {
+      const fork = cloneBare("fork");
+      const snapshot = git(fork, "rev-parse", "refs/heads/main");
+      const rows = [
+        ["the trunk has not moved", () => ({ snapshot, attempt: 1, delta: [], trunk: { remote: fork, token: "t" } })],
+        ["the transaction is no longer open (409)", () => [409, { error: "transaction t_1 is submitted; only open transactions can be refreshed" }]],
+      ];
+      for (const [name, refresh] of rows) {
+        const claude = worker(join(tmp, `runs-${++counter}`), "echo 'export const extra = 1;' > src/extra.ts");
+        const api = await s.start(baseRoutes({ [`POST /api/txns/${TXN}/reads`]: () => ({ recorded: 2, staleWarnings: stale }), [`POST /api/txns/${TXN}/refresh`]: refresh }));
+        const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude) });
+        assert.equal(r.result.state, "landed", name);
+        assert.equal(api.of(`POST /api/txns/${TXN}/refresh`).length, 1, name);
+        assert.equal(api.of(`POST /api/txns/${TXN}/submit`).length, 1, name);
+      }
+    });
+
+    describe("when the change does not apply on the new trunk", () => {
+      // Run 1 edits the line trunk changed; run 2, told why, only adds a file.
+      const conflicting = (runs) => worker(runs, ['case "$last" in', '  *"files you read changed on trunk"*) echo "export const second = 1;" > src/extra.ts ;;', "  *) sed -i 's/digits = 2/digits = 5/' src/format.ts ;;", "esac"].join("\n"));
+
+      it("starts claude again on the new trunk with what changed, in the same attempt, and submits that", async () => {
+        const trunk = cloneBare("trunk");
+        const fork = cloneBare("fork");
+        const advanced = advanceTrunk(trunk);
+        const runs = join(tmp, `runs-${++counter}`);
+        const api = await s.start(
+          baseRoutes({
+            [`POST /api/txns/${TXN}/reads`]: (_c, n) => ({ recorded: 2, staleWarnings: n === 1 ? stale : [] }),
+            [`POST /api/txns/${TXN}/refresh`]: () => refreshOnto(trunk, advanced),
+          }),
+        );
+        const r = await job(api, fork, "cat-area", { env: withFake(conflicting(runs)), keep: true });
+        assert.equal(r.code, 0, r.stderr);
+        assert.deepEqual([r.result.ok, r.result.state, r.result.attempts], [true, "landed", 1], "the Ledger's attempt is unchanged: the refresh did not consume one");
+        assert.match(r.stderr, /does not apply on trunk/);
+
+        assert.equal(api.of(`POST /api/txns/${TXN}/refresh`).length, 1);
+        assert.equal(api.of(`POST /api/txns/${TXN}/retry`).length, 0, "the transaction is open, so there is nothing to retry");
+        assert.equal(api.of(`POST /api/txns/${TXN}/submit`).length, 1, "the commit on the old snapshot is never submitted");
+        const [first, second] = promptsOf(runs);
+        assert.equal(promptsOf(runs).length, 2);
+        assert.ok(!first.includes(RETRY_STALE));
+        assert.ok(second.startsWith(first), "the original prompt, with the notice appended");
+        assert.ok(second.includes(RETRY_STALE));
+        assert.match(second, /does not apply cleanly on the new trunk/);
+        assert.match(second, /### src\/format\.ts\n```diff\n--- a\/src\/format\.ts[\s\S]*\+\/\/ delta from trunk: new/);
+        assert.match(second, /attempt 2 of 3/);
+        assert.match(second, new RegExp(`fresh copy of trunk at ${advanced.slice(0, 8)}`));
+        assert.match(readFileSync(join(r.checkout, ".ryke/previous.patch"), "utf8"), /\+export function formatValue\(n: number, digits = 5\)/, "the first attempt's work is kept for claude");
+
+        const [submit] = submitBodies(api);
+        assert.equal(git(fork, "rev-parse", `${submit.head}^`), advanced);
+        assert.equal(git(fork, "show", `${submit.head}:src/extra.ts`), 'export const second = 1;');
+        assert.match(git(fork, "show", `${submit.head}:src/format.ts`), /digits = 3/);
+        assert.equal(git(fork, "diff", "--name-only", advanced, submit.head), "src/extra.ts");
+        assert.deepEqual(sequence(api), ["/reads", "/refresh", "/reads", "/submit", "/wait"]);
+      });
+
+      it("counts the second run against --max-attempts and aborts instead of starting a third", async () => {
+        const trunk = cloneBare("trunk");
+        const advanced = advanceTrunk(trunk);
+        const api = await s.start(
+          baseRoutes({
+            [`POST /api/txns/${TXN}/reads`]: () => ({ recorded: 2, staleWarnings: stale }),
+            [`POST /api/txns/${TXN}/refresh`]: () => refreshOnto(trunk, advanced),
+          }),
+        );
+        const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(conflicting(join(tmp, `runs-${++counter}`))), args: { "max-attempts": "1" } });
+        assert.deepEqual([r.result.ok, r.result.state, r.result.reason], [true, "aborted", "max_attempts"]);
+        assert.deepEqual(api.of(`POST /api/txns/${TXN}/abort`).map((c) => c.body), [{ reason: "max_attempts" }]);
+        assert.equal(api.of(`POST /api/txns/${TXN}/submit`).length, 0);
+      });
+
+      it("also counts runs that follow a stale outcome, so the two paths share one budget", async () => {
+        const trunk = cloneBare("trunk");
+        const advanced = advanceTrunk(trunk);
+        const runs = join(tmp, `runs-${++counter}`);
+        const api = await s.start(
+          baseRoutes({
+            [`POST /api/txns/${TXN}/reads`]: (_c, n) => ({ recorded: 2, staleWarnings: n === 1 ? stale : [] }),
+            [`POST /api/txns/${TXN}/refresh`]: () => refreshOnto(trunk, advanced),
+            [`POST /api/txns/${TXN}/submit`]: () => ({ state: "stale", reason: "stale_read", paths: stale }),
+          }),
+        );
+        // Run 1 conflicts, run 2 is submitted and goes stale: with two runs allowed there is no third.
+        const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(conflicting(runs)), args: { "max-attempts": "2" } });
+        assert.equal(promptsOf(runs).length, 2);
+        assert.deepEqual([r.result.state, r.result.reason], ["aborted", "max_attempts"]);
+        assert.equal(api.of(`POST /api/txns/${TXN}/retry`).length, 0);
+      });
+    });
+  });
+
+  describe("claude's children", () => {
+    // A detached grandchild is what Claude Code's Bash tool leaves behind: its own session, so a kill of
+    // the process group never reaches it. The fake claude records its pid.
+    const GRANDCHILDREN = [
+      ["a shell's `setsid` command that holds claude's output open", (pid) => `setsid sleep 300 &\necho $! > ${pid}\nwait`],
+      ["a shell's `setsid` command with its output redirected", (pid) => `setsid sleep 300 > /dev/null 2>&1 &\necho $! > ${pid}\nwait`],
+    ];
+    for (const [name, body] of GRANDCHILDREN) {
+      it(`are killed with it when it runs past the timeout: ${name}`, { timeout: 60_000 }, async () => {
+        const api = await s.start(baseRoutes());
+        const pid = join(tmp, `grandchild-${++counter}`);
+        const claude = fakeClaude(body(pid));
+        const started = Date.now();
+        const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude, { RYKE_CLAUDE_TIMEOUT_S: "0.5" }) });
+        assert.ok(Date.now() - started < 30_000);
+        assert.equal(r.result.error, "claude timed out");
+        const grandchild = Number(readFileSync(pid, "utf8"));
+        await until(() => !isRunning(grandchild), 5000, "the detached grandchild to be killed");
+      });
+    }
+
+    it("are killed with it when it runs past the timeout: a node child detached with its own session", { timeout: 60_000 }, async () => {
+      const api = await s.start(baseRoutes());
+      const pid = join(tmp, `grandchild-${++counter}`);
+      const claude = fakeClaude(
+        [
+          'import { spawn } from "node:child_process";',
+          'import { writeFileSync } from "node:fs";',
+          `const c = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });`,
+          `writeFileSync(${JSON.stringify(pid)}, String(c.pid));`,
+          "c.unref();",
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+        { node: true },
+      );
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude, { RYKE_CLAUDE_TIMEOUT_S: "0.5" }) });
+      assert.equal(r.result.error, "claude timed out");
+      await until(() => !isRunning(Number(readFileSync(pid, "utf8"))), 5000, "the detached grandchild to be killed");
+    });
+
+    it("are killed when claude exits on its own and leaves a dev server behind", { timeout: 60_000 }, async () => {
+      const api = await s.start(baseRoutes());
+      const pid = join(tmp, `grandchild-${++counter}`);
+      const claude = fakeClaude(`setsid sleep 300 > /dev/null 2>&1 &\necho $! > ${pid}\nsleep 2.2\nprintf '%s\\n' '${RESULT_LINE}'`);
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude) });
+      assert.equal(r.result.ok, true, r.stderr);
+      await until(() => !isRunning(Number(readFileSync(pid, "utf8"))), 5000, "the dev server to be killed once the session is over");
+    });
+  });
+
+  describe("secrets", () => {
+    it("RYKE_FORK_TOKEN is gone from the environment of everything agent.mjs starts, git included", async () => {
+      const api = await s.start(baseRoutes());
+      const shim = fresh("git-shim");
+      mkdirSync(shim);
+      const seen = join(tmp, `git-env-${++counter}`);
+      const realGit = execFileSync("which", ["git"]).toString().trim();
+      writeFileSync(join(shim, "git"), `#!/bin/sh\nenv >> ${seen}\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: { PATH: `${shim}:${process.env.PATH}` } });
+      assert.equal(r.code, 0, r.stderr);
+      const env = readFileSync(seen, "utf8");
+      assert.ok(env.includes("GIT_CONFIG_VALUE_0=Authorization: Bearer fork-secret"), "git still gets the token, for the calls that need it");
+      assert.doesNotMatch(env, /^RYKE_FORK_TOKEN=/m);
+    });
+
+    it("a job environment that carries host secrets does not pass them to claude, hooks or Bash", async () => {
+      const api = await s.start(baseRoutes());
+      const r = await job(api, cloneBare("fork"), "cat-area", { env: { TYPESAFE_API_KEY: "host-secret", RYKE_INTERNAL_SECRET: "internal-secret", GITHUB_TOKEN: "ghp_x" } });
+      assert.equal(r.code, 0, r.stderr);
+      const names = r.stubRuns[0].envNames;
+      for (const secret of ["TYPESAFE_API_KEY", "RYKE_INTERNAL_SECRET", "GITHUB_TOKEN", "RYKE_FORK_TOKEN"]) assert.ok(!names.includes(secret), `${secret} reached claude`);
+      for (const needed of ["PATH", "HOME", "RYKE_API_URL", "RYKE_TOKEN", "RYKE_TXN", "RYKE_CHECKOUT", "RYKE_ROOT", "IS_SANDBOX"]) assert.ok(names.includes(needed), `${needed} did not reach claude`);
+      assert.doesNotMatch(r.stdout + r.stderr, /host-secret|internal-secret/);
+    });
   });
 
   describe("when claude fails", () => {
@@ -1801,14 +2793,21 @@ describe("harness/agents/claude.mjs", () => {
     const task = byId("cat-area");
     const BEGIN = { txn: "t_9", state: "open", snapshot: "0123456789abcdef", remote: "/forks/convert--t_9.git", token: "fork-token", agentToken: "rtx.t_9.agent", trunk: { remote: "/trunk.git", token: "t" }, warnings: [] };
 
-    // A fake of the client the swarm passes in, recording what the agent calls.
-    function ledger({ begin = BEGIN, txn = { id: "t_9", state: "landed", attempt: 1, landedSeq: 7, train: "tr_1", reason: null } } = {}) {
+    // A fake of the client the swarm passes in, recording what the agent calls. Like the Ledger, an abort
+    // moves a transaction to aborted, unless `refuseAbort` says the train owns it (409).
+    function ledger({ begin = BEGIN, txn = { id: "t_9", state: "landed", attempt: 1, landedSeq: 7, train: "tr_1", reason: null }, refuseAbort = false } = {}) {
       const calls = { begin: [], abort: [] };
+      let current = txn;
       return {
         calls,
         begin: async (repo, input) => (calls.begin.push({ repo, input }), begin),
-        txn: async () => ({ txn }),
-        abort: async (id, reason) => (calls.abort.push({ id, reason }), { state: "aborted" }),
+        txn: async () => ({ txn: current }),
+        abort: async (id, reason) => {
+          calls.abort.push({ id, reason });
+          if (refuseAbort) throw Object.assign(new Error(`transaction ${id} is verifying; wait for the result`), { status: 409 });
+          current = { ...current, state: "aborted", reason };
+          return { state: "aborted" };
+        },
       };
     }
     const runnerRoutes = (result, { state = "done", log = "", exitCode = 0 } = {}) => ({
@@ -1986,6 +2985,57 @@ describe("harness/agents/claude.mjs", () => {
       assert.ok(out.some((l) => l.includes("(exit 127) without a result")));
     });
 
+    it("reports where the transaction really is when the Ledger refuses the abort, not that it was aborted", async () => {
+      const api = ledger({ txn: { id: "t_9", state: "verifying", attempt: 1, reason: null, train: "tr_4" }, refuseAbort: true });
+      const { ctx } = await ctxFor(api, runnerRoutes({ ok: false, state: "verifying", reason: "wait_timeout", attempts: 1 }));
+      const r = await runTask(ctx);
+      assert.deepEqual(api.calls.abort.map((a) => a.reason), ["agent_error"], "it did try");
+      assert.deepEqual([r.outcome, r.reason, r.train], ["verifying", null, "tr_4"]);
+      assert.match(r.error, /wait_timeout/);
+    });
+
+    it("reports what the Ledger says after an abort that went through", async () => {
+      const api = ledger({ txn: { id: "t_9", state: "open", attempt: 1, reason: null } });
+      const { ctx, out } = await ctxFor(api, runnerRoutes({ ok: false, state: "open", error: "git exploded", attempts: 1 }));
+      const r = await runTask(ctx);
+      assert.deepEqual([r.outcome, r.reason, r.error], ["aborted", "agent_error", "git exploded"]);
+      assert.ok(out.some((l) => l.includes("aborted (agent_error) after 1 attempt")));
+    });
+
+    // The harness follows the job for as long as agent.mjs can possibly take: every run's Claude session
+    // and wait, plus what git and API retries add (containers/runner/lib/agent.mjs worstCaseMs).
+    const TIMEOUTS = [
+      ["the defaults", {}, Agent.worstCaseMs({ maxAttempts: 3, claudeTimeoutMs: 1_500_000, waitMs: 900_000 })],
+      ["a shorter Claude timeout and wait", { RYKE_CLAUDE_TIMEOUT_S: "60", RYKE_WAIT_S: "30" }, Agent.worstCaseMs({ maxAttempts: 3, claudeTimeoutMs: 60_000, waitMs: 30_000 })],
+    ];
+    for (const [name, env, worst] of TIMEOUTS) {
+      it(`gives the agent job more time than its own worst case with ${name}`, () => {
+        const ms = Claude.jobTimeoutMs(env);
+        assert.ok(ms > worst, `${ms} ms for a job that can take ${worst} ms`);
+        assert.ok(ms <= worst + 10 * 60_000, "and not absurdly more");
+      });
+    }
+
+    it("passes the timeout overrides on to the job, so the job and the harness agree, and sets none when there are none", async () => {
+      const api = ledger();
+      const { runner, ctx } = await ctxFor(api, runnerRoutes({ ok: true, state: "landed", attempts: 1 }), { env: { RYKE_CLAUDE_TIMEOUT_S: "60", RYKE_WAIT_S: "30" } });
+      await runTask(ctx);
+      const env = runner.of("POST /v1/jobs")[0].body.env;
+      assert.deepEqual([env.RYKE_CLAUDE_TIMEOUT_S, env.RYKE_WAIT_S], ["60", "30"]);
+
+      const plain = await ctxFor(ledger(), runnerRoutes({ ok: true, state: "landed", attempts: 1 }));
+      await runTask(plain.ctx);
+      const bare = plain.runner.of("POST /v1/jobs")[0].body.env;
+      assert.ok(!("RYKE_CLAUDE_TIMEOUT_S" in bare) && !("RYKE_WAIT_S" in bare), "the job's own defaults apply");
+    });
+
+    it("refuses a bad timeout before it begins a transaction", async () => {
+      const api = ledger();
+      const { ctx } = await ctxFor(api, runnerRoutes({}), { env: { RYKE_WAIT_S: "soon" } });
+      await assert.rejects(runTask(ctx), /RYKE_WAIT_S must be a positive number/);
+      assert.equal(api.calls.begin.length, 0);
+    });
+
     it("does not abort a transaction that already reached a terminal state", async () => {
       const api = ledger({ txn: { id: "t_9", state: "landed", attempt: 1, landedSeq: 2, train: "t" } });
       const { ctx } = await ctxFor(api, runnerRoutes(undefined, { state: "failed", exitCode: 1 }));
@@ -2011,6 +3061,36 @@ describe("harness/agents/claude.mjs", () => {
       assert.equal(runner.of("DELETE /v1/jobs/j_1").length, 1);
       assert.deepEqual(api.calls.abort.map((a) => a.reason), ["agent_error"]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// swarm.sh: the in-platform demo job (PLAN.md §11.2)
+// ---------------------------------------------------------------------------------------------
+
+describe("swarm.sh", () => {
+  const SWARM_SH = join(ROOT, "containers/runner/bin/swarm.sh");
+
+  it("hands the admin token to swarm.mjs through the environment, never through its argument list", async () => {
+    // `ps` shows every process's arguments to every user; the environment of another user's process is private.
+    const shim = fresh("node-shim");
+    mkdirSync(shim);
+    const seen = join(shim, "seen.json");
+    writeFileSync(join(shim, "node"), `#!/bin/sh\nprintf '%s\\n' "$*" > ${seen}.argv\nprintf '%s' "$RYKE_TOKEN" > ${seen}.token\n`, { mode: 0o755 });
+    const r = await exec("bash", [SWARM_SH, "--repo", "demo", "--mode", "scripted", "--agents", "3"], {
+      env: { ...BASE_ENV, PATH: `${shim}:${process.env.PATH}`, RYKE_ROOT: ROOT, RYKE_API_URL: "http://api.test", RYKE_TOKEN: "admin-secret-token" },
+    });
+    assert.equal(r.stderr, "");
+    const argv = readFileSync(`${seen}.argv`, "utf8").trim();
+    assert.equal(argv, `${join(ROOT, "harness/swarm.mjs")} --api http://api.test --repo demo --mode scripted --agents 3`);
+    assert.ok(!argv.includes("admin-secret-token") && !argv.includes("--token"));
+    assert.equal(readFileSync(`${seen}.token`, "utf8"), "admin-secret-token", "swarm.mjs gets it from RYKE_TOKEN");
+  });
+
+  it("swarm.mjs takes the token from RYKE_TOKEN when --token is absent, and --token still wins", () => {
+    assert.equal(parseSwarmArgs([], { RYKE_TOKEN: "from-env" }).token, "from-env");
+    assert.equal(parseSwarmArgs(["--token", "from-flag"], { RYKE_TOKEN: "from-env" }).token, "from-flag");
+    assert.equal(parseSwarmArgs([], {}).token, "dev");
   });
 });
 
@@ -2051,7 +3131,7 @@ describe("claude mode against a real local stack", { timeout: 270_000 }, () => {
   const task = (id) => catalogue.tasks.find((t) => t.id === id);
   const txnOf = (id) => out.map((l) => new RegExp(`${id}  begin (t_\\w+)`).exec(l)?.[1]).find(Boolean);
 
-  it("lands tasks, reports their reads through the hooks, warns the parked agent early, and re-runs it with the delta after a stale abort", async () => {
+  it("lands tasks, reports their reads through the hooks, warns the parked agent early, moves its change onto the new trunk and re-runs it with the failing tests", async () => {
     const gates = fresh("gates");
     const logs = fresh("stub-logs");
     const env = { RYKE_STUB_LOG_DIR: logs };
@@ -2078,7 +3158,10 @@ describe("claude mode against a real local stack", { timeout: 270_000 }, () => {
     assert.ok(warned, "stale.warning for the parked transaction");
     assert.ok(warned.data.paths.some((p) => (p.path ?? p) === "src/format.ts"));
 
-    // Open the gate: the next edit tells the agent through the hook, then it submits, goes stale, retries and lands.
+    // Open the gate: the next edit tells the agent through the hook. When it stops, trunk has moved under
+    // what it read, so Ryke moves its change onto the new trunk (a clean rebase) and submits it there.
+    // Nothing goes stale. What the stale rule exists to catch, a change written against the old rounding,
+    // is caught by trunk's own verification instead, and the agent is re-run with the failing tests.
     writeFileSync(join(gates, "cat-area.go"), "");
     const area = await parked;
     assert.deepEqual([area.outcome, area.attempts], ["landed", 2], out.join("\n"));
@@ -2089,19 +3172,21 @@ describe("claude mode against a real local stack", { timeout: 270_000 }, () => {
     assert.equal(runs[0].variant, "v1");
     assert.ok(runs[0].contexts.some((c) => c.includes("src/format.ts") && c.includes(pre.txn)), `the warning reached the agent: ${JSON.stringify(runs[0].contexts)}`);
     assert.ok(runs[0].contexts.some((c) => /^\+export function formatValue\(n: number, digits = 3\)/m.test(c)), "with the change itself");
+    assert.ok(runs[0].contexts.every((c) => /Ryke moves your change onto the current trunk and submits it there/.test(c)), "and says what will happen to its work");
     assert.ok(!runs[0].prompt.includes(RETRY_STALE));
     assert.equal(runs[1].variant, "v2");
-    assert.ok(runs[1].prompt.includes(RETRY_STALE), "the second run is told why");
-    assert.match(runs[1].prompt, /\+export function formatValue\(n: number, digits = 3\): string \{/, "and gets the delta");
+    assert.ok(runs[1].prompt.includes(RETRY_FAILED), "the second run is told which tests failed on the new trunk");
 
-    // What the Ledger saw: two attempts, the first one stale on format.ts through t-precision.
+    // What the Ledger saw: the transaction was refreshed onto the new trunk, not aborted as stale, and
+    // verification failed the first attempt.
     const detail = await api.txn(parkedTxn);
     assert.equal(detail.txn.state, "landed");
     assert.equal(detail.txn.model, STUB_MODEL);
     assert.deepEqual(detail.attempts.map((a) => a.attempt), [1, 2]);
-    const stale = detail.ops.find((o) => o.kind === "txn.stale");
-    assert.ok(stale, "the first attempt went stale");
-    assert.deepEqual(stale.data.paths.map((p) => [p.path, p.by]), [["src/format.ts", pre.txn]]);
+    const refreshed = detail.ops.find((o) => o.kind === "txn.open" && o.data.refresh === true);
+    assert.ok(refreshed, "the transaction was moved onto the new trunk");
+    assert.ok(!detail.ops.some((o) => o.kind === "txn.stale"), "and never went stale");
+    assert.ok(detail.ops.some((o) => o.kind === "txn.failed"), "the area tests expect the old rounding");
     assert.ok(detail.ops.some((o) => o.kind === "lease.granted"), "the PreToolUse hook asked for leases");
     const shots = detail.evidence.filter((e) => e.kind === "screenshot").map((e) => e.summary);
     assert.deepEqual(shots, [task("cat-area").screenshot_description, task("cat-area").screenshot_description]);

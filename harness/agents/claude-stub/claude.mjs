@@ -9,7 +9,8 @@
 //
 // Test knobs (env): RYKE_CATALOGUE_DIR (default demo/convert), RYKE_STUB_DELAY_MS between tool calls,
 // RYKE_STUB_GATE_DIR (park after the reads until <dir>/<task>.go exists, and touch <task>.waiting),
-// RYKE_STUB_LOG_DIR (append what each run saw to <dir>/<task>.jsonl).
+// RYKE_STUB_LOG_DIR (append what each run saw to <dir>/<task>.jsonl: prompt, cwd, the hooks' contexts and the
+// names of the environment variables it was given, which is how a test sees what agent.mjs let through).
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -316,7 +317,7 @@ export async function session(argv, env = process.env, cwd = process.cwd()) {
     mkdirSync(env.RYKE_STUB_LOG_DIR, { recursive: true });
     appendFileSync(
       join(env.RYKE_STUB_LOG_DIR, `${task.id}.jsonl`),
-      `${JSON.stringify({ task: task.id, variant: applied, prompt: args.prompt, model: args.model, files: files.map((f) => f.path), contexts, hooks: hookRuns, env: { RYKE_FORK_TOKEN: env.RYKE_FORK_TOKEN ?? null, RYKE_TOKEN: env.RYKE_TOKEN ?? null } })}\n`,
+      `${JSON.stringify({ task: task.id, variant: applied, prompt: args.prompt, model: args.model, cwd, files: files.map((f) => f.path), contexts, hooks: hookRuns, env: { RYKE_FORK_TOKEN: env.RYKE_FORK_TOKEN ?? null, RYKE_TOKEN: env.RYKE_TOKEN ?? null }, envNames: Object.keys(env).sort() })}\n`,
     );
   }
 

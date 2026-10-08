@@ -7,6 +7,7 @@
 // Claude Code login on the runner's machine). With it, the job runs harness/agents/claude-stub instead.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { budgetsFrom, DEFAULT_MAX_ATTEMPTS, worstCaseMs } from "../../containers/runner/lib/agent.mjs";
 import { identityFor } from "../lib/tasks.mjs";
 import { brief, describeWarnings } from "./scripted.mjs";
 
@@ -17,7 +18,6 @@ export const DEFAULT_MODEL = "claude-sonnet-5-5";
 // up runs that no model produced (PLAN.md §0.10).
 export const STUB_MODEL = "claude-stub";
 
-const JOB_TIMEOUT_MS = 60 * 60_000;
 const POLL_MS = 400;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,7 +52,7 @@ export function runnerClient(base) {
 
 // Streams the job's log to `onLine` until the job ends, then returns its final status. Status is read
 // before the log, so a job that ends between the two calls still has its last lines delivered.
-export async function follow(runner, id, onLine, { timeoutMs = JOB_TIMEOUT_MS, pollMs = POLL_MS } = {}) {
+export async function follow(runner, id, onLine, { timeoutMs = jobTimeoutMs(), pollMs = POLL_MS } = {}) {
   const until = Date.now() + timeoutMs;
   let offset = 0;
   let pending = "";
@@ -113,8 +113,15 @@ export const relayable = (line) => line.trim() !== "" && !line.startsWith('{"ok"
 
 const TERMINAL = new Set(["landed", "rejected", "aborted", "recalled", "needs_human"]);
 
+// How long the harness follows a job before it cancels it. The job ends by itself after at most every
+// Claude session and wait it is allowed (agent.mjs worstCaseMs); cutting it off earlier would abort a
+// transaction that was about to land, so this is that worst case plus time to see the result.
+const JOB_GRACE_MS = 5 * 60_000;
+const TIMEOUT_VARS = ["RYKE_CLAUDE_TIMEOUT_S", "RYKE_WAIT_S"];
+export const jobTimeoutMs = (env = process.env) => worstCaseMs({ maxAttempts: DEFAULT_MAX_ATTEMPTS, ...budgetsFrom(env) }) + JOB_GRACE_MS;
+
 // ctx: as the scripted agent's ({ api, repo, task, dir, worker, contention, log(agent, line), … }) plus,
-// all optional: stub, model, apiUrl, runnerUrl, env (extra job env), jobTimeoutMs.
+// all optional: stub, model, apiUrl, runnerUrl, env (extra job env), jobTimeoutMs (default: jobTimeoutMs()).
 // Resolves with the same record the scripted agent returns; throws only for things the agent cannot handle.
 export async function runTask(ctx) {
   const { api, repo, task, dir, worker, contention = false, log } = ctx;
@@ -124,8 +131,12 @@ export async function runTask(ctx) {
   const runnerUrl = ctx.runnerUrl ?? process.env.RYKE_RUNNER_URL ?? `http://127.0.0.1:${8789 + offset}`;
   const claudeModel = ctx.model ?? process.env.RYKE_CLAUDE_MODEL ?? DEFAULT_MODEL;
   const key = process.env.ANTHROPIC_API_KEY;
+  // The job must run with the timeouts the harness computed its own from, so they are passed on rather
+  // than left to whatever the runner's environment holds. Unset means the job's defaults, as computed.
+  const timeouts = Object.fromEntries(TIMEOUT_VARS.map((k) => [k, ctx.env?.[k] ?? process.env[k]]).filter(([, v]) => v !== undefined && v !== ""));
+  const jobTimeout = ctx.jobTimeoutMs ?? jobTimeoutMs(timeouts);
 
-  // Ahead of begin, so a bad key leaves no half-open transactions behind.
+  // Ahead of begin, so a bad key or timeout leaves no half-open transactions behind.
   if (!stub && key) await validateKey(key);
 
   // The sloppy pair keeps its identity so a recall by agent or model still finds it; everything else
@@ -160,6 +171,7 @@ export async function runTask(ctx) {
         RYKE_TOKEN: b.agentToken,
         RYKE_FORK_TOKEN: b.token,
         RYKE_CONTENTION: contention ? "on" : "off",
+        ...timeouts,
         RYKE_CLAUDE_STUB: stub ? "1" : "0",
         CLAUDE_BIN: stub ? STUB_BIN : process.env.CLAUDE_BIN || "claude",
         ...(stub ? { RYKE_CATALOGUE_DIR: dir } : { ...(key ? { ANTHROPIC_API_KEY: key } : {}), ...(process.env.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL } : {}) }),
@@ -167,22 +179,26 @@ export async function runTask(ctx) {
       },
     );
     say(`${stub ? "stub " : ""}claude job ${job} started (${claudeModel})`);
-    const status = await follow(runner, job, (line) => relayable(line) && say(line), { timeoutMs: ctx.jobTimeoutMs });
+    const status = await follow(runner, job, (line) => relayable(line) && say(line), { timeoutMs: jobTimeout });
     const r = status.result && typeof status.result === "object" ? status.result : null;
-    const t = (await api.txn(b.txn)).txn;
+    let t = (await api.txn(b.txn)).txn;
     result.attempts = r?.attempts ?? t.attempt ?? 0;
     if (!r) {
       say(`agent job ${job} ${status.state} (exit ${status.exitCode ?? "?"}) without a result`);
       if (!TERMINAL.has(t.state)) await api.abort(b.txn, "agent_error").catch(() => {});
       return { ...result, outcome: "error", reason: "no_result", error: `agent job ${job} ended ${status.state} without a result line` };
     }
-    if (r.ok === false && !TERMINAL.has(t.state)) await api.abort(b.txn, "agent_error").catch(() => {});
-    const final = r.ok === false && !TERMINAL.has(t.state) ? "aborted" : t.state;
-    say(`${final}${t.reason ? ` (${t.reason})` : ""} after ${result.attempts} attempt${result.attempts === 1 ? "" : "s"}${t.landedSeq != null ? `, seq ${t.landedSeq}` : ""}`);
+    if (r.ok === false && !TERMINAL.has(t.state)) {
+      // The Ledger may refuse (409 while the train is verifying it), so what is reported is what it says
+      // afterwards, not what was asked for.
+      await api.abort(b.txn, "agent_error").catch(() => {});
+      t = (await api.txn(b.txn)).txn;
+    }
+    say(`${t.state}${t.reason ? ` (${t.reason})` : ""} after ${result.attempts} attempt${result.attempts === 1 ? "" : "s"}${t.landedSeq != null ? `, seq ${t.landedSeq}` : ""}`);
     return {
       ...result,
-      outcome: final,
-      reason: final === t.state ? (t.reason ?? null) : "agent_error",
+      outcome: t.state,
+      reason: t.reason ?? null,
       seq: t.landedSeq ?? undefined,
       train: t.train ?? undefined,
       ...(r.ok === false ? { error: brief(r.error ?? r.reason ?? "agent job failed") } : {}),

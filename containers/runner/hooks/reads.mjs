@@ -2,7 +2,7 @@
 // PostToolUse on Read|Grep|Glob (PLAN.md §10.4): reports what the agent looked at to the Ledger, so
 // the read set R exists even though the agent works in its own clone, and hands back the early
 // stale warnings of §4.4 as additionalContext.
-import { apiCall, appendLine, hasApi, isMain, log, READS_BATCH, postToolUseReply, runHook, staleContext, touchedPaths } from "./common.mjs";
+import { apiCall, appendLine, hasApi, hookMain, log, READS_BATCH, postToolUseReply, staleContext, touchedPaths } from "./common.mjs";
 
 export async function handle(input, cfg) {
   const paths = touchedPaths(input, cfg);
@@ -23,4 +23,4 @@ export async function handle(input, cfg) {
   return text ? postToolUseReply(text) : null;
 }
 
-if (isMain(import.meta.url)) await runHook(handle);
+await hookMain(import.meta.url, handle);
