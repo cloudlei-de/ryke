@@ -12,11 +12,12 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { MAX_REFRESHES, runAgent } from "../../harness/agents/synthetic.mjs";
-import { caveatsFor, main as benchMain, noteFor, parseBenchArgs, runBench, startBenchStack, UsageError, writeResults } from "../../harness/bench.mjs";
+import { BENCH_ENV_KEYS, caveatsFor, main as benchMain, noteFor, parseBenchArgs, runBench, startBenchStack, UsageError, writeResults } from "../../harness/bench.mjs";
 import { runCell, runVerifyCommand, SEED_POLICY } from "../../harness/bench/cell.mjs";
 import { ABLATION_POLICIES, BENCH_POLICIES, buildResults, isRyke, percentile, rykeOpStats, rykeVerifyRuns, summarizeCell } from "../../harness/bench/metrics.mjs";
 import { authRemote, checkTrunk, controlPlane, FifoQueue, landOne, Mutex, pickCommits, sleep } from "../../harness/bench/plumbing.mjs";
 import { lockPolicy, queuePolicy, Rejected, rykeNoLeasePolicy, rykeNoPipePolicy, rykePolicy } from "../../harness/bench/policies.mjs";
+import { client } from "../../harness/lib/client.mjs";
 import { chart, leaseComparison, pipelineComparison, renderMarkdown, table, verdict } from "../../harness/bench/render.mjs";
 import { inferCause, outcomeFromState, waitWhileSettling } from "../../harness/bench/settle.mjs";
 import {
@@ -28,6 +29,7 @@ import {
   estimateIncompatibility,
   HOT_FILES,
   incompatible,
+  isBenchHotPath,
   isEditable,
   isPin,
   MIX,
@@ -657,6 +659,8 @@ describe("the Ryke op log", () => {
     assert.equal(s.conflictAborts, 1);
     assert.equal(s.staleWhileReady, 0);
     assert.deepEqual(s.stalePaths, { "src/format.ts": 2, "src/ui/layout.ts": 1 });
+    // The first stale op lists two hot files and still is one abort on hot files; the text conflict is not one.
+    assert.equal(s.hotStaleAborts, 2);
     assert.deepEqual(s.conflictPaths, { "src/ui/styles.ts": 1 });
     assert.equal(s.trainCycleSecondsP50, 2);
     assert.equal(rykeOpStats([]).meanTrainSize, 0);
@@ -683,6 +687,98 @@ describe("stale changes that were waiting for a train", () => {
     const s = rykeOpStats(ops);
     assert.deepEqual([s.staleAborts, s.conflictAborts, s.staleWhileReady], [3, 1, 2]);
   });
+});
+
+// The workload defines "hot": the three files its Zipf draw reads and writes most, plus the pins, which whoever
+// changes a pinned constant rewrites and which therefore heat and get leased with it.
+describe("the workload's hot paths", () => {
+  const rows = [
+    ["the hottest file by reads and writes", "src/format.ts", true],
+    ["the second", "src/ui/layout.ts", true],
+    ["the third, which is a union path and never aborts anything but is still hot", "src/registry.ts", true],
+    ["a pin of a hot constant is rewritten by whoever changes it, so it heats with it", "src/bench/pin-seed-format.ts", true],
+    ["any pin", "src/bench/pin-a1b2.ts", true],
+    ["a file that merely gets aborted a lot is not hot by the workload's definition", "src/ui/html.ts", false],
+    ["a new unit", "src/units/temperature.ts", false],
+    ["a pin-like name outside the pin directory", "src/pin-seed-format.ts", false],
+    ["a nested path under the pin directory", "src/bench/sub/pin-x.ts", false],
+    ["a test file", "test/format.test.ts", false],
+    ["a similar name", "src/format.tsx", false],
+    ["an empty path", "", false],
+  ];
+  for (const [name, path, want] of rows) {
+    it(name, () => assert.equal(isBenchHotPath(path), want));
+  }
+  it("is exactly HOT_FILES and the pins", () => {
+    for (const f of HOT_FILES) assert.equal(isBenchHotPath(f), true, f);
+    for (const f of SEED_FILES.filter((x) => !HOT_FILES.includes(x))) assert.equal(isBenchHotPath(f), false, f);
+  });
+});
+
+// "Stale aborts on hot files" is a count of aborts: an abort that lists src/format.ts and the pin that goes with
+// it is one abort on hot files, not two. Summing the by-path table (`stalePaths`, which stays as it is for the
+// per-file report) counted it twice, so the number could exceed all the stale aborts and the lease verdict could
+// pass or fail the wrong way.
+describe("stale aborts on hot files, each abort once", () => {
+  const op = (kind, data, at = 1000) => ({ at, kind, data, txn: null });
+  const stale = (paths, reason = "stale_read", at) => op("txn.stale", { reason, paths: paths.map((path) => ({ path, seq: 2 })) }, at);
+  const abortedStale = (paths, at) => op("txn.aborted", { reason: "max_attempts", cause: { state: "stale", reason: "stale_read" }, paths: paths.map((path) => ({ path, seq: 4 })) }, at);
+  const PIN = "src/bench/pin-seed-format.ts";
+  // [name, ops, window, stale aborts, on hot files, the by-path table]
+  const rows = [
+    ["no ops", [], {}, 0, 0, {}],
+    ["one abort on one hot file", [stale(["src/format.ts"])], {}, 1, 1, { "src/format.ts": 1 }],
+    ["an abort listing a hot file and its pin is one abort, the table keeps both", [stale(["src/format.ts", PIN])], {}, 1, 1, { "src/format.ts": 1, [PIN]: 1 }],
+    ["an abort listing all three hot files and a pin is still one", [stale(["src/format.ts", "src/ui/layout.ts", "src/registry.ts", PIN])], {}, 1, 1, { "src/format.ts": 1, "src/ui/layout.ts": 1, "src/registry.ts": 1, [PIN]: 1 }],
+    ["an abort listing the same hot path twice is one", [stale(["src/format.ts", "src/format.ts"])], {}, 1, 1, { "src/format.ts": 2 }],
+    ["an abort on a cold file only is not one on hot files", [stale(["src/ui/html.ts", "src/units/length.ts"])], {}, 1, 0, { "src/ui/html.ts": 1, "src/units/length.ts": 1 }],
+    ["an abort listing a cold and a hot file is one on hot files", [stale(["src/ui/html.ts", "src/format.ts"])], {}, 1, 1, { "src/ui/html.ts": 1, "src/format.ts": 1 }],
+    ["an abort without paths is not on a hot file", [stale([])], {}, 1, 0, {}],
+    ["an op without a paths list at all is not on a hot file", [op("txn.stale", { reason: "stale_read" })], {}, 1, 0, {}],
+    ["the registry alone is hot", [stale(["src/registry.ts"])], {}, 1, 1, { "src/registry.ts": 1 }],
+    ["a pin alone is hot", [stale([PIN])], {}, 1, 1, { [PIN]: 1 }],
+    ["a third attempt recorded as an abort with a stale cause counts like a stale op", [abortedStale(["src/format.ts", PIN])], {}, 1, 1, { "src/format.ts": 1, [PIN]: 1 }],
+    ["an abort whose cause was a failed verify is not a stale abort", [op("txn.aborted", { reason: "max_attempts", cause: { state: "failed", reason: "tests" }, paths: [{ path: "src/format.ts" }] })], {}, 0, 0, {}],
+    ["a text conflict on a hot file is a conflict, not a stale_read abort", [stale(["src/format.ts"], "text_conflict")], {}, 0, 0, {}],
+    [
+      "several aborts add up one each",
+      [stale(["src/format.ts", PIN]), stale(["src/ui/layout.ts"]), stale(["src/ui/html.ts"]), abortedStale(["src/format.ts", "src/ui/layout.ts"])],
+      {},
+      4,
+      3,
+      { "src/format.ts": 2, [PIN]: 1, "src/ui/layout.ts": 2, "src/ui/html.ts": 1 },
+    ],
+    ["only aborts inside the window count", [stale(["src/format.ts"], "stale_read", 500), stale(["src/format.ts", PIN], "stale_read", 1500), stale(["src/format.ts"], "stale_read", 2500)], { sinceAt: 1000, untilAt: 2000 }, 1, 1, { "src/format.ts": 1, [PIN]: 1 }],
+  ];
+  for (const [name, ops, window, all, hot, byPath] of rows) {
+    it(name, () => {
+      const s = rykeOpStats(ops, window);
+      assert.equal(s.staleAborts, all);
+      assert.equal(s.hotStaleAborts, hot);
+      assert.deepEqual(s.stalePaths, byPath);
+      assert.ok(s.hotStaleAborts <= s.staleAborts, "aborts on hot files can never exceed all the stale aborts");
+    });
+  }
+});
+
+// What the Ledger recorded about leases for a cell's repo. A `ryke-nolease` agent never calls intend-write, so
+// its own wait counter is 0 whatever happened; the ops are how the ablation is checked to have taken effect.
+describe("lease ops in the Ryke op log", () => {
+  const op = (kind, at = 1000, txn = "t_1") => ({ at, kind, data: { path: "src/format.ts" }, txn });
+  const rows = [
+    ["no ops", [], {}, 0, 0],
+    ["grants and waiting ops are counted apart", [op("lease.granted"), op("lease.granted"), op("lease.waiting"), op("lease.waiting"), op("lease.waiting")], {}, 2, 3],
+    ["every op counts, a transaction asking again is another op", [op("lease.waiting"), op("lease.waiting"), op("lease.granted")], {}, 1, 2],
+    ["a release is neither", [op("lease.released"), op("lease.granted")], {}, 1, 0],
+    ["a log with no lease ops at all is a ryke-nolease run", [op("txn.ready"), op("train.formed")], {}, 0, 0],
+    ["only the window", [op("lease.granted", 500), op("lease.granted", 1500), op("lease.waiting", 1600), op("lease.waiting", 2500)], { sinceAt: 1000, untilAt: 2000 }, 1, 1],
+  ];
+  for (const [name, ops, window, grants, waiting] of rows) {
+    it(name, () => {
+      const s = rykeOpStats(ops, window);
+      assert.deepEqual([s.leaseGrantOps, s.leaseWaitingOps], [grants, waiting]);
+    });
+  }
 });
 
 describe("speculative trains in the Ryke op log", () => {
@@ -847,6 +943,19 @@ describe("the report", () => {
     const md = renderMarkdown({ results, details: cells.map((c) => detail(c.policy, c.agents)), meta: { caveats: ["N = 200 was left out (PLAN.md cut C3)."] } });
     for (const part of ["Synthetic agents: real git, real merges, real tests, scripted edits", "## Throughput", "## Every cell", "### Ryke internals", "Ryke has the highest landed/min at every N >= 50", "N = 200 was left out", "src/format.ts 3"]) assert.ok(md.includes(part), part);
     assert.equal((md.match(/^\| (lock|queue|ryke) +\| \d+ +\| \d+ +\| [\d.]+ +\| 8 /gm) ?? []).length, 6);
+  });
+
+  it("the verify-runs note counts discarded speculative trains as one run each and calls the ratio an upper bound", () => {
+    const cells = [cell("ryke", 50, 9), cell("lock", 50, 4)];
+    const results = buildResults({ cells, durationSeconds: 60, note: "n", generatedAt: null });
+    const md = renderMarkdown({ results, details: cells.map((c) => detail(c.policy, c.agents)), meta: {} });
+    const note = md.split("\n").find((l) => l.startsWith("- Verify runs"));
+    assert.ok(note, "a note on verify runs under How to read this");
+    assert.match(note, /bisection probes/);
+    assert.match(note, /Discarded speculative trains are counted as one verify run each/);
+    assert.match(note, /skips verify when the turn check after prepare already says discard/);
+    assert.match(note, /upper bound for pipelined Ryke/);
+    assert.match(note, /baselines run one verify per attempt that merged cleanly/);
   });
 
   describe("with write leases off", () => {
@@ -1161,6 +1270,44 @@ describe("the command line", () => {
     });
   }
 
+  // bench/results/latest.json is read by the dashboard, whose parseBench refuses the whole file when one cell names a
+  // policy it does not know. An explicit --out must not be a way around the default that keeps ablations out of it.
+  describe("--out at the dashboard's results directory", () => {
+    const dashboard = join(ROOT, "bench/results");
+    const ablationDir = join(dashboard, "ablation");
+    const message = (policy) => (e) =>
+      e instanceof UsageError &&
+      /--out/.test(e.message) &&
+      /bench\/results\/ablation/.test(e.message) &&
+      /lock, queue and ryke/.test(e.message) &&
+      policy.split(",").filter((p) => ABLATION_POLICIES.includes(p)).every((p) => e.message.includes(p));
+    for (const policy of ["ryke,ryke-nolease", "ryke,ryke-nopipe", "ryke-nolease", "ryke-nopipe", "ryke,ryke-nolease,ryke-nopipe", "lock,queue,ryke,ryke-nopipe"]) {
+      it(`refuses ${policy}`, () => assert.throws(() => parseBenchArgs(["--policy", policy, "--out", dashboard]), message(policy)));
+    }
+    // The same directory under every spelling that resolves to it.
+    const spellings = [
+      ["with a trailing slash", `${dashboard}/`],
+      ["relative to the working directory", relative(process.cwd(), dashboard)],
+      ["through a parent directory", join(ablationDir, "..")],
+      ["through a dot", `${dashboard}/.`],
+    ];
+    for (const [spelling, out] of spellings) {
+      it(`refuses an ablation with --out ${spelling}`, () => assert.throws(() => parseBenchArgs(["--policy", "ryke,ryke-nolease", "--out", out]), message("ryke,ryke-nolease")));
+    }
+
+    const allowed = [
+      ["the dashboard's own three policies", ["--policy", "lock,queue,ryke", "--out", dashboard], dashboard],
+      ["plain ryke alone", ["--policy", "ryke", "--out", dashboard], dashboard],
+      ["the default policies with the default out, spelled out", ["--out", dashboard], dashboard],
+      ["an ablation in the ablation directory", ["--policy", "ryke,ryke-nolease", "--out", ablationDir], ablationDir],
+      ["an ablation in a directory next to it", ["--policy", "ryke,ryke-nopipe", "--out", `${dashboard}-ablation`], `${dashboard}-ablation`],
+      ["an ablation in another directory below it", ["--policy", "ryke,ryke-nopipe", "--out", join(dashboard, "repeats")], join(dashboard, "repeats")],
+      ["an ablation somewhere else", ["--policy", "ryke,ryke-nolease", "--out", "/tmp/x"], "/tmp/x"],
+      ["an ablation without --out, which defaults to the ablation directory", ["--policy", "ryke,ryke-nolease"], ablationDir],
+    ];
+    for (const [name, argv, out] of allowed) it(`allows ${name}`, () => assert.equal(parseBenchArgs(argv).out, out));
+  });
+
   it("the policy names are the dashboard's three plus the two ablations", () => {
     assert.deepEqual(ABLATION_POLICIES, ["ryke-nolease", "ryke-nopipe"]);
     assert.deepEqual(BENCH_POLICIES, [...POLICIES, "ryke-nolease", "ryke-nopipe"]);
@@ -1274,6 +1421,39 @@ describe("runBench", () => {
     assert.match(usage, /ryke-nolease \(Ryke with write leases off/);
     assert.match(usage, /ryke-nopipe \(Ryke with speculative pipelining off/);
     assert.match(usage, /includes either ablation writes to bench\/results\/ablation by default/);
+  });
+});
+
+// The bench starts its stack in the calling process and the stack reads these from the environment, so they are set
+// there. e2e:contention runs the bench leg after the scripted swarms and puts back exactly BENCH_ENV_KEYS
+// (harness/e2e/lib.mjs withEnvRestored); a variable set here that is not in the list would leak out of the leg.
+describe("startBenchStack", () => {
+  it("sets RYKE_JEV and RYKE_STATE_DIR before the stack reads them, and changes no other variable", async () => {
+    const env = { PATH: "/bin", RYKE_JEV: "live", RYKE_TOKEN: "t", RYKE_PORT_OFFSET: "3" };
+    const before = { ...env };
+    const seen = [];
+    const start = async (opts) => (seen.push({ opts, env: { ...env } }), { stub: true });
+    assert.deepEqual(await startBenchStack(5, { start, env }), { stub: true });
+    assert.deepEqual(seen.map((c) => c.opts), [{ offset: 5, fresh: true, quiet: true }]);
+    assert.equal(seen[0].env.RYKE_JEV, "off");
+    assert.equal(seen[0].env.RYKE_STATE_DIR, join(tmpdir(), "ryke-bench-state-5"));
+    const changed = Object.keys({ ...before, ...env }).filter((k) => before[k] !== env[k]);
+    assert.deepEqual(changed.sort(), [...BENCH_ENV_KEYS].sort());
+  });
+
+  it("names the variables it sets, once each", () => {
+    assert.deepEqual([...BENCH_ENV_KEYS].sort(), ["RYKE_JEV", "RYKE_STATE_DIR"]);
+  });
+
+  it("puts the state dir outside the repo, one per offset", async () => {
+    const dirs = [];
+    for (const offset of [70, 71]) {
+      const env = {};
+      await startBenchStack(offset, { start: async () => ({}), env });
+      dirs.push(env.RYKE_STATE_DIR);
+    }
+    assert.deepEqual(dirs, [join(tmpdir(), "ryke-bench-state-70"), join(tmpdir(), "ryke-bench-state-71")]);
+    assert.ok(dirs.every((d) => !d.startsWith(ROOT)));
   });
 });
 
@@ -2334,10 +2514,18 @@ describe(`real cells (3 agents, 20 s) on a private stack at offset ${STACK_OFFSE
         assert.equal(detail.ledger.quiet, true);
         assert.ok(detail.ryke.trains >= 1);
       }
-      if (policy === "ryke-nolease") assert.deepEqual([detail.leaseWaits, detail.leaseWaitSeconds, detail.leaseGaveUp], [0, 0, 0]);
-      // The speculative counts are always there for Ryke; with pipelining off the Ledger never forms a second train.
+      if (policy === "ryke-nolease") {
+        assert.deepEqual([detail.leaseWaits, detail.leaseWaitSeconds, detail.leaseGaveUp], [0, 0, 0]);
+        // Its agents never call intend-write, so the Ledger never granted or queued a lease either.
+        assert.deepEqual([detail.ryke.leaseGrantOps, detail.ryke.leaseWaitingOps], [0, 0]);
+      }
+      // The speculative counts are always there for Ryke.
       if (isRyke(policy)) assert.deepEqual(Object.keys(detail.ryke.speculative), ["formed", "confirmed", "discarded"]);
-      if (policy === "ryke-nopipe") assert.deepEqual(detail.ryke.speculative, { formed: 0, confirmed: 0, discarded: 0 });
+      // Pipelining is a switch of the repo's ryke.json, so it is read where the Ledger holds it. Three agents rarely
+      // form a speculative train in 20 s whatever the switch says, so zero speculative trains would prove nothing.
+      const { policy: repoPolicy } = await client(stack.apiUrl, stack.token).repo(`bench-${policy}-3`);
+      if (policy === "ryke-nopipe") assert.equal(repoPolicy.pipeline, false);
+      else assert.notEqual(repoPolicy.pipeline, false, "only ryke-nopipe turns pipelining off");
     });
   }
 });

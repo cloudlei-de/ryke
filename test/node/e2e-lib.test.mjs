@@ -17,7 +17,6 @@ import {
   formatBenchComparison,
   formatComparison,
   formatCriteria,
-  isBenchHotPath,
   landedPerMinute,
   jevPlan,
   M3_CRITERIA,
@@ -28,6 +27,7 @@ import {
   reportSummary,
   runNode,
   stalePaths,
+  withEnvRestored,
 } from "../../harness/e2e/lib.mjs";
 
 const MIN = 60_000;
@@ -159,46 +159,46 @@ describe("landedPerMinute", () => {
 });
 
 describe("contentionVerdict", () => {
-  // The baseline never leases anything; the contention-on run defaults to one in which leases made someone
-  // wait, so a row only has to name what it changes.
+  // The scripted leg proves that the mechanism ran, not that it helped: the hot-file difference between the two
+  // swarms is timing alone (a lease only delays a writer of a hot path another open change holds, and the scripted
+  // catalogue never has two of those), so it is never asserted, whatever the numbers and whatever the waits. The
+  // lease effect is the bench leg's. A row only has to name what it changes.
   const baseline = (hot, trunkGreen = true) => ({ hotStaleAborts: hot, trunkGreen, leaseGrants: 0, leaseWaits: 0 });
   const leased = (hot, over = {}) => ({ hotStaleAborts: hot, trunkGreen: true, leaseGrants: 40, leaseWaits: 5, ...over });
   const NOT_EXERCISED = "contention on granted no leases (0 lease.granted ops), so the lease mechanism was not exercised";
-  const reduced = (off, on) => `contention on did not reduce stale aborts on hot files: off ${off}, on ${on}`;
+  const NO_WAIT_COUNT = "contention on has no lease wait count, so it is unknown whether leases made anyone wait";
   const rows = [
-    // Leases made someone wait: the hot-file claim is asserted, exactly as before.
+    // The hot-file difference is reported, never asserted: every one of these holds.
     ["waits, fewer hot aborts with contention on, both trunks green", baseline(9), leased(3), []],
-    ["waits, one fewer is enough", baseline(2), leased(1), []],
-    ["waits, equal numbers are not a reduction", baseline(3), leased(3), [reduced(3, 3)]],
-    ["waits, more with contention on is not a reduction", baseline(3), leased(5), [reduced(3, 5)]],
-    ["waits, no hot aborts at all in the baseline proves nothing", baseline(0), leased(0), [reduced(0, 0)]],
-    ["a single wait is enough to assert the hot-file claim", baseline(3), leased(5, { leaseWaits: 1 }), [reduced(3, 5)]],
-    // Nobody waited: leases changed nothing, so the difference is noise and is not asserted either way.
+    ["waits, equal hot aborts is not a failure", baseline(3), leased(3), []],
+    ["waits, more hot aborts with contention on is not a failure", baseline(3), leased(5), []],
+    ["waits, no hot aborts at all in the baseline is not a failure", baseline(0), leased(0), []],
+    ["a single wait changes nothing about that", baseline(3), leased(5, { leaseWaits: 1 }), []],
     ["no waits, more hot aborts with contention on (24 off, 25 on at e080cb1) is not a failure", baseline(24), leased(25, { leaseWaits: 0 }), []],
     ["no waits, fewer hot aborts with contention on is not credited to leases and not a failure either", baseline(28), leased(24, { leaseWaits: 0 }), []],
     ["no waits, equal hot aborts", baseline(3), leased(3, { leaseWaits: 0 }), []],
     ["no waits and no hot aborts at all", baseline(0), leased(0, { leaseWaits: 0 }), []],
+    ["hot counts that are missing are nobody's business, with waits", baseline(undefined), leased(undefined), []],
+    ["hot counts that are not numbers are nobody's business either", baseline("many"), leased(null), []],
+    ["a hot count of Infinity or NaN is not asserted on", baseline(Number.NaN), leased(Infinity), []],
     // The mechanism must have been exercised in the on run, whether or not anyone waited.
     ["no leases granted with contention on fails, waits or not", baseline(9), leased(3, { leaseGrants: 0, leaseWaits: 0 }), [NOT_EXERCISED]],
     ["no leases granted fails even when the hot-file numbers look right", baseline(9), leased(3, { leaseGrants: 0 }), [NOT_EXERCISED]],
-    ["no leases granted and waits with worse hot numbers fails both", baseline(3), leased(5, { leaseGrants: 0 }), [NOT_EXERCISED, reduced(3, 5)]],
+    ["no leases granted with worse hot numbers fails only for the grants", baseline(3), leased(5, { leaseGrants: 0 }), [NOT_EXERCISED]],
     ["a grant count that is missing is no grant", baseline(9), leased(3, { leaseGrants: undefined, leaseWaits: 0 }), [NOT_EXERCISED]],
-    // Missing data is a failure, never a silent pass.
-    ["a wait count that is missing fails", baseline(9), leased(3, { leaseWaits: undefined }), ["contention on has no lease wait count, so it is unknown whether leases made anyone wait"]],
-    ["a wait count that is not a number fails", baseline(9), leased(3, { leaseWaits: "7" }), ["contention on has no lease wait count, so it is unknown whether leases made anyone wait"]],
-    ["a missing hot count on the on run fails when waits make it matter", baseline(9), leased(undefined), ["contention on made transactions wait, so hot-file stale aborts are compared, but a count is missing: off 9, on undefined"]],
-    ["a missing hot count on the baseline fails when waits make it matter", baseline(undefined), leased(3), ["contention on made transactions wait, so hot-file stale aborts are compared, but a count is missing: off undefined, on 3"]],
-    ["a missing hot count is nobody's business when nobody waited", baseline(undefined), leased(undefined, { leaseWaits: 0 }), []],
+    // The wait count still decides what the caveat says, so it must be there.
+    ["a wait count that is missing fails", baseline(9), leased(3, { leaseWaits: undefined }), [NO_WAIT_COUNT]],
+    ["a wait count that is not a number fails", baseline(9), leased(3, { leaseWaits: "7" }), [NO_WAIT_COUNT]],
     // Trunks.
     ["a red trunk with contention on is reported", baseline(9), leased(3, { trunkGreen: false }), ["the trunk of the contention on run is not green"]],
     ["a red trunk with contention off is reported", baseline(9, false), leased(3), ["the trunk of the contention off run is not green"]],
     ["a trunk that was not checked is not green", baseline(9), leased(3, { trunkGreen: null }), ["the trunk of the contention on run is not green"]],
     ["a red trunk is reported when nobody waited too", baseline(9), leased(3, { trunkGreen: false, leaseWaits: 0 }), ["the trunk of the contention on run is not green"]],
     [
-      "everything wrong at once reports everything",
+      "everything wrong at once reports the trunks and the grants, and nothing about the hot files",
       baseline(3, false),
       leased(5, { trunkGreen: false, leaseGrants: 0 }),
-      ["the trunk of the contention off run is not green", "the trunk of the contention on run is not green", NOT_EXERCISED, reduced(3, 5)],
+      ["the trunk of the contention off run is not green", "the trunk of the contention on run is not green", NOT_EXERCISED],
     ],
   ];
   for (const [name, off, on, want] of rows) {
@@ -209,7 +209,7 @@ describe("contentionVerdict", () => {
 describe("contentionCaveats", () => {
   const run = (leaseGrants, leaseWaits) => ({ leaseGrants, leaseWaits });
   const NO_WAITS = (grants) =>
-    `contention on never made a transaction wait for a lease (${grants} grants, 0 waits), so leases changed nothing in this run: the hot-file difference between the runs is reported, not asserted, and the lease effect is the bench leg's`;
+    `contention on never made a transaction wait for a lease (${grants} grants, 0 waits), so leases changed nothing in this run: the hot-file difference between the runs is timing alone, reported and never asserted, and the lease effect is the bench leg's`;
   const rows = [
     ["leases made someone wait with contention on, none with it off", run(0, 0), run(228, 7), []],
     ["contention on granted leases but never made anyone wait", run(0, 0), run(228, 0), [NO_WAITS(228)]],
@@ -252,28 +252,10 @@ describe("formatComparison", () => {
 // The bench leg: `ryke` against `ryke-nolease` on the bench workload (harness/bench.mjs, runBench)
 // ---------------------------------------------------------------------------------------------
 
-describe("isBenchHotPath", () => {
-  const rows = [
-    ["the hottest file by reads and writes", "src/format.ts", true],
-    ["the second", "src/ui/layout.ts", true],
-    ["the third, which is a union path and never aborts anything but is still hot", "src/registry.ts", true],
-    ["a pin of a hot constant is rewritten by whoever changes it, so it heats with it", "src/bench/pin-seed-format.ts", true],
-    ["any pin", "src/bench/pin-a1b2.ts", true],
-    ["a file that merely gets aborted a lot is not hot by the workload's definition", "src/ui/html.ts", false],
-    ["a new unit", "src/units/temperature.ts", false],
-    ["a pin-like name outside the pin directory", "src/pin-seed-format.ts", false],
-    ["a nested path under the pin directory", "src/bench/sub/pin-x.ts", false],
-    ["a test file", "test/format.test.ts", false],
-    ["a similar name", "src/format.tsx", false],
-    ["an empty path", "", false],
-  ];
-  for (const [name, path, want] of rows) {
-    it(name, () => assert.equal(isBenchHotPath(path), want));
-  }
-});
-
 describe("benchCellStats", () => {
   // What runBench hands over for one cell: the results cell and the details entry ({policy, agents, ...detail}).
+  // `ryke.hotStaleAborts` is what rykeOpStats counted: each stale_read abort once, however many hot paths it lists.
+  // `stalePaths` is the by-path table and is deliberately not what the hot-file number is made of.
   const cell = (over = {}) => ({ policy: "ryke", agents: 50, landed: 40, landedPerMinute: 40, p50: 12, p95: 30, aborts: { stale_read: 20, max_attempts: 2 }, verifyRunsPerLanded: 0.3, wastedAgentSeconds: 90.5, trunkBreakages: 0, ...over });
   const detail = (over = {}) => ({
     policy: "ryke",
@@ -281,7 +263,7 @@ describe("benchCellStats", () => {
     leaseWaits: 9,
     leaseWaitSeconds: 41.5,
     errors: 0,
-    ryke: { staleAborts: 18, stalePaths: { "src/format.ts": 6, "src/ui/layout.ts": 4, "src/bench/pin-seed-format.ts": 3, "src/units/temperature.ts": 5 } },
+    ryke: { staleAborts: 18, hotStaleAborts: 11, leaseGrantOps: 31, leaseWaitingOps: 12, stalePaths: { "src/format.ts": 6, "src/ui/layout.ts": 4, "src/bench/pin-seed-format.ts": 3, "src/units/temperature.ts": 5 } },
     ...over,
   });
 
@@ -292,22 +274,28 @@ describe("benchCellStats", () => {
       landed: 40,
       landedPerMinute: 40,
       staleAborts: 20,
-      hotStaleAborts: 13,
+      hotStaleAborts: 11,
       leaseWaits: 9,
       leaseWaitSeconds: 41.5,
+      leaseGrantOps: 31,
+      leaseWaitingOps: 12,
       trunkBreakages: 0,
       errors: 0,
     });
   });
 
+  // One abort that lists src/format.ts and its pin is one abort on hot files, not two: summing the by-path
+  // table made the number exceed the cell's own stale_read count.
   const hot = [
-    ["only the workload's hot files and pins are summed", { "src/format.ts": 6, "src/ui/layout.ts": 4, "src/registry.ts": 1, "src/bench/pin-x.ts": 2, "src/ui/html.ts": 20 }, 13],
-    ["no stale aborts at all is zero, not missing", {}, 0],
-    ["only cold files is zero", { "src/ui/html.ts": 20 }, 0],
-    ["a count that is not a number is ignored", { "src/format.ts": 6, "src/ui/layout.ts": "4", "src/registry.ts": null }, 6],
+    ["the per-abort count, not the sum over the hot paths of the by-path table", { hotStaleAborts: 3, stalePaths: { "src/format.ts": 3, "src/bench/pin-seed-format.ts": 3, "src/ui/layout.ts": 2 } }, 3],
+    ["no stale aborts at all is zero, not missing", { hotStaleAborts: 0, stalePaths: {} }, 0],
+    ["an abort count of zero next to a by-path table is still zero", { hotStaleAborts: 0, stalePaths: { "src/format.ts": 6 } }, 0],
+    ["a count that is not a number is missing", { hotStaleAborts: "4" }, null],
+    ["a count that is not finite is missing", { hotStaleAborts: Number.NaN }, null],
+    ["a by-path table without the count is not summed into one", { stalePaths: { "src/format.ts": 6, "src/ui/layout.ts": 4 } }, null],
   ];
-  for (const [name, stalePaths, want] of hot) {
-    it(`hot-file aborts: ${name}`, () => assert.equal(benchCellStats(cell(), detail({ ryke: { stalePaths } })).hotStaleAborts, want));
+  for (const [name, ryke, want] of hot) {
+    it(`hot-file aborts: ${name}`, () => assert.equal(benchCellStats(cell(), detail({ ryke })).hotStaleAborts, want));
   }
 
   it("a cell without a stale_read entry had none", () => assert.equal(benchCellStats(cell({ aborts: { max_attempts: 1 } }), detail()).staleAborts, 0));
@@ -317,10 +305,13 @@ describe("benchCellStats", () => {
     ["no aborts map on the cell", cell({ aborts: undefined }), detail(), "staleAborts"],
     ["an aborts value that is not a map", cell({ aborts: 7 }), detail(), "staleAborts"],
     ["no ryke section in the details (a baseline policy)", cell(), detail({ ryke: null }), "hotStaleAborts"],
-    ["no stalePaths in the ryke section", cell(), detail({ ryke: { staleAborts: 3 } }), "hotStaleAborts"],
-    ["stalePaths that is not a map", cell(), detail({ ryke: { stalePaths: 5 } }), "hotStaleAborts"],
+    ["no hot-file count in the ryke section (details from before it existed)", cell(), detail({ ryke: { staleAborts: 3, stalePaths: { "src/format.ts": 2 } } }), "hotStaleAborts"],
+    ["no ryke section: no lease.granted count", cell(), detail({ ryke: null }), "leaseGrantOps"],
+    ["no lease.granted count in the ryke section", cell(), detail({ ryke: { hotStaleAborts: 1 } }), "leaseGrantOps"],
+    ["no ryke section: no lease.waiting count", cell(), detail({ ryke: null }), "leaseWaitingOps"],
     ["no lease wait count in the details", cell(), detail({ leaseWaits: undefined }), "leaseWaits"],
     ["no landed/min on the cell", cell({ landedPerMinute: undefined }), detail(), "landedPerMinute"],
+    ["no trunk breakage count on the cell", cell({ trunkBreakages: undefined }), detail(), "trunkBreakages"],
   ];
   for (const [name, c, d, field] of missing) {
     it(`missing data stays missing (null), never zero: ${name}`, () => assert.equal(benchCellStats(c, d)[field], null));
@@ -341,22 +332,43 @@ describe("benchCellStats", () => {
 
 describe("benchVerdict", () => {
   const stats = (over = {}) => ({ landedPerMinute: 40, staleAborts: 30, hotStaleAborts: 20, leaseWaits: 6, trunkBreakages: 0, errors: 0, ...over });
-  // The baseline (`ryke-nolease`) never waits; the run with leases defaults to one that did and contended less.
+  // The baseline (`ryke-nolease`) never waits; the run with leases defaults to one that did and cut the hot-file
+  // aborts by far more than the margin.
   const nolease = (over = {}) => stats({ staleAborts: 60, hotStaleAborts: 45, leaseWaits: 0, ...over });
   const ryke = (over = {}) => stats(over);
-  const NO_WAIT = "the bench ryke cell never made an agent wait for a lease (0 lease waits), so it shows nothing about leases";
-  const NOT_FEWER = (off, on) => `in the bench, leases did not reduce stale_read aborts on hot files: ryke-nolease ${off}, ryke ${on}`;
+  const FEW_WAITS = (n) => `the bench ryke cell had ${n} lease wait(s), fewer than the 3 needed for it to show anything about leases`;
+  const NOT_CUT = (off, on, max) => `in the bench, leases did not cut stale_read aborts on hot files by at least 20 %: ryke-nolease ${off}, ryke ${on} (ryke must be at most ${max})`;
+  const NOTHING_TO_CUT = "in the bench, ryke-nolease had no stale_read aborts on hot files, so there is nothing for leases to cut";
+  const BREAKAGES = (name, n) => `the bench ${name} cell has ${n} trunk breakage(s), so its numbers prove nothing`;
   const rows = [
-    ["fewer hot-file aborts with leases and at least one wait passes", nolease(), ryke(), []],
-    ["one fewer is enough", nolease({ hotStaleAborts: 11 }), ryke({ hotStaleAborts: 10 }), []],
-    ["a single lease wait is enough", nolease(), ryke({ leaseWaits: 1 }), []],
-    ["more stale aborts overall do not matter while the hot-file ones are fewer", nolease({ staleAborts: 10 }), ryke({ staleAborts: 90 }), []],
-    ["equal hot-file aborts are not a reduction", nolease({ hotStaleAborts: 20 }), ryke({ hotStaleAborts: 20 }), [NOT_FEWER(20, 20)]],
-    ["more hot-file aborts with leases are not a reduction", nolease({ hotStaleAborts: 20 }), ryke({ hotStaleAborts: 25 }), [NOT_FEWER(20, 25)]],
-    ["no hot-file aborts at all in the baseline proves nothing", nolease({ hotStaleAborts: 0 }), ryke({ hotStaleAborts: 0 }), [NOT_FEWER(0, 0)]],
-    ["zero lease waits fails even with far fewer aborts", nolease(), ryke({ leaseWaits: 0 }), [NO_WAIT]],
-    ["zero lease waits and no reduction fails twice", nolease({ hotStaleAborts: 20 }), ryke({ leaseWaits: 0, hotStaleAborts: 20 }), [NO_WAIT, NOT_FEWER(20, 20)]],
+    ["far fewer hot-file aborts with leases and several waits passes", nolease(), ryke(), []],
+    ["more stale aborts overall do not matter while the hot-file ones are cut", nolease({ staleAborts: 10 }), ryke({ staleAborts: 90 }), []],
     ["a lease wait count of zero on the baseline is expected", nolease({ leaseWaits: 0 }), ryke(), []],
+    // The margin: on <= 0.8 * off, checked in integers.
+    ["exactly 20 % fewer passes", nolease({ hotStaleAborts: 45 }), ryke({ hotStaleAborts: 36 }), []],
+    ["one more than that does not", nolease({ hotStaleAborts: 45 }), ryke({ hotStaleAborts: 37 }), [NOT_CUT(45, 37, 36)]],
+    ["10 against 8 is exactly 20 %", nolease({ hotStaleAborts: 10 }), ryke({ hotStaleAborts: 8 }), []],
+    ["10 against 9 is only 10 %", nolease({ hotStaleAborts: 10 }), ryke({ hotStaleAborts: 9 }), [NOT_CUT(10, 9, 8)]],
+    ["one fewer than 11 is not enough any more", nolease({ hotStaleAborts: 11 }), ryke({ hotStaleAborts: 10 }), [NOT_CUT(11, 10, 8)]],
+    ["3 against 2 passes (2 <= 2.4)", nolease({ hotStaleAborts: 3 }), ryke({ hotStaleAborts: 2 }), []],
+    ["3 against 3 does not (the allowed maximum is 2)", nolease({ hotStaleAborts: 3 }), ryke({ hotStaleAborts: 3 }), [NOT_CUT(3, 3, 2)]],
+    ["1 against 0 passes", nolease({ hotStaleAborts: 1 }), ryke({ hotStaleAborts: 0 }), []],
+    ["1 against 1 does not", nolease({ hotStaleAborts: 1 }), ryke({ hotStaleAborts: 1 }), [NOT_CUT(1, 1, 0)]],
+    ["equal hot-file aborts are not a reduction", nolease({ hotStaleAborts: 20 }), ryke({ hotStaleAborts: 20 }), [NOT_CUT(20, 20, 16)]],
+    ["more hot-file aborts with leases are not a reduction", nolease({ hotStaleAborts: 20 }), ryke({ hotStaleAborts: 25 }), [NOT_CUT(20, 25, 16)]],
+    ["no hot-file aborts at all in the baseline proves nothing", nolease({ hotStaleAborts: 0 }), ryke({ hotStaleAborts: 0 }), [NOTHING_TO_CUT]],
+    ["no hot-file aborts in the baseline and some with leases says the same", nolease({ hotStaleAborts: 0 }), ryke({ hotStaleAborts: 4 }), [NOTHING_TO_CUT]],
+    // The waits: at least 3.
+    ["three lease waits are enough", nolease(), ryke({ leaseWaits: 3 }), []],
+    ["two are not", nolease(), ryke({ leaseWaits: 2 }), [FEW_WAITS(2)]],
+    ["a single lease wait is not enough any more", nolease(), ryke({ leaseWaits: 1 }), [FEW_WAITS(1)]],
+    ["zero lease waits fails even with far fewer aborts", nolease(), ryke({ leaseWaits: 0 }), [FEW_WAITS(0)]],
+    ["too few waits and no reduction fails twice, waits first", nolease({ hotStaleAborts: 20 }), ryke({ leaseWaits: 2, hotStaleAborts: 20 }), [FEW_WAITS(2), NOT_CUT(20, 20, 16)]],
+    // A trunk that broke proves nothing, whatever else the numbers say. runBench throws first; this is the second guard.
+    ["a breakage in the leased cell fails", nolease(), ryke({ trunkBreakages: 1 }), [BREAKAGES("ryke", 1)]],
+    ["a breakage in the baseline fails", nolease({ trunkBreakages: 2 }), ryke(), [BREAKAGES("ryke-nolease", 2)]],
+    ["a breakage in both is reported for both, the baseline first", nolease({ trunkBreakages: 1 }), ryke({ trunkBreakages: 3 }), [BREAKAGES("ryke-nolease", 1), BREAKAGES("ryke", 3)]],
+    ["a breakage is reported before the comparison, and the comparison is still made", nolease({ hotStaleAborts: 20 }), ryke({ trunkBreakages: 1, hotStaleAborts: 20, leaseWaits: 0 }), [BREAKAGES("ryke", 1), FEW_WAITS(0), NOT_CUT(20, 20, 16)]],
     // Missing data is a failure that names what is missing, and nothing is compared.
     ["the baseline cell is missing", null, ryke(), ["the bench ryke-nolease cell has no result"]],
     ["the leased cell is missing", nolease(), undefined, ["the bench ryke cell has no result"]],
@@ -367,6 +379,7 @@ describe("benchVerdict", () => {
     ["no lease wait count on the baseline", nolease({ leaseWaits: undefined }), ryke(), ["the bench ryke-nolease cell has no lease waits"]],
     ["no overall stale_read count", nolease(), ryke({ staleAborts: null }), ["the bench ryke cell has no stale_read aborts"]],
     ["no landed/min", nolease({ landedPerMinute: null }), ryke(), ["the bench ryke-nolease cell has no landed/min"]],
+    ["no trunk breakage count is not read as none", nolease(), ryke({ trunkBreakages: null }), ["the bench ryke cell has no trunk breakages"]],
     ["a count that is not finite counts as missing", nolease(), ryke({ hotStaleAborts: Number.NaN, leaseWaits: Infinity }), ["the bench ryke cell has no stale_read aborts on hot files", "the bench ryke cell has no lease waits"]],
     ["missing data on one cell and a cell missing on the other reports both", nolease({ leaseWaits: null }), null, ["the bench ryke-nolease cell has no lease waits", "the bench ryke cell has no result"]],
   ];
@@ -376,22 +389,30 @@ describe("benchVerdict", () => {
 });
 
 describe("benchCaveats", () => {
-  const run = (leaseWaits, errors = 0) => ({ leaseWaits, errors });
+  // `leaseGrantOps` and `leaseWaitingOps` are what the Ledger recorded for the cell's repo; the agent-side wait
+  // count of a `ryke-nolease` cell is always 0 (its agents never call intend-write), so it cannot tell whether
+  // the ablation took effect and is not what this reads.
+  const run = (leaseGrantOps, errors = 0, leaseWaitingOps = 0) => ({ leaseGrantOps, leaseWaitingOps, leaseWaits: 0, errors });
+  const NOT_TAKEN = (grants, waiting) => `the bench ryke-nolease cell recorded ${grants} lease.granted op(s) and ${waiting} lease.waiting op(s), so the ablation did not take effect and the comparison is not leases against none`;
   const rows = [
-    ["a clean pair has nothing to say", run(0), run(6), []],
-    ["the baseline waited for a lease, so the ablation did not take", run(2), run(6), ["the bench ryke-nolease cell recorded 2 lease waits, so the ablation did not take effect and the comparison is not leases against none"]],
-    ["agent errors in the leased cell", run(0), run(6, 3), ["the bench ryke cell had 3 agent error(s), so what it measured is partly the errors"]],
-    ["agent errors in the baseline", run(0, 1), run(6), ["the bench ryke-nolease cell had 1 agent error(s), so what it measured is partly the errors"]],
+    ["a clean pair has nothing to say", run(0), run(31), []],
+    ["the baseline had a lease granted, so the ablation did not take", run(1), run(31), [NOT_TAKEN(1, 0)]],
+    ["and says how many waited too", run(7, 0, 4), run(31), [NOT_TAKEN(7, 4)]],
+    ["a waiting op without a grant is not what this looks for", run(0, 0, 4), run(31), []],
+    ["agent errors in the leased cell", run(0), run(31, 3), ["the bench ryke cell had 3 agent error(s), so what it measured is partly the errors"]],
+    ["agent errors in the baseline", run(0, 1), run(31), ["the bench ryke-nolease cell had 1 agent error(s), so what it measured is partly the errors"]],
     [
       "everything at once, baseline first",
-      run(4, 2),
-      run(6, 5),
+      run(4, 2, 1),
+      run(31, 5),
       [
-        "the bench ryke-nolease cell recorded 4 lease waits, so the ablation did not take effect and the comparison is not leases against none",
+        NOT_TAKEN(4, 1),
         "the bench ryke-nolease cell had 2 agent error(s), so what it measured is partly the errors",
         "the bench ryke cell had 5 agent error(s), so what it measured is partly the errors",
       ],
     ],
+    ["the leased cell having grants is the point, not a caveat", run(0), run(500), []],
+    ["the agent-side wait count of the baseline is not read: it can never be above zero", { leaseWaits: 5 }, run(31), []],
     ["missing cells are the verdict's business, not a caveat", null, undefined, []],
     ["missing counts are the verdict's business too", {}, {}, []],
   ];
@@ -412,7 +433,7 @@ describe("formatBenchComparison", () => {
     [/^landed\/min\s+33\.0\s+41\.5$/m, "rates with one decimal"],
     [/^stale_read aborts, all\s+61\s+27$/m, "all stale_read aborts"],
     [/^stale_read aborts on hot files\s+44\s+16$/m, "the headline row"],
-    [/^lease waits \(agents\)\s+0\s+9$/m, "lease waits"],
+    [/^lease waits \(admissions that waited\)\s+0\s+9$/m, "lease waits"],
     [/^lease wait time \(s\)\s+0\s+41\.5$/m, "lease wait seconds"],
     [/^trunk breakages\s+0\s+0$/m, "trunk breakages"],
   ];
@@ -427,7 +448,7 @@ describe("formatBenchComparison", () => {
     const t = formatBenchComparison({ off: { ...off, hotStaleAborts: null, landedPerMinute: undefined }, on: { ...on, leaseWaits: null } });
     assert.match(t, /^stale_read aborts on hot files\s+-\s+16$/m);
     assert.match(t, /^landed\/min\s+-\s+41\.5$/m);
-    assert.match(t, /^lease waits \(agents\)\s+0\s+-$/m);
+    assert.match(t, /^lease waits \(admissions that waited\)\s+0\s+-$/m);
     assert.doesNotMatch(t, /NaN|undefined|null/);
   });
   it("a number that is not finite is a dash too", () => {
@@ -439,6 +460,78 @@ describe("formatBenchComparison", () => {
     const t = formatBenchComparison({ off: null, on });
     assert.match(t, /^policy\s+-\s+ryke$/m);
     assert.match(t, /^landed\s+-\s+41$/m);
+  });
+});
+
+// The bench leg starts its stack in this process (harness/bench.mjs startBenchStack), and that sets variables the
+// scripted stacks and swarms before it would inherit, so the leg's position in the script would matter.
+describe("withEnvRestored", () => {
+  const KEYS = ["RYKE_JEV", "RYKE_STATE_DIR"];
+  // [name, environment before, what fn does to it, environment after]
+  const rows = [
+    ["a value fn overwrote comes back", { RYKE_JEV: "live", RYKE_STATE_DIR: "/state" }, { RYKE_JEV: "off", RYKE_STATE_DIR: "/tmp/bench" }, { RYKE_JEV: "live", RYKE_STATE_DIR: "/state" }],
+    ["a variable fn set that was not there is removed, not left as the string undefined", { OTHER: "1" }, { RYKE_JEV: "off", RYKE_STATE_DIR: "/tmp/bench" }, { OTHER: "1" }],
+    ["one set and one overwritten", { RYKE_JEV: "live" }, { RYKE_JEV: "off", RYKE_STATE_DIR: "/tmp/bench" }, { RYKE_JEV: "live" }],
+    ["a variable fn removed comes back", { RYKE_STATE_DIR: "/state" }, { RYKE_STATE_DIR: undefined }, { RYKE_STATE_DIR: "/state" }],
+    ["variables fn did not touch stay as they are", { RYKE_JEV: "off", OTHER: "kept" }, {}, { RYKE_JEV: "off", OTHER: "kept" }],
+    ["a variable that is not in the list is not restored", { OTHER: "1" }, { OTHER: "2" }, { OTHER: "2" }],
+    ["an empty string is a value, not an absence", { RYKE_JEV: "" }, { RYKE_JEV: "off" }, { RYKE_JEV: "" }],
+  ];
+  const apply = (env, changes) => {
+    for (const [k, v] of Object.entries(changes)) {
+      if (v === undefined) delete env[k];
+      else env[k] = v;
+    }
+  };
+  for (const [name, before, changes, after] of rows) {
+    it(name, async () => {
+      const env = { ...before };
+      const result = await withEnvRestored(KEYS, async () => {
+        apply(env, changes);
+        return "fn's result";
+      }, env);
+      assert.equal(result, "fn's result");
+      assert.deepEqual(env, after);
+    });
+    it(`${name} (fn throws)`, async () => {
+      const env = { ...before };
+      await assert.rejects(
+        withEnvRestored(KEYS, async () => {
+          apply(env, changes);
+          throw new Error("the bench leg failed");
+        }, env),
+        /the bench leg failed/,
+      );
+      assert.deepEqual(env, after);
+    });
+  }
+
+  it("fn sees the changes it made itself while it runs", async () => {
+    const env = { RYKE_JEV: "live" };
+    await withEnvRestored(KEYS, async () => {
+      env.RYKE_JEV = "off";
+      assert.equal(env.RYKE_JEV, "off");
+    }, env);
+    assert.equal(env.RYKE_JEV, "live");
+  });
+
+  it("restores a synchronous fn too, and passes its result on", async () => {
+    const env = { RYKE_JEV: "live" };
+    const result = await withEnvRestored(KEYS, () => {
+      env.RYKE_JEV = "off";
+      return 7;
+    }, env);
+    assert.equal(result, 7);
+    assert.equal(env.RYKE_JEV, "live");
+  });
+
+  it("works on process.env by default and leaves it as it found it", async () => {
+    const before = { ...process.env };
+    await withEnvRestored(["RYKE_E2E_LIB_TEST_ONLY"], async () => {
+      process.env.RYKE_E2E_LIB_TEST_ONLY = "x";
+    });
+    assert.deepEqual({ ...process.env }, before);
+    assert.equal("RYKE_E2E_LIB_TEST_ONLY" in process.env, false);
   });
 });
 

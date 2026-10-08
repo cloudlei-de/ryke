@@ -113,7 +113,7 @@ export function renderMarkdown({ results, details, meta }) {
   out.push(`Generated ${results.generatedAt}. Every cell ran for ${results.durationSeconds} s of wall time on a fresh \`convert\` trunk; only changes that landed inside that window count.`, "");
 
   out.push("## Throughput", "", "```", chart(cells), "```", "");
-  // `ryke-nolease` is an ablation of Ryke, not a competitor, so it does not take part in the verdict.
+  // `ryke-nolease` and `ryke-nopipe` are ablations of Ryke, not competitors, so neither takes part in the verdict.
   const v = verdict(cells.filter((c) => POLICIES.includes(c.policy)));
   out.push("## Does Ryke win?", "");
   out.push(table(["agents", "ranking by landed/min", "winner"], v.rows.map((r) => [r.agents, r.ranking, r.best.policy])), "");
@@ -210,7 +210,7 @@ export function renderMarkdown({ results, details, meta }) {
   out.push(
     "- Begin to land is measured from the moment an agent asks to begin, so the lock policy is charged for the time it waits for the lock.",
     "- Aborts are counted per attempt by cause; `max_attempts` counts the changes given up after the third attempt (their last attempt is also counted under its own cause).",
-    "- Verify runs include bisection probes on Ryke; the baselines run one verify per attempt that merged cleanly.",
+    "- Verify runs include bisection probes on Ryke. Discarded speculative trains are counted as one verify run each, although the lander skips verify when the turn check after prepare already says discard and the op log does not tell which, so verify runs per landed change is an upper bound for pipelined Ryke. The baselines run one verify per attempt that merged cleanly.",
     "- Wasted agent-seconds is think time of attempts that did not land inside the window.",
     "- `incompatible pairs` is the realised share of pairs of changes with overlapping read sets in which one rewrites a constant the other's test pins; the target is about 10 %.",
     "- Ryke agents take write leases before they think and wait (up to 90 s) while a hot file is held by a change that is still on its way. A stale warning, before or during the think, makes the agent `refresh` onto the current trunk without spending an attempt and spend a retry's worth of think time adapting; `refreshes` and `lease waits` count both. Think time before a refresh is not counted as wasted unless the attempt later fails.",

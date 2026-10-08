@@ -14,6 +14,8 @@ import { ABLATION_POLICIES, BENCH_POLICIES, buildResults } from "./bench/metrics
 import { renderMarkdown, table } from "./bench/render.mjs";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
+// What the dashboard reads (bench/results/latest.json); see parseBenchArgs for why ablations stay out of it.
+const DASHBOARD_DIR = join(ROOT, "bench/results");
 
 const USAGE = `usage: bench.mjs [--agents 10,50,100,200] [--policy lock,queue,ryke] [--duration 300]
                 [--time-factor 1] [--seed 7] [--offset 70] [--grace 20] [--out bench/results]
@@ -21,7 +23,7 @@ const USAGE = `usage: bench.mjs [--agents 10,50,100,200] [--policy lock,queue,ry
   --policy       any of lock, queue, ryke, ryke-nolease (Ryke with write leases off, for the lease comparison),
                  ryke-nopipe (Ryke with speculative pipelining off, for the pipelining comparison).
                  A run that includes either ablation writes to bench/results/ablation by default, because the
-                 dashboard's results format does not know those names
+                 dashboard's results format does not know those names; --out bench/results is refused for it
   --duration     seconds of wall time per cell; only changes landed inside it count
   --time-factor  multiplies every think time (median 6 s), the same for every policy
   --offset       port offset of the private stack (store 8788, runner 8789, worker 5173 + offset)
@@ -70,6 +72,15 @@ export function parseBenchArgs(argv) {
   const policies = list(values.policy, "policy", (s) => BENCH_POLICIES.includes(s));
   // The dashboard file must only ever hold policies the dashboard knows, so a run with an ablation goes elsewhere.
   const out = values.out ?? join(ROOT, "bench/results", policies.some((p) => ABLATION_POLICIES.includes(p)) ? "ablation" : "");
+  // The default is not enough: an explicit --out at the dashboard's directory would write cells it cannot parse into
+  // latest.json, and parseBench then refuses the whole file, so the dashboard shows no bench at all. Checked here,
+  // before a run that takes tens of minutes, and not when writing, where the results would be lost with it.
+  const unknown = policies.filter((p) => !POLICIES.includes(p));
+  if (unknown.length > 0 && resolve(out) === DASHBOARD_DIR) {
+    throw new UsageError(
+      `--out ${values.out} is the dashboard's results directory (bench/results), which only holds lock, queue and ryke, and this run includes ${unknown.join(", ")}. Leave --out off (a run with an ablation goes to bench/results/ablation) or give another directory.`,
+    );
+  }
   return {
     agents: list(values.agents, "agents", (s) => /^\d+$/.test(s) && Number(s) >= 1 && Number(s) <= 1000).map(Number),
     policies,
@@ -85,15 +96,20 @@ export function parseBenchArgs(argv) {
   };
 }
 
+// What startBenchStack sets in the calling process, because the stack reads it from there. A caller that goes on to
+// start other stacks (e2e:contention) puts back exactly these, so a variable added to startBenchStack goes in here.
+export const BENCH_ENV_KEYS = ["RYKE_JEV", "RYKE_STATE_DIR"];
+
 // Jev off for every cell: no cell waits on the network and all three policies share one gate, the tests.
 // The state dir lives outside the repo: `vite dev` watches its root, and every fork the bench creates is a
 // directory tree full of git objects. Inside the root that exhausts the machine's inotify watches
 // ("ENOSPC: System limit for number of file watchers reached") and makes the dev server spend its CPU
-// on file events instead of on the Worker.
-export function startBenchStack(offset) {
-  process.env.RYKE_JEV = "off";
-  process.env.RYKE_STATE_DIR = join(tmpdir(), `ryke-bench-state-${offset}`);
-  return startStack({ offset, fresh: true, quiet: true });
+// on file events instead of on the Worker. `start` and `env` are for the tests, which must neither start a
+// stack nor change the real environment.
+export function startBenchStack(offset, { start = startStack, env = process.env } = {}) {
+  env.RYKE_JEV = "off";
+  env.RYKE_STATE_DIR = join(tmpdir(), `ryke-bench-state-${offset}`);
+  return start({ offset, fresh: true, quiet: true });
 }
 
 export function noteFor({ factor, seed }) {

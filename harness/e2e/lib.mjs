@@ -1,10 +1,8 @@
-// The pure parts of the `npm run e2e:*` scripts, kept apart so they can be unit tested
-// (test/node/e2e-lib.test.mjs) without a stack: hot-file stale counting, the contention verdicts for
-// the scripted and the bench leg, criteria aggregation, the production config assertions and the curl
-// transcript redaction.
+// The parts of the `npm run e2e:*` scripts that can be unit tested (test/node/e2e-lib.test.mjs) without a
+// stack, kept apart for that: hot-file stale counting, the contention verdicts for the scripted and the bench
+// leg, criteria aggregation, the production config assertions and the curl transcript redaction.
 import { spawn } from "node:child_process";
 import { bump, decayed, isHot } from "../../src/worker/ledger/heat.ts";
-import { HOT_FILES, isPin } from "../bench/workload.mjs";
 
 // ---------------------------------------------------------------------------------------------
 // Running the swarm as a child process (e2e:swarm, e2e:contention, e2e:claude)
@@ -40,6 +38,22 @@ export function reportSummary(out) {
   const rest = out.slice(start);
   const cuts = ["\nM3 criteria", "\nreport written to"].map((m) => rest.indexOf(m)).filter((i) => i >= 0);
   return (cuts.length ? rest.slice(0, Math.min(...cuts)) : rest).trimEnd();
+}
+
+// Runs fn and then puts back the named environment variables, whatever it did to them and whether it threw: one
+// that was not set before is removed again (assigning undefined would leave the string "undefined" in process.env).
+// The bench leg starts its stack in this process and that sets variables (harness/bench.mjs BENCH_ENV_KEYS), which
+// every stack and swarm started after it would inherit; with this the leg's place in the script does not matter.
+export async function withEnvRestored(keys, fn, env = process.env) {
+  const before = keys.map((key) => [key, env[key]]);
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of before) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -118,32 +132,24 @@ export function landedPerMinute(landed, wallMs) {
   return landed / (Math.max(wallMs, 1000) / 60_000);
 }
 
-// Failures of the scripted leg, as strings; none means it holds. A run whose trunk is red proves nothing
-// about contention, so that is checked first and reported on its own.
+// Failures of the scripted leg, as strings; none means it holds. A run whose trunk is red proves nothing about
+// contention, so that is checked first and reported on its own.
 //
-// What is asserted depends on whether leases ever made anyone wait. A lease only delays a writer of a path
-// that is hot and leased to another open transaction, and the scripted catalogue never has two of those at
-// once (a path only turns hot after its first stale aborts, and the queue order keeps the writers of
-// src/format.ts and of src/ui/layout.ts apart). So in that run the hot-file counts of the two swarms differ
-// by timing alone, and asserting on them made the verdict a coin flip (off 24 / on 25 at e080cb1, off 24 /
-// on 28 before). What must hold in every case is that the mechanism ran: leases were granted. Only a run in
-// which leases did make someone wait can credit them with a difference, and then the claim is asserted as
-// M5 states it.
+// What is asserted is that the mechanism ran, not that it helped: leases were granted with contention on. The
+// difference in hot-file stale aborts between the two swarms is never asserted, whatever the numbers. A lease only
+// delays a writer of a path that is hot and leased to another open transaction, and the scripted catalogue never has
+// two of those at once (a path only turns hot after its first stale aborts, and the queue order keeps the writers
+// of src/format.ts and of src/ui/layout.ts apart). So the hot-file counts of the two swarms differ by timing alone,
+// and asserting on them made the verdict a coin flip (off 24 / on 25 at e080cb1, off 24 / on 28 before). The claim
+// that leases cut hot-file stale aborts is the bench leg's (benchVerdict), where agents do contend.
 export function contentionVerdict({ off, on }) {
   const failures = [];
   for (const [name, run] of [["off", off], ["on", on]]) {
     if (run.trunkGreen !== true) failures.push(`the trunk of the contention ${name} run is not green`);
   }
   if (!(on.leaseGrants > 0)) failures.push("contention on granted no leases (0 lease.granted ops), so the lease mechanism was not exercised");
-  if (!Number.isFinite(on.leaseWaits)) {
-    failures.push("contention on has no lease wait count, so it is unknown whether leases made anyone wait");
-  } else if (on.leaseWaits > 0) {
-    if (!Number.isFinite(off.hotStaleAborts) || !Number.isFinite(on.hotStaleAborts)) {
-      failures.push(`contention on made transactions wait, so hot-file stale aborts are compared, but a count is missing: off ${off.hotStaleAborts}, on ${on.hotStaleAborts}`);
-    } else if (on.hotStaleAborts >= off.hotStaleAborts) {
-      failures.push(`contention on did not reduce stale aborts on hot files: off ${off.hotStaleAborts}, on ${on.hotStaleAborts}`);
-    }
-  }
+  // Not a comparison input any more, but it decides what the caveat says, so a run without it must not read as fine.
+  if (!Number.isFinite(on.leaseWaits)) failures.push("contention on has no lease wait count, so it is unknown whether leases made anyone wait");
   return failures;
 }
 
@@ -151,7 +157,7 @@ export function contentionVerdict({ off, on }) {
 export function contentionCaveats({ off, on }) {
   const caveats = [];
   if (on.leaseWaits === 0) {
-    caveats.push(`contention on never made a transaction wait for a lease (${on.leaseGrants ?? 0} grants, 0 waits), so leases changed nothing in this run: the hot-file difference between the runs is reported, not asserted, and the lease effect is the bench leg's`);
+    caveats.push(`contention on never made a transaction wait for a lease (${on.leaseGrants ?? 0} grants, 0 waits), so leases changed nothing in this run: the hot-file difference between the runs is timing alone, reported and never asserted, and the lease effect is the bench leg's`);
   }
   if (off.leaseGrants > 0 || off.leaseWaits > 0) {
     caveats.push(`contention off still recorded ${off.leaseGrants} lease grants and ${off.leaseWaits} waits`);
@@ -192,13 +198,6 @@ export function formatComparison({ off, on }) {
 // Contention, bench leg: `ryke` against `ryke-nolease` on the bench workload, where agents do contend
 // ---------------------------------------------------------------------------------------------
 
-// "Hot" the way the bench workload defines it (harness/bench/workload.mjs): the three files its Zipf draw
-// reads and writes most, and the pins, which whoever changes one of those constants rewrites and which
-// therefore heat and get leased with it. The cell's details do not say which paths the Ledger had heated
-// when an abort happened (that needs the op log, which the cell does not keep), so the set is fixed by the
-// workload and the same for both policies.
-export const isBenchHotPath = (path) => HOT_FILES.includes(path) || isPin(path);
-
 const count = (v) => (Number.isFinite(v) ? v : null);
 const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -206,20 +205,27 @@ const isMap = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 // entry runBench returns for it (harness/bench.mjs). Anything the cell does not carry is null, never 0: a
 // missing count must not read as "no aborts".
 //
-// `hotStaleAborts` sums, over the hot paths, how many stale_read aborts listed each path (details.ryke.
-// stalePaths), so an abort that lists two hot files counts twice; it does so for both policies alike.
-// `staleAborts` is the cell's own stale_read count, the one the bench table prints.
+// `hotStaleAborts` is rykeOpStats's count of stale_read aborts that touched a hot file (the workload's hot files and
+// pins, harness/bench/workload.mjs isBenchHotPath), each abort once however many hot paths it lists, so it is never
+// more than `staleAborts`. It is not made from details.ryke.stalePaths, the by-path table, which counts an abort once
+// per path and so counts one that lists src/format.ts and its pin twice. Details written before the count existed
+// have none, and that is null, not a sum of the table. `staleAborts` is the cell's own stale_read count, the one the
+// bench table prints. `leaseGrantOps` and `leaseWaitingOps` are the lease.granted and lease.waiting ops the Ledger
+// recorded for the cell's repo. `leaseWaits` is what the agents counted, the admissions that waited; the agents of
+// a `ryke-nolease` cell never call intend-write, so it is 0 there whatever the Ledger did.
 export function benchCellStats(cell, detail) {
-  const paths = detail?.ryke?.stalePaths;
+  const ryke = detail?.ryke;
   return {
     policy: typeof cell?.policy === "string" ? cell.policy : null,
     agents: count(cell?.agents),
     landed: count(cell?.landed),
     landedPerMinute: count(cell?.landedPerMinute),
     staleAborts: isMap(cell?.aborts) ? count(cell.aborts.stale_read ?? 0) : null,
-    hotStaleAborts: isMap(paths) ? Object.entries(paths).reduce((n, [path, hits]) => n + (isBenchHotPath(path) && Number.isFinite(hits) ? hits : 0), 0) : null,
+    hotStaleAborts: count(ryke?.hotStaleAborts),
     leaseWaits: count(detail?.leaseWaits),
     leaseWaitSeconds: count(detail?.leaseWaitSeconds),
+    leaseGrantOps: count(ryke?.leaseGrantOps),
+    leaseWaitingOps: count(ryke?.leaseWaitingOps),
     trunkBreakages: count(cell?.trunkBreakages),
     errors: count(detail?.errors),
   };
@@ -231,12 +237,19 @@ const BENCH_REQUIRED = [
   ["staleAborts", "stale_read aborts"],
   ["hotStaleAborts", "stale_read aborts on hot files"],
   ["leaseWaits", "lease waits"],
+  ["trunkBreakages", "trunk breakages"],
 ];
+// What leases have to show in the bench for the leg to pass: a cut of the hot-file aborts by 20 % (on <= 0.8 * off)
+// and three waits. One lucky cell can come out a few aborts lower and one wait proves little, so a bare "fewer"
+// and a single wait were too easy to pass by chance.
+const BENCH_MIN_LEASE_WAITS = 3;
 
 // Failures of the bench leg, as strings. `off` is the cell without leases, `on` the one with. The claim: with
-// leases there are fewer stale_read aborts on hot files, and leases did get used (at least one agent waited
-// for one), otherwise a lower count would be luck and not their doing. A cell that is missing or lacks a
-// number fails by name before anything is compared; a trunk that broke never gets here, runBench throws.
+// leases there are at least 20 % fewer stale_read aborts on hot files (counted per abort, see benchCellStats), and
+// leases did get used (at least three admissions waited for one), otherwise a lower count would be luck and not their
+// doing. A cell that is missing or lacks a number fails by name before anything is compared. A trunk that broke
+// fails too: runBench throws before it gets here, so this is the second guard, and a run with a red trunk proves
+// nothing about leases whatever its aborts say.
 export function benchVerdict({ off, on }) {
   const failures = [];
   for (const side of ["off", "on"]) {
@@ -250,18 +263,30 @@ export function benchVerdict({ off, on }) {
     }
   }
   if (failures.length > 0) return failures;
-  if (on.leaseWaits < 1) failures.push(`the bench ryke cell never made an agent wait for a lease (${on.leaseWaits} lease waits), so it shows nothing about leases`);
-  if (!(on.hotStaleAborts < off.hotStaleAborts)) {
-    failures.push(`in the bench, leases did not reduce stale_read aborts on hot files: ryke-nolease ${off.hotStaleAborts}, ryke ${on.hotStaleAborts}`);
+  for (const side of ["off", "on"]) {
+    const breakages = { off, on }[side].trunkBreakages;
+    if (breakages > 0) failures.push(`the bench ${BENCH_NAME[side]} cell has ${breakages} trunk breakage(s), so its numbers prove nothing`);
+  }
+  if (on.leaseWaits < BENCH_MIN_LEASE_WAITS) {
+    failures.push(`the bench ryke cell had ${on.leaseWaits} lease wait(s), fewer than the ${BENCH_MIN_LEASE_WAITS} needed for it to show anything about leases`);
+  }
+  // 0.8 * off rounded down, in integers: these are counts, and 0.8 * 3 is 2.4000000000000004 in floating point.
+  const allowed = Math.floor((off.hotStaleAborts * 4) / 5);
+  if (off.hotStaleAborts === 0) {
+    failures.push("in the bench, ryke-nolease had no stale_read aborts on hot files, so there is nothing for leases to cut");
+  } else if (on.hotStaleAborts > allowed) {
+    failures.push(`in the bench, leases did not cut stale_read aborts on hot files by at least 20 %: ryke-nolease ${off.hotStaleAborts}, ryke ${on.hotStaleAborts} (ryke must be at most ${allowed})`);
   }
   return failures;
 }
 
-// Things that do not fail the leg but change what its numbers mean.
+// Things that do not fail the leg but change what its numbers mean. Whether the ablation took effect is read off
+// the Ledger's ops: the agents of a `ryke-nolease` cell never call intend-write, so their own wait counter is zero
+// whether or not the ablation worked and says nothing.
 export function benchCaveats({ off, on }) {
   const caveats = [];
-  if (off?.leaseWaits > 0) {
-    caveats.push(`the bench ryke-nolease cell recorded ${off.leaseWaits} lease waits, so the ablation did not take effect and the comparison is not leases against none`);
+  if (off?.leaseGrantOps > 0) {
+    caveats.push(`the bench ryke-nolease cell recorded ${off.leaseGrantOps} lease.granted op(s) and ${off.leaseWaitingOps ?? 0} lease.waiting op(s), so the ablation did not take effect and the comparison is not leases against none`);
   }
   for (const side of ["off", "on"]) {
     const run = { off, on }[side];
@@ -282,7 +307,7 @@ export function formatBenchComparison({ off, on }) {
     ["landed/min", ...both("landedPerMinute", (v) => v.toFixed(1))],
     ["stale_read aborts, all", ...both("staleAborts")],
     ["stale_read aborts on hot files", ...both("hotStaleAborts")],
-    ["lease waits (agents)", ...both("leaseWaits")],
+    ["lease waits (admissions that waited)", ...both("leaseWaits")],
     ["lease wait time (s)", ...both("leaseWaitSeconds")],
     ["trunk breakages", ...both("trunkBreakages")],
   ]);

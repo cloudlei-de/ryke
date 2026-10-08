@@ -20,6 +20,11 @@ export const BENCH_CONSTS = { "src/format.ts": "BENCH_FORMAT", "src/ui/layout.ts
 export const PIN_DIR = "src/bench";
 export const isPin = (path) => /^src\/bench\/pin-[^/]+\.ts$/.test(path);
 
+// "Hot" the way this workload defines it: the three files its Zipf draw reads and writes most, and the pins,
+// which whoever changes a pinned constant rewrites and which therefore heat and get leased with it. It lives here
+// because both the op-log stats (metrics.mjs) and the e2e verdicts need it, and the workload is what defines it.
+export const isBenchHotPath = (path) => HOT_FILES.includes(path) || isPin(path);
+
 export const ZIPF_S = 1.1;
 export const READ_COUNT = [3, 8];
 export const WRITE_COUNT = [1, 3];

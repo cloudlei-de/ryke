@@ -8,22 +8,23 @@
 // numbers are the M5 deliverable and are printed as they are. What this leg proves is that the mechanism
 // runs end to end in both modes: each swarm exits 0, each trunk is green, the op log and the swarm report
 // agree on the abort counts, and with contention on leases were actually granted (lease.granted ops).
-// What it cannot prove is that leases reduce hot-file stale aborts. A lease only delays a writer of a path
-// that is hot and leased to another open transaction, and in the scripted catalogue no two transactions
-// ever write a hot file at the same time (only t-precision and t-locale write src/format.ts, only t-search
-// and t-dark write src/ui/layout.ts, the queue order keeps each pair apart, and a path only turns hot after
-// its first stale aborts). Leases are granted and nobody waits, so the hot-file counts of the two swarms
-// differ by timing alone: off 24 / on 25 at e080cb1, off 24 / on 28 before, a verdict that is a coin flip.
-// So that difference is asserted (on < off) only when the on run really had lease waits; otherwise it is
-// reported next to a caveat and not asserted.
+// What it cannot prove is that leases reduce hot-file stale aborts, so it never asserts the hot-file
+// difference, whatever the numbers: it is reported, with a caveat when nobody waited. A lease only delays
+// a writer of a path that is hot and leased to another open transaction, and in the scripted catalogue no
+// two transactions ever write a hot file at the same time (only t-precision and t-locale write
+// src/format.ts, only t-search and t-dark write src/ui/layout.ts, the queue order keeps each pair apart,
+// and a path only turns hot after its first stale aborts). Leases are granted and nobody waits, so the
+// hot-file counts of the two swarms differ by timing alone: off 24 / on 25 at e080cb1, off 24 / on 28
+// before, a verdict that is a coin flip.
 //
 // Leg 2, bench: one cell of the bench's `ryke` and one of `ryke-nolease` (Ryke with write leases off), run
 // by the bench's own code (harness/bench.mjs runBench: its stack, its cell runner, its trunk check) on a
 // fresh private stack at +20, Jev off, at --bench-agents agents for --bench-seconds s each. Its synthetic
-// agents do write hot files concurrently, which is the situation leases are for (bench/results/ablation:
-// 56 against 46 landed/min and 106 against 245 stale aborts at 50 agents over 120 s). It asserts that with
-// leases there are fewer stale_read aborts on hot files AND that at least one agent waited for a lease, so
-// a lower count is the leases' doing and not luck. The cells are not written to bench/results.
+// agents do write hot files concurrently, which is the situation leases are for (what that looks like at 50
+// agents over 120 s is in bench/results/ablation/latest.md). It asserts that with leases there are at least
+// 20 % fewer stale_read aborts on hot files (counted once per abort) AND that at least three admissions waited
+// for a lease, so a lower count is the leases' doing and not luck, and that no trunk broke. The cells are not
+// written to bench/results.
 //
 // Ryke and the swarm are not tuned for this: whatever the numbers are is the result, and they are written
 // to --out before the verdict. A run where a rule fails exits 1 with them.
@@ -33,7 +34,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { startStack } from "../../dev/stack.mjs";
-import { parseBenchArgs, runBench, UsageError } from "../bench.mjs";
+import { BENCH_ENV_KEYS, parseBenchArgs, runBench, UsageError } from "../bench.mjs";
 import { client } from "../lib/client.mjs";
 import { ROOT } from "../lib/tasks.mjs";
 import {
@@ -48,6 +49,7 @@ import {
   landedPerMinute,
   reportSummary,
   runNode,
+  withEnvRestored,
 } from "./lib.mjs";
 
 const log = (line) => console.log(`e2e:contention  ${line}`);
@@ -125,13 +127,14 @@ async function oneRun(mode, offset, dir) {
 
 // The bench's own runner decides everything about the cells (stack, seeding, agents, trunk check); this only
 // picks the two out of its results. It never throws: a leg that could not run is a failure of the verdict,
-// and the scripted numbers are still written. It goes last because startBenchStack sets RYKE_STATE_DIR in
-// this process's environment, which the scripted stacks and their swarms would otherwise inherit.
+// and the scripted numbers are still written. startBenchStack sets RYKE_JEV and RYKE_STATE_DIR in this
+// process's environment, which any stack or swarm started afterwards would inherit, so they are put back
+// when the leg ends, whether it passed or threw. It stays last, but nothing depends on that any more.
 async function benchLeg() {
   const [agents, seconds] = [benchOpts.agents[0], benchOpts.durationS];
   log(`bench: ryke-nolease then ryke, ${agents} agents, ${seconds} s each (+ up to ${benchOpts.graceS} s grace), on offset ${benchOpts.offset}`);
   try {
-    const run = await runBench(benchOpts, { log: (line) => log(`bench: ${line}`) });
+    const run = await withEnvRestored(BENCH_ENV_KEYS, () => runBench(benchOpts, { log: (line) => log(`bench: ${line}`) }));
     const pick = (policy) => benchCellStats(run.results.cells.find((c) => c.policy === policy), run.details.find((d) => d.policy === policy));
     return { off: pick("ryke-nolease"), on: pick("ryke"), raw: { cells: run.results.cells, details: run.details }, error: null };
   } catch (e) {
@@ -170,9 +173,8 @@ try {
   await writeFile(out, `${JSON.stringify(record, null, 2)}\n`);
   log(`written to ${out}`);
   assert.deepEqual(failures, [], failures.join("; "));
-  const asserted = on.leaseWaits > 0 ? "asserted, leases made transactions wait" : "not asserted, no transaction waited for a lease";
-  log(`scripted: ${on.leaseGrants} lease grants and ${on.leaseWaits} waits with contention on; stale aborts on hot files ${on.hotStaleAborts} on against ${off.hotStaleAborts} off (${asserted})`);
-  log(`bench: stale_read aborts on hot files ${bench.on.hotStaleAborts} with leases against ${bench.off.hotStaleAborts} without, after ${bench.on.leaseWaits} lease waits; landed/min ${bench.on.landedPerMinute} against ${bench.off.landedPerMinute}`);
+  log(`scripted: ${on.leaseGrants} lease grants and ${on.leaseWaits} waits with contention on; stale aborts on hot files ${on.hotStaleAborts} on against ${off.hotStaleAborts} off (reported, not asserted)`);
+  log(`bench: stale_read aborts on hot files ${bench.on.hotStaleAborts} with leases against ${bench.off.hotStaleAborts} without (asserted: at least 20 % fewer), after ${bench.on.leaseWaits} lease waits (at least 3); landed/min ${bench.on.landedPerMinute} against ${bench.off.landedPerMinute}`);
   log("PASS");
 } catch (e) {
   failed = true;

@@ -1,6 +1,7 @@
 // Turning what the agents recorded into the numbers of src/shared/bench.ts. Pure: the cell runner
 // feeds it plain arrays, the tests feed it hand-made ones.
 import { POLICIES, parseBench } from "../../src/shared/bench.ts";
+import { isBenchHotPath } from "./workload.mjs";
 
 export { POLICIES };
 
@@ -87,8 +88,10 @@ export function buildResults({ cells, durationSeconds, note, generatedAt = new D
 
 // One verify per train that had something to merge, plus one per bisection probe, for the trains that
 // finished inside the window (so the count lines up with the changes it is divided by). A discarded
-// speculative train counts too: its prepare and verify ran and nothing landed, which is the price of
-// pipelining and belongs in the ratio. `sinceAt` and `untilAt` are epoch milliseconds, like op.at.
+// speculative train counts as one verify run each, which is the price of pipelining and belongs in the ratio,
+// but it is an upper bound: land.ts skips verify when the turn check after prepare already says discard, and
+// the op log does not record which of the two happened. So verify runs per landed change is an upper bound
+// for pipelined Ryke, never an undercount. `sinceAt` and `untilAt` are epoch milliseconds, like op.at.
 export function rykeVerifyRuns(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
   const done = new Map();
   const empty = new Set();
@@ -108,6 +111,11 @@ export function rykeVerifyRuns(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
 }
 
 // What the platform itself recorded: train sizes, where the stale aborts landed, how many warnings went out.
+//
+// `stalePaths` is a table by path: an abort that lists several paths is in the table once under each of them.
+// `hotStaleAborts` is a count of aborts, not of table entries: every stale_read abort counts once when any
+// of its paths is hot by the workload's definition, so it can never exceed `staleAborts`. The two are different
+// questions (which files abort most; how many aborts touched the hot set) and must not be summed into each other.
 export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
   const within = ops.filter((o) => o.at >= sinceAt && o.at <= untilAt);
   const trainSizes = {};
@@ -117,10 +125,16 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
   let bisectProbes = 0;
   let staleWarnings = 0;
   let staleAborts = 0;
+  let hotStaleAborts = 0;
   let conflictAborts = 0;
+  // What the Ledger recorded about leases, by op (not what the agents counted): a `ryke-nolease` cell must show none.
+  let leaseGrantOps = 0;
+  let leaseWaitingOps = 0;
   const formedAt = new Map();
   const cycles = [];
-  // A speculative train is one formed on another train's candidate (`after`); it ends confirmed or discarded.
+  // A speculative train is one formed on another train's candidate (`after`). It usually ends confirmed or
+  // discarded, but it can also end create_failed or error, or still be running when the window ends; those are
+  // formed and neither confirmed nor discarded.
   const speculative = { formed: 0, confirmed: 0, discarded: 0 };
   // A change that went stale straight after `ready` was waiting for a train when trunk moved under it;
   // one that went stale straight after `submitted` was already stale when it was handed in.
@@ -139,6 +153,8 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
     else if (o.kind === "train.done" && o.data.outcome === "discarded") speculative.discarded++;
     else if (o.kind === "train.bisect") bisectProbes++;
     else if (o.kind === "stale.warning") staleWarnings++;
+    else if (o.kind === "lease.granted") leaseGrantOps++;
+    else if (o.kind === "lease.waiting") leaseWaitingOps++;
     else if (o.kind === "trunk.advanced" && formedAt.has(o.data.train)) cycles.push((o.at - formedAt.get(o.data.train)) / 1000);
     else if (o.kind === "txn.stale" || (o.kind === "txn.aborted" && o.data.cause?.state === "stale")) {
       // The attempt that runs out of tries goes straight to aborted; its cause is kept in `cause`.
@@ -149,6 +165,7 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
         for (const p of paths) bump(conflictPaths, p);
       } else {
         staleAborts++;
+        if (paths.some(isBenchHotPath)) hotStaleAborts++;
         for (const p of paths) bump(stalePaths, p);
       }
     }
@@ -163,8 +180,11 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
     speculative,
     staleWarnings,
     staleAborts,
+    hotStaleAborts,
     staleWhileReady,
     conflictAborts,
+    leaseGrantOps,
+    leaseWaitingOps,
     stalePaths,
     conflictPaths,
     trainCycleSecondsP50: round(percentile(cycles, 0.5)),
