@@ -1,6 +1,12 @@
 // Container-mode runner (PLAN.md §3.4): a Runner Durable Object per job slot drives one container
 // through `ctx.container`, the ContainerRunner client routes jobs to those slots, and Outbound is
 // the egress gateway that keeps every secret out of the container (docs/platform-notes.md §Sandbox).
+//
+// Two kinds of job meet here, and they never share a container. The trusted kinds (seed, land,
+// revert) run our scripts over git data. Everything else (verify, agent) runs code a transaction's
+// author wrote, as root, so it gets a slot range of its own, one job per container, and the container
+// is stopped when the job is over. What a job may reach is decided only by the Worker that started
+// it, through RYKE_ALLOW_REPOS and the job kind, never by the job.
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { RunnerError, type JobKind, type JobStatus, type Runner as RunnerClient } from "./runner";
 
@@ -32,6 +38,13 @@ const TIMED_OUT = 124;
 
 const DEFAULT_SLOTS = 6;
 const MAX_SLOTS = 64;
+// Below two slots there is nothing to keep apart.
+const MIN_SLOTS = 2;
+// An untrusted job needs a container to itself, so a start can find every slot of its range taken
+// (the Runner answers "busy"). The client then waits for one to be stopped instead of failing the
+// train, which would be retried against the same wall.
+const ACQUIRE_MS = 120_000;
+const ACQUIRE_RETRY_MS = 1000;
 const KIND_RE = /^[a-z][a-z0-9-]*$/;
 // Artifacts repo names: letters, digits, dots, hyphens, underscores; the first character rules out "." and "..".
 const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -115,14 +128,55 @@ export function checkJob(kind: string, args: Record<string, string>, env: Record
   }
 }
 
-// RYKE_ALLOW_REPOS is the list of repos a job's container may reach through the gateway. Absent
-// means unrestricted (the lander). Present but empty means none: a list that came out empty by
-// mistake must not turn into "everything".
-export function parseAllow(raw: string | undefined): string[] | undefined {
-  if (raw === undefined) return undefined;
-  const names = [...new Set(raw.split(",").map((n) => n.trim()).filter((n) => n !== ""))].sort();
-  for (const n of names) if (!REPO_RE.test(n)) throw new RunnerError(`RYKE_ALLOW_REPOS has an invalid repo name "${n}"`);
-  return names;
+// Kinds whose scripts are ours and that only take data from git. Every other kind, including one added
+// later and not listed here, runs code a transaction's author controls (the verify command, Claude's
+// tools) and is treated as hostile: its own slot range, its own container, stopped afterwards. That is
+// a cold start per job (1-3 s plus the image), paid so a test cannot leave a daemon behind or rewrite
+// /opt/ryke for the lander that would use the same container next.
+const TRUSTED_KINDS: ReadonlySet<string> = new Set(["seed", "land", "revert"]);
+export const isTrusted = (kind: string): boolean => TRUSTED_KINDS.has(kind);
+
+// Verify needs Artifacts for its checkout and nothing else, so it gets no other egress (not even
+// api.anthropic.com): its tests are the author's, and anything they can reach they can send source to.
+// Agents need the Anthropic API and the trusted kinds keep their reach as before; Artifacts is bounded
+// by RYKE_ALLOW_REPOS for all of them.
+const CLOSED_EGRESS_KINDS: ReadonlySet<string> = new Set(["verify"]);
+
+export type Access = "read" | "write";
+export type RepoAccess = Record<string, Access>;
+
+// RYKE_ALLOW_REPOS is `<repo>:<read|write>,...`: the repos a job's container may reach through the
+// gateway, and how. Absent or empty means none. It used to mean "any repo", and a verify job that
+// ran with no list could push to trunk; a bare repo name is refused for the same reason, since it
+// would have to mean either read or write and either guess is wrong for someone.
+export function parseAllow(raw: string | undefined): RepoAccess {
+  const modes = new Map<string, Access>();
+  for (const part of (raw ?? "").split(",")) {
+    const entry = part.trim();
+    if (entry === "") continue;
+    const colon = entry.lastIndexOf(":");
+    const repo = colon < 0 ? entry : entry.slice(0, colon);
+    const mode = colon < 0 ? "" : entry.slice(colon + 1);
+    if (!REPO_RE.test(repo)) throw new RunnerError(`RYKE_ALLOW_REPOS has an invalid repo name "${repo}"`);
+    if (mode !== "read" && mode !== "write") throw new RunnerError(`RYKE_ALLOW_REPOS entry "${entry}" needs a mode: <repo>:read or <repo>:write`);
+    if (modes.get(repo) !== "write") modes.set(repo, mode);
+  }
+  return Object.fromEntries([...modes].sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+
+const formatAllow = (allow: RepoAccess): string =>
+  Object.entries(allow)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([repo, mode]) => `${repo}:${mode}`)
+    .join(",");
+
+// Own properties only: a repo may be called "constructor", and Object.prototype must not grant it.
+const grantFor = (allow: RepoAccess | undefined, repo: string): Access | undefined => (allow !== undefined && Object.hasOwn(allow, repo) ? allow[repo] : undefined);
+
+function unionAllow(lists: RepoAccess[]): RepoAccess {
+  const out = new Map<string, Access>();
+  for (const list of lists) for (const [repo, mode] of Object.entries(list)) if (out.get(repo) !== "write") out.set(repo, mode);
+  return Object.fromEntries(out);
 }
 
 // The result is the last non-empty stdout line when it is JSON. When the window cut the file, its
@@ -171,8 +225,12 @@ type Row = {
   ended_at: number | null;
   exit_code: number | null;
   result: string | null;
-  // Comma-separated repos the job may reach; NULL = unrestricted.
-  allow: string | null;
+  // `<repo>:<mode>,...` as the job named them (normalised); '' = no Artifacts access.
+  allow: string;
+  // 1 = this job ran untrusted code in the container that has not been stopped since. Set when such a
+  // job starts and cleared when the container is stopped or gone, so a Durable Object that restarted
+  // in between still knows what the container may be holding.
+  dirty: number;
 };
 
 type Ran = { code: number; stdout: Uint8Array; stderr: string };
@@ -182,7 +240,9 @@ async function run(box: Box, cmd: string[], options?: ContainerExecOptions): Pro
   return { code: out.exitCode, stdout: new Uint8Array(out.stdout), stderr: decoder.decode(out.stderr) };
 }
 
-const allowKey = (allow: string[] | undefined) => (allow === undefined ? "*" : allow.join(","));
+type Gateway = { allow: RepoAccess; egress: "open" | "closed" };
+
+const gatewayKey = (g: Gateway) => `${g.egress}|${formatAllow(g.allow)}`;
 
 const terminal = (r: Row) => r.state === "done" || r.state === "failed";
 
@@ -190,17 +250,20 @@ export class Runner extends DurableObject<Env> {
   private readonly sql: SqlStorage;
   // Concurrent start() calls share one boot, or the second would exec before the intercepts exist.
   private booting: Promise<void> | null = null;
-  // What the container's gateway rules were last registered with ("*" = unrestricted). Unknown
-  // after a DO restart, so the first start of a new instance registers again.
+  // What the container's gateway rules were last registered with. Unknown after a DO restart, so the
+  // first start of a new instance registers again.
   private registered: string | null = null;
   private gatewayChain: Promise<void> = Promise.resolve();
+  // One teardown at a time; everything that wants the container free joins the one in flight.
+  private reaping: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     // Not deployed yet, so no migrations; a column added after the first deploy needs a guarded ALTER here.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS runner_job (id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL,
-      started_at INTEGER NOT NULL, ended_at INTEGER, exit_code INTEGER, result TEXT, allow TEXT)`);
+      started_at INTEGER NOT NULL, ended_at INTEGER, exit_code INTEGER, result TEXT, allow TEXT NOT NULL DEFAULT '',
+      dirty INTEGER NOT NULL DEFAULT 0)`);
     // A restarted DO has no inactivity timeout of its own while the container it started is still up.
     const box = this.box();
     if (box?.running) void ctx.blockConcurrencyWhile(() => box.setInactivityTimeout(INACTIVITY_MS).catch(() => {}));
@@ -216,8 +279,8 @@ export class Runner extends DurableObject<Env> {
     return this.ctx.exports as unknown as { Outbound(o: { props: OutboundProps }): Fetcher };
   }
 
-  private gateway(allow: string[] | undefined): Fetcher {
-    const props: OutboundProps = allow === undefined ? {} : { allow };
+  private gateway(g: Gateway): Fetcher {
+    const props: OutboundProps = { allow: g.allow, egress: g.egress };
     return this.exports().Outbound({ props });
   }
 
@@ -227,18 +290,32 @@ export class Runner extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- RPC
 
-  async start(id: string, kind: JobKind, args: Record<string, string>, env: Record<string, string>): Promise<void> {
+  // "busy" means this container may not take the job now (see admits); the caller tries another slot.
+  async start(id: string, kind: JobKind, args: Record<string, string>, env: Record<string, string>): Promise<"started" | "busy"> {
     if (slotOf(id) === null) throw new RunnerError(`invalid job id "${id}"`);
     checkJob(kind, args, env);
     const allow = parseAllow(env.RYKE_ALLOW_REPOS);
+    // Whatever call site asks, a verify job never holds a credential that can write: its tests are
+    // the author's, and a push to trunk from them lands unverified code.
+    if (kind === "verify" && Object.values(allow).includes("write")) throw new RunnerError("verify jobs never get write access to a repo");
     const box = this.requireBox();
     if (this.find(id)) throw new RunnerError(`job "${id}" already exists`);
+    const trusted = isTrusted(kind);
+    if (!this.admits(trusted)) {
+      // A job that ended since the last poll must not keep the container closed, and an untrusted
+      // container nobody stopped yet is stopped here, before anything else goes into it.
+      await this.sweep();
+      await this.reap();
+      if (!this.admits(trusted)) return "busy";
+    }
+    // No await between the last admission check and this insert: two starts cannot both pass it.
     this.sql.exec(
-      "INSERT INTO runner_job (id, kind, state, started_at, allow) VALUES (?, ?, 'queued', ?, ?)",
+      "INSERT INTO runner_job (id, kind, state, started_at, allow, dirty) VALUES (?, ?, 'queued', ?, ?, ?)",
       id,
       kind,
       this.now(),
-      allow === undefined ? null : allow.join(","),
+      formatAllow(allow),
+      trusted ? 0 : 1,
     );
     const dir = `${WORK}/${id}`;
     try {
@@ -251,18 +328,23 @@ export class Runner extends DurableObject<Env> {
       if (launched.code !== 0) throw new RunnerError(`could not launch ${kind}: ${launched.stderr.trim() || `exit ${launched.code}`}`);
     } catch (e) {
       this.finish(id, LAUNCH_FAILED);
+      await this.reap();
       throw e;
     }
     if (this.find(id)?.state !== "queued") {
-      // Cancelled or swept while the container booted: the job it describes must not outlive its row.
+      // Cancelled or swept while the container booted: the job it describes must not outlive its row,
+      // and a cancel that came during the boot left the teardown to this tail.
       await this.killGroup(box, id);
-      return;
+      await this.reap();
+      return "started";
     }
     this.sql.exec("UPDATE runner_job SET state = 'running' WHERE id = ?", id);
+    return "started";
   }
 
   async status(id: string): Promise<JobStatus> {
     const row = await this.refresh(this.row(id));
+    await this.reap();
     return {
       state: row.state,
       exitCode: row.exit_code ?? undefined,
@@ -307,6 +389,8 @@ export class Runner extends DurableObject<Env> {
     }
     // Only a log that is over and fully delivered may end mid-character: nothing will complete it.
     if (!(done && start + body.length >= total)) body = body.subarray(0, completeUtf8Length(body));
+    // After the read: a job that this very poll saw end may be an untrusted one, whose disk goes now.
+    await this.reap();
     return { text: decoder.decode(body), next: start + body.length };
   }
 
@@ -323,12 +407,14 @@ export class Runner extends DurableObject<Env> {
     // A queued job has no process yet; start() kills the one it is about to launch.
     if (row.state === "running" && box?.running) await this.killGroup(box, id);
     this.finish(id, CANCELLED);
+    await this.reap();
   }
 
   async alarm(): Promise<void> {
     await this.sweep();
-    const left = this.sql.exec<{ n: number }>("SELECT count(*) AS n FROM runner_job WHERE state IN ('queued', 'running')").one().n;
-    if (left > 0) await this.ctx.storage.setAlarm(this.now() + KEEPALIVE_MS);
+    await this.reap();
+    // A container that would not stop is watched until it does: nothing may enter it meanwhile.
+    if (this.count("state IN ('queued', 'running')") + this.count("dirty = 1") > 0) await this.ctx.storage.setAlarm(this.now() + KEEPALIVE_MS);
   }
 
   // ---------------------------------------------------------------- container lifecycle
@@ -376,10 +462,12 @@ export class Runner extends DurableObject<Env> {
       this.now(),
       CONTAINER_LOST,
     );
+    // Whatever an earlier untrusted job left was in the container that is gone.
+    this.sql.exec("UPDATE runner_job SET dirty = 0 WHERE state IN ('done', 'failed')");
     try {
       box.start({ image, instance: "standard-2", enableInternet: false, env: { RYKE_ROOT: ROOT } });
       // Intercepts end with the container, so every start registers them again.
-      await this.registerGateway(box, this.desiredAllow());
+      await this.registerGateway(box, this.desiredGateway());
       await box.setInactivityTimeout(INACTIVITY_MS);
     } catch (e) {
       // A container up without its gateway would let a job run with no egress rules; start over next time.
@@ -389,22 +477,25 @@ export class Runner extends DurableObject<Env> {
   }
 
   // The HTTPS catch-all goes before the plain-HTTP catch-all, as the platform requires for hostname rules.
-  private async registerGateway(box: Box, allow: string[] | undefined): Promise<void> {
+  private async registerGateway(box: Box, want: Gateway): Promise<void> {
     this.registered = null;
-    const gateway = this.gateway(allow);
+    const gateway = this.gateway(want);
     await box.interceptOutboundHttps("*", gateway);
     await box.interceptAllOutboundHttp(gateway);
-    this.registered = allowKey(allow);
+    this.registered = gatewayKey(want);
   }
 
-  // Interception is per container, not per job, so the repo allow-list is too: the union of what
-  // the jobs now queued or running may reach, and unrestricted as soon as one of them is (the lander
-  // shares a container with agents only if the caller routes them to the same slot). It narrows
-  // again once those jobs end, at the next start.
-  private desiredAllow(): string[] | undefined {
-    const rows = this.sql.exec<{ allow: string | null }>("SELECT allow FROM runner_job WHERE state IN ('queued', 'running')").toArray();
-    if (rows.some((r) => r.allow === null)) return undefined;
-    return [...new Set(rows.flatMap((r) => (r.allow === "" || r.allow === null ? [] : r.allow.split(","))))].sort();
+  // Interception is per container, not per job, so what the gateway lets through is too: the union of
+  // what the jobs now queued or running may reach (the stronger mode wins for a repo two of them
+  // name). An untrusted job is alone in its container, so for it this is exactly its own list; the
+  // union only ever mixes trusted jobs, whose code is ours. It narrows again once those jobs end, at
+  // the next start. With nothing to go on the gateway is closed rather than open.
+  private desiredGateway(): Gateway {
+    const rows = this.sql.exec<Pick<Row, "kind" | "allow">>("SELECT kind, allow FROM runner_job WHERE state IN ('queued', 'running')").toArray();
+    return {
+      allow: unionAllow(rows.map((r) => parseAllow(r.allow))),
+      egress: rows.length > 0 && !rows.some((r) => CLOSED_EGRESS_KINDS.has(r.kind)) ? "open" : "closed",
+    };
   }
 
   // Registering again replaces the handler and its props without dropping open connections.
@@ -415,11 +506,52 @@ export class Runner extends DurableObject<Env> {
       .then(async () => {
         // A job that ended since the last poll must not keep its repos reachable.
         await this.sweep();
-        const want = this.desiredAllow();
-        if (this.registered !== allowKey(want)) await this.registerGateway(box, want);
+        const want = this.desiredGateway();
+        if (this.registered !== gatewayKey(want)) await this.registerGateway(box, want);
       });
     this.gatewayChain = next;
     return next;
+  }
+
+  private count(where: string): number {
+    return this.sql.exec<{ n: number }>(`SELECT count(*) AS n FROM runner_job WHERE ${where}`).one().n;
+  }
+
+  // Whether this container may take a job of this class now. Untrusted jobs run alone and only in a
+  // container nothing untrusted has run in since it was last stopped; trusted jobs share one that is
+  // clean of untrusted jobs (an untrusted job is dirty from the moment it is queued, so the mark
+  // covers the running ones too). The client keeps the two classes in separate slot ranges, so a
+  // refusal here means a busy slot, or a slot count that changed under running jobs, never an error.
+  private admits(trusted: boolean): boolean {
+    if (this.count("dirty = 1") > 0) return false;
+    return trusted || this.count("state IN ('queued', 'running')") === 0;
+  }
+
+  // Stops the container once no job is left in it and an untrusted one has run there, so nothing it
+  // left behind (a daemon, a rewritten script, a planted credential helper) reaches the next job. A
+  // failed stop leaves the mark: the slot stays closed, and the alarm and every later poll try again.
+  private reap(): Promise<void> {
+    this.reaping ??= this.stopIfDirty().finally(() => {
+      this.reaping = null;
+    });
+    return this.reaping;
+  }
+
+  private async stopIfDirty(): Promise<void> {
+    // A start in flight with nothing else queued is a cancelled one; its own tail stops the container
+    // once the boot is over, and a cancel must not wait for the boot to say so.
+    if (this.booting || this.count("state IN ('queued', 'running')") > 0 || this.count("dirty = 1") === 0) return;
+    const box = this.box();
+    if (box?.running) {
+      try {
+        await box.destroy();
+      } catch {
+        return;
+      }
+      // The intercepts went with the container.
+      this.registered = null;
+    }
+    this.sql.exec("UPDATE runner_job SET dirty = 0");
   }
 
   private async killGroup(box: Box, id: string): Promise<void> {
@@ -503,13 +635,19 @@ type RunnerBindings = {
   RYKE_RUNNER_SLOTS?: string;
 };
 
-// Round-robin per isolate. Isolates are many, so the spread is statistical; it starts at a random
-// slot so that a burst of fresh isolates does not all begin on slot 0.
-let cursor = Math.floor(Math.random() * MAX_SLOTS);
+// Round-robin per isolate and per class. Isolates are many, so the spread is statistical; each
+// cursor starts at a random slot so that a burst of fresh isolates does not all begin on slot 0.
+const cursors = { trusted: Math.floor(Math.random() * MAX_SLOTS), untrusted: Math.floor(Math.random() * MAX_SLOTS) };
+
+export type RunnerTuning = { acquireMs?: number; retryMs?: number };
 
 // Implements the Runner contract of runner.ts by sending each job to the Runner DO of one slot.
 export class ContainerRunner implements RunnerClient {
-  constructor(private readonly env: Env) {}
+  // `tuning` is for tests; production takes the defaults.
+  constructor(
+    private readonly env: Env,
+    private readonly tuning: RunnerTuning = {},
+  ) {}
 
   private get bindings(): RunnerBindings {
     // RUNNER and RYKE_RUNNER_SLOTS join Env when wrangler.jsonc gains them (M9).
@@ -518,7 +656,16 @@ export class ContainerRunner implements RunnerClient {
 
   private slotCount(): number {
     const n = Number(this.bindings.RYKE_RUNNER_SLOTS);
-    return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_SLOTS) : DEFAULT_SLOTS;
+    return Number.isInteger(n) && n >= 1 ? Math.max(MIN_SLOTS, Math.min(n, MAX_SLOTS)) : DEFAULT_SLOTS;
+  }
+
+  // The first third of the slots (at least one) take the trusted kinds, the rest everything else:
+  // verify jobs outnumber them (one per train, and each holds its container alone), while the
+  // trusted ones share theirs. The two ranges never overlap, so no container sees both.
+  private range(trusted: boolean): readonly [from: number, to: number] {
+    const n = this.slotCount();
+    const split = Math.max(1, Math.floor(n / 3));
+    return trusted ? [0, split] : [split, n];
   }
 
   private stub(slot: number): RunnerStub {
@@ -544,10 +691,22 @@ export class ContainerRunner implements RunnerClient {
 
   async start(kind: JobKind, args: Record<string, string>, env: Record<string, string>): Promise<string> {
     if (kind === "swarm") throw new RunnerError("swarm jobs run only in process mode (PLAN.md §11.2)");
-    const slot = cursor++ % this.slotCount();
-    const id = newJobId(slot);
-    await this.rpc("start", slot, (s) => s.start(id, kind, args, env));
-    return id;
+    const trusted = isTrusted(kind);
+    const [from, to] = this.range(trusted);
+    const cursor = trusted ? "trusted" : "untrusted";
+    const until = Date.now() + (this.tuning.acquireMs ?? ACQUIRE_MS);
+    for (;;) {
+      // One pass offers the job to every slot of its range once, starting where the last job stopped.
+      for (let tried = 0; tried < to - from; tried++) {
+        const slot = from + (cursors[cursor]++ % (to - from));
+        const id = newJobId(slot);
+        if ((await this.rpc("start", slot, (s) => s.start(id, kind, args, env))) !== "busy") return id;
+      }
+      if (Date.now() >= until) {
+        throw new RunnerError(`no free runner slot for ${kind} jobs after ${Math.round((this.tuning.acquireMs ?? ACQUIRE_MS) / 1000)} s; every one of slots ${from}-${to - 1} holds a job (raise RYKE_RUNNER_SLOTS)`);
+      }
+      await new Promise((r) => setTimeout(r, this.tuning.retryMs ?? ACQUIRE_RETRY_MS));
+    }
   }
 
   async status(id: string): Promise<JobStatus> {
@@ -567,14 +726,20 @@ export class ContainerRunner implements RunnerClient {
 
 // ---------------------------------------------------------------------------- Outbound gateway
 
-// `allow` is the set of repos the container may reach; absent means any repo in the namespace.
-// Interception is registered per container, so this is per container as well (see desiredAllow).
-export type OutboundProps = { allow?: string[] };
+// What this container's gateway lets through. `allow` maps repos to the strongest access any job in
+// the container was granted; a repo that is absent is not served, and so is every repo when `allow`
+// itself is absent. `egress: "closed"` serves Artifacts and nothing else; anything but "closed" keeps
+// the pass-through (and the Anthropic key swap) the agents need. Interception is registered per
+// container, so this is per container as well (see desiredGateway).
+export type OutboundProps = { allow?: RepoAccess; egress?: "open" | "closed" };
 
 export const ARTIFACTS_SUFFIX = ".artifacts.cloudflare.net";
 export const ANTHROPIC_HOST = "api.anthropic.com";
 
 const GIT_PATH = /^\/git\/([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)\.git(?:\/|$)/;
+// The three paths of git smart HTTP, anchored at both ends: one request, one repo, one operation.
+const GIT_OPERATION = /^\/git\/[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+const SERVICE_SCOPE: Record<string, Access> = { "git-upload-pack": "read", "git-receive-pack": "write" };
 
 // Which repo a git smart-HTTP request is about, or null for any other path on an Artifacts host.
 export function gitTarget(url: URL): { namespace: string; repo: string } | null {
@@ -582,28 +747,45 @@ export function gitTarget(url: URL): { namespace: string; repo: string } | null 
   return m ? { namespace: m[1]!, repo: m[2]! } : null;
 }
 
-// A push needs a write token; clones and fetches get a read token, so a compromised container
-// cannot push to a repo it was only meant to read.
-export function scopeOf(url: URL, method: string): "read" | "write" {
-  if (url.searchParams.get("service") === "git-receive-pack") return "write";
-  return method === "POST" && url.pathname.endsWith("/git-receive-pack") ? "write" : "read";
+// The scope a git request needs, or null when it is none of the four requests a clone, fetch or push
+// is made of (GET info/refs for either service, POST upload-pack, POST receive-pack). A push needs a
+// write token and a fetch a read token, so a container given a repo to read cannot push to it; and a
+// request that is not one of the four is not served at all, rather than served with a read token,
+// because "read" there would be a guess about what the server does with it.
+export function scopeOf(url: URL, method: string): Access | null {
+  const operation = GIT_OPERATION.exec(url.pathname)?.[1];
+  if (operation === undefined) return null;
+  if (operation === "info/refs") {
+    if (method !== "GET") return null;
+    // Two `service` parameters would leave it to the server which one counts.
+    const services = url.searchParams.getAll("service");
+    return services.length === 1 && Object.hasOwn(SERVICE_SCOPE, services[0]!) ? SERVICE_SCOPE[services[0]!]! : null;
+  }
+  return method === "POST" ? SERVICE_SCOPE[operation]! : null;
 }
 
-type CachedToken = { plaintext: string; renewAt: number };
+type CachedToken = { plaintext: string; renewAt: number; host: string };
 // Per isolate. Tokens are repo-scoped and expire, and a container makes several requests per git
 // operation, so one mint serves them all. Exported so tests can start empty and watch the pruning.
 export const gatewayTokens = new Map<string, CachedToken>();
 
-async function tokenFor(artifacts: Artifacts, repo: string, scope: "read" | "write"): Promise<string> {
+// A token for the repo, but only for the host the repo really lives on: the one in the remote the
+// binding itself reports. Any other `*.artifacts.cloudflare.net` host is another account's, and a
+// token sent there would be a token handed to whoever runs it. Returns null for such a host, before
+// anything is minted.
+async function tokenFor(artifacts: Artifacts, repo: string, scope: Access, host: string): Promise<string | null> {
   const key = `${repo}:${scope}`;
   const now = Date.now();
   const cached = gatewayTokens.get(key);
-  if (cached && cached.renewAt > now) return cached.plaintext;
+  if (cached && cached.renewAt > now) return cached.host === host ? cached.plaintext : null;
   for (const [k, t] of gatewayTokens) if (t.renewAt <= now) gatewayTokens.delete(k);
   using handle = await artifacts.get(repo);
+  const remote = new URL((await handle.info()).remote);
+  if (remote.protocol !== "https:") throw new Error("remote is not an https URL");
+  if (remote.host !== host) return null;
   const made = await handle.createToken(scope, TOKEN_TTL_S);
   const expires = Date.parse(made.expiresAt);
-  gatewayTokens.set(key, { plaintext: made.plaintext, renewAt: (Number.isNaN(expires) ? now + TOKEN_TTL_S * 1000 : expires) - TOKEN_RENEW_MS });
+  gatewayTokens.set(key, { plaintext: made.plaintext, host, renewAt: (Number.isNaN(expires) ? now + TOKEN_TTL_S * 1000 : expires) - TOKEN_RENEW_MS });
   return made.plaintext;
 }
 
@@ -616,6 +798,9 @@ export class Outbound extends WorkerEntrypoint<Env, OutboundProps> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.hostname.endsWith(ARTIFACTS_SUFFIX)) return this.artifacts(request, url);
+    // A closed gateway serves Artifacts and nothing else. The container has no route of its own
+    // (enableInternet: false), so this is where everything else ends.
+    if (this.ctx.props?.egress === "closed") return deny(403, `egress to "${url.hostname}" is not allowed for this container`);
     if (url.hostname === ANTHROPIC_HOST) {
       const key = (this.env as unknown as { ANTHROPIC_API_KEY?: string }).ANTHROPIC_API_KEY;
       // Fail closed: forwarding the container's placeholder key would only fail slower, after retries.
@@ -629,21 +814,26 @@ export class Outbound extends WorkerEntrypoint<Env, OutboundProps> {
     // Only git smart HTTP is served: the rest of the Artifacts host is not the container's business.
     const target = gitTarget(url);
     if (!target) return deny(403, "only git requests under /git/<namespace>/<repo>.git are served");
+    const need = scopeOf(url, request.method);
+    if (!need) return deny(403, "only git fetch and push requests (info/refs, git-upload-pack, git-receive-pack) are served");
     if (this.env.RYKE_NAMESPACE && target.namespace !== this.env.RYKE_NAMESPACE) {
       return deny(403, `namespace "${target.namespace}" is not served`);
     }
-    // Checked before Artifacts is contacted: a denied repo costs nothing and reveals nothing.
-    const allow = this.ctx.props?.allow;
-    if (allow !== undefined && !allow.includes(target.repo)) return deny(403, `repo "${target.repo}" is not allowed for this container`);
+    // Checked before Artifacts is contacted: a denied repo costs nothing and reveals nothing. Without
+    // a list there is no access, and a read entry never covers a push.
+    const granted = grantFor(this.ctx.props?.allow, target.repo);
+    if (!granted) return deny(403, `repo "${target.repo}" is not allowed for this container`);
+    if (need === "write" && granted !== "write") return deny(403, `repo "${target.repo}" is read-only for this container`);
     if (!this.env.ARTIFACTS) return deny(503, "the ARTIFACTS binding is not configured on the gateway");
-    let token: string;
+    let token: string | null;
     try {
-      token = await tokenFor(this.env.ARTIFACTS, target.repo, scopeOf(url, request.method));
+      token = await tokenFor(this.env.ARTIFACTS, target.repo, need, url.host);
     } catch (e) {
       return (e as { code?: string }).code === "NOT_FOUND"
         ? deny(404, `repo "${target.repo}" does not exist`)
         : deny(502, `could not mint a token for "${target.repo}"`);
     }
+    if (token === null) return deny(403, `host "${url.host}" is not the Artifacts host of this namespace`);
     // Whatever credentials the container sent are dropped; the plain-HTTP rule is upgraded so the
     // token never travels in the clear.
     url.username = "";

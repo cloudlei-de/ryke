@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PushEvent } from "../src/shared/types";
 import type { Context } from "hono";
 import { api, authorized, respond } from "../src/worker/api";
-import { agentToken, agentTokenTxn, ledger } from "../src/worker/service";
+import { agentToken, agentTokenTxn, ledger, sameText } from "../src/worker/service";
 import { apiBegin, AUTH, commitToFork, fixture, http, landOnTrunk, lazy, newRepo, ok, opsOf, store, unique, type Json, type TestRepo } from "./helpers";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -180,6 +180,24 @@ describe("authentication and routing", () => {
     expect(authorized({ RYKE_TOKEN: token } as Env, header)).toBe(expected);
   });
 
+  it("answers HEAD on public reads without a token, like GET", async () => {
+    const t = await newRepo();
+    for (const path of ["/api/health", `/api/repos/${t.name}`, `/api/repos/${t.name}/ops`]) expect((await http("HEAD", path, { auth: false })).status, path).toBe(200);
+    expect((await http("HEAD", "/api/repos", { auth: false })).status).not.toBe(401);
+  });
+
+  it.each([
+    ["equal", "abc", "abc", true],
+    ["one character differs", "abc", "abd", false],
+    ["first character differs", "xbc", "abc", false],
+    ["a prefix", "ab", "abc", false],
+    ["longer", "abcd", "abc", false],
+    ["both empty", "", "", true],
+    ["unicode", "ä€", "ä€", true],
+  ] as const)("sameText(): %s", (_label, a, b, expected) => {
+    expect(sameText(a, b)).toBe(expected);
+  });
+
   it("answers 404 for an unknown route under /api", async () => {
     expect((await http("GET", "/api/does-not-exist")).status).toBe(404);
     expect((await http("GET", "/api/txns/t_x/does-not-exist")).status).toBe(404);
@@ -262,7 +280,10 @@ describe("agent tokens", () => {
 
   it.each([
     ["another transaction's id", async (tok: string) => tok.replace(/\.t_[0-9a-z]+\./, ".t_zzzzzzzz.")],
-    ["one MAC character changed", async (tok: string) => tok.slice(0, -1) + (tok.endsWith("A") ? "B" : "A")],
+    ["one MAC character in the middle changed", async (tok: string) => {
+      const i = tok.length - 20;
+      return tok.slice(0, i) + (tok[i] === "A" ? "B" : "A") + tok.slice(i + 1);
+    }],
     ["the MAC cut short", async (tok: string) => tok.slice(0, -2)],
     ["no MAC", async (tok: string) => tok.slice(0, tok.lastIndexOf(".") + 1)],
     ["another prefix", async (tok: string) => tok.replace(/^rtx\./, "rty.")],
@@ -273,6 +294,22 @@ describe("agent tokens", () => {
     const forged = await forge(b.agentToken, b.txn);
     expect(await agentTokenTxn(env, forged)).toBeNull();
     if (forged !== env.RYKE_TOKEN) expect((await post(`/api/txns/${b.txn}/abort`, { reason: "x" }, { auth: bearer(forged) })).status).toBe(401);
+    expect(await txnState(b.txn)).toBe("open");
+  });
+
+  // 32 MAC bytes are 43 base64url characters whose last one carries only 4 bits; a decoder ignores the
+  // other 2, so the three other spellings of that character must be refused like any forgery.
+  it("refuses the other spellings of the MAC's last character", async () => {
+    const { b } = await begun();
+    const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const tok = b.agentToken as string;
+    const i = B64.indexOf(tok.at(-1)!);
+    const others = [0, 1, 2, 3].map((k) => (i & ~3) | k).filter((j) => j !== i).map((j) => tok.slice(0, -1) + B64[j]);
+    expect(others).toHaveLength(3);
+    for (const forged of others) {
+      expect(await agentTokenTxn(env, forged)).toBeNull();
+      expect((await post(`/api/txns/${b.txn}/abort`, { reason: "x" }, { auth: bearer(forged) })).status).toBe(401);
+    }
     expect(await txnState(b.txn)).toBe("open");
   });
 

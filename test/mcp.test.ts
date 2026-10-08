@@ -271,6 +271,15 @@ describe("ryke_repo", () => {
     expect(out.json).toMatchObject({ error: "repo is not initialised", status: 404 });
   });
 
+  it.each(["__index", "Repo", "a/b", "-x", "a".repeat(42)])("is 422 for the malformed name %s on ryke_repo and ryke_begin", async (repo) => {
+    const c = await McpClient.connect();
+    for (const [tool, args] of [["ryke_repo", { repo }], ["ryke_begin", { repo, agent: "a", intent: "x" }]] as const) {
+      const out = await c.call(tool, args);
+      expect(out.isError, tool).toBe(true);
+      expect(out.json, tool).toMatchObject({ status: 422, error: expect.stringContaining("name") });
+    }
+  });
+
   it("refuses input that does not match the schema", async () => {
     const c = await McpClient.connect();
     for (const args of [{}, { repo: 7 }, { repo: null }]) {
@@ -618,6 +627,10 @@ describe("ryke_status", () => {
     const r = await okCall(await McpClient.connect(), "ryke_status", { txn: b.txn });
     expect(r.txn).toMatchObject({ state: "stale", reason: "stale_read" });
     expect(r.detail.stale).toEqual([{ path: "src/format.ts", seq: 1, by: lander.txn }]);
+    // PLAN §6.2: the delta comes with the status, so an MCP agent need not start a retry to see it.
+    expect(r.delta.map((d: Json) => d.path)).toEqual(["src/format.ts"]);
+    expect(r.delta[0].patch).toContain("+");
+    expect(r.verdicts).toEqual([]);
     expect(r.staleWarnings).toEqual([]);
   });
 

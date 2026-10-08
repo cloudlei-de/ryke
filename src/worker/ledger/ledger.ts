@@ -16,7 +16,7 @@ import {
 } from "../../shared/types";
 import { StoreError, storeFor, type RepoStore } from "../store/store";
 import { bump, decayed, HEAT_EMIT_MS, isHot, leaseDecision, shouldEmit } from "./heat";
-import { runnerFor, runToCompletion } from "../runner/runner";
+import { access, runnerFor, runToCompletion } from "../runner/runner";
 import { authRemote } from "../service";
 import { planRecall, RecallError, type LandedTxn, type RecallPlan, type RecallSelector } from "./recall";
 import { migrate } from "./schema";
@@ -1423,7 +1423,7 @@ export class Ledger extends DurableObject<Env> {
         targetOf: Object.fromEntries(order.map((t) => [t, plan.targets.includes(t) ? t : firstTarget(t)])),
       };
       const prepared = done<RevertJob>(
-        await runToCompletion(runner, "revert", { trunk: await token("write"), plan: JSON.stringify(script), ref }, {}, jobMs),
+        await runToCompletion(runner, "revert", { trunk: await token("write"), plan: JSON.stringify(script), ref }, access.write(repo), jobMs),
         "revert",
       );
       if (prepared.outcome !== "prepared" || !prepared.head || prepared.head === prepared.base) return prepared;
@@ -1432,7 +1432,7 @@ export class Ledger extends DurableObject<Env> {
           runner,
           "verify",
           { remote: await token("read"), ref: prepared.head, command: policy.verify, timeout: String(policy.verifyTimeoutSeconds) },
-          {},
+          access.verify(repo),
           jobMs,
         ),
         "verify",
@@ -1452,7 +1452,7 @@ export class Ledger extends DurableObject<Env> {
           runner,
           "land",
           { mode: "push", trunk: await token("write"), candidate: result.head!, notes: "[]", cleanup: JSON.stringify([ref]) },
-          {},
+          access.write(repo),
           jobMs,
           { cancelOnTimeout: false },
         ),

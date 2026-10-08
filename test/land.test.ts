@@ -4,7 +4,9 @@ import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { GateInput, GateResult } from "../src/worker/judge";
-import { landTrain, type LandDeps, type Prepared, type StepLike, type Verified } from "../src/worker/land";
+import { landTrain, realDeps, type LandDeps, type Prepared, type StepLike, type Verified } from "../src/worker/land";
+import { access, type Runner } from "../src/worker/runner/runner";
+import { parsePolicy } from "../src/shared/policy";
 import type { TrainParams, TrainTxn } from "../src/worker/ledger/ledger";
 import { beginTxn, commitToFork, newRepo, ok, opsOf, type TestRepo } from "./helpers";
 
@@ -283,5 +285,58 @@ describe("landTrain", () => {
     expect((await landTrain(env, formed.params!, steps, () => deps)).outcome).toBe("landed");
     await runDurableObjectAlarm(t.L);
     expect(ok(await t.L.status(b.txn)).txn).toMatchObject({ state: "stale", reason: "stale_read" });
+  });
+});
+
+// In container mode the gateway attaches Artifacts credentials per job from RYKE_ALLOW_REPOS, so what
+// each step passes there is all it can reach: only the lander's own steps write, verify only reads.
+describe("realDeps: what each land step may touch", () => {
+  function recordingRunner(result: (kind: string, args: Record<string, string>) => unknown) {
+    const started: { kind: string; args: Record<string, string>; env: Record<string, string> }[] = [];
+    const runner: Runner = {
+      async start(kind, args, jobEnv) {
+        started.push({ kind, args, env: jobEnv });
+        return `j_${started.length}`;
+      },
+      async status(id) {
+        const s = started[Number(id.slice(2)) - 1]!;
+        return { id, kind: s.kind, state: "done", exitCode: 0, result: result(s.kind, s.args) } as never;
+      },
+      async log() {
+        return { text: "", next: 0 };
+      },
+      async cancel() {},
+    };
+    return { runner, started };
+  }
+
+  it.each([
+    ["seed, push, cleanup and revert", access.write("convert"), "convert:write"],
+    ["prepare", access.prepare("convert", ["convert--t_a", "convert--t_b"]), "convert:write,convert--t_a:read,convert--t_b:read"],
+    ["verify", access.verify("convert"), "convert:read"],
+  ])("%s: %s", (_label, env, expected) => {
+    expect(env).toEqual({ RYKE_ALLOW_REPOS: expected });
+  });
+
+  it("gives prepare its forks to read, verify the trunk to read, and only push and cleanup the trunk to write", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t);
+    const head = await commitToFork(b, { "src/n.ts": "n\n" });
+    const member: TrainTxn = { id: b.txn, fork: `${t.name}--${b.txn}`, head, attempt: 1, snapshot: b.snapshot, agent: "a", model: null, intent: "x", criteria: [], approved: false };
+    const params: TrainParams = { repo: t.name, trainId: "tr_test", base: b.snapshot, baseSeq: 0, txns: [member] };
+    const { runner, started } = recordingRunner((kind, args) =>
+      kind === "verify" ? { ok: true, pass: true, tests: { passed: 1, failed: 0, failures: [] } } : args.mode === "push" ? { ok: true, pushed: true } : { ok: true, candidate: head, applied: [b.txn], conflicts: [] },
+    );
+    const deps = realDeps(env, params, parsePolicy(null), runner);
+    await deps.prepare([member], "refs/ryke/candidates/tr_test");
+    await deps.verify(head);
+    await deps.push(head, [], []);
+    await deps.cleanup(["refs/ryke/candidates/tr_test"]);
+    expect(started.map((s) => [s.kind, s.args.mode ?? null, s.env.RYKE_ALLOW_REPOS])).toEqual([
+      ["land", "prepare", `${t.name}:write,${member.fork}:read`],
+      ["verify", null, `${t.name}:read`],
+      ["land", "push", `${t.name}:write`],
+      ["land", "cleanup", `${t.name}:write`],
+    ]);
   });
 });

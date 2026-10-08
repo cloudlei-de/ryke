@@ -1,7 +1,7 @@
 // The operations behind both /api (api.ts) and /mcp (mcp.ts), so the two interfaces cannot drift.
 import { screenIntent } from "./judge";
 import type { Ledger, Res, Screen } from "./ledger/ledger";
-import { RunnerError, runnerFor, runToCompletion } from "./runner/runner";
+import { access, RunnerError, runnerFor, runToCompletion } from "./runner/runner";
 import { StoreError, storeFor, type RepoStore } from "./store/store";
 
 // wrangler types cannot see the class behind an `exports` binding, so the stub type is asserted here once.
@@ -89,12 +89,22 @@ export async function agentToken(env: Env, txn: string): Promise<string> {
   return `rtx.${txn}.${btoa(String.fromCharCode(...mac)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
 }
 
-// The transaction a well-formed, correctly signed agent token is for; null for anything else.
+// The transaction a correctly signed agent token is for; null for anything else. The token is compared
+// with the one this Worker would mint, not decoded: base64 ignores the low bits of the last character,
+// so decoding would accept four spellings of every token.
 export async function agentTokenTxn(env: Env, token: string): Promise<string | null> {
   const m = AGENT_TOKEN.exec(token);
   if (!m || !env.RYKE_TOKEN) return null;
-  const mac = Uint8Array.from(atob(m[2]!.replace(/-/g, "+").replace(/_/g, "/") + "="), (c) => c.charCodeAt(0));
-  return (await crypto.subtle.verify("HMAC", await agentKey(env), mac, utf8(m[1]!))) ? m[1]! : null;
+  return sameText(token, await agentToken(env, m[1]!)) ? m[1]! : null;
+}
+
+// Equality that takes the same time wherever two secrets differ, so a caller cannot find a token one
+// character at a time; only a length mismatch returns early, and lengths are not secret here.
+export function sameText(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 // Process-mode jobs reach the local store directly, so credentials travel in the remote URL (basic
@@ -118,7 +128,7 @@ export async function createRepo(env: Env, name: unknown, seedFrom: unknown): Pr
     const ref = await store.create(name, { description: "Ryke trunk" });
     created = true;
     const token = await store.token(name, "write", 600);
-    const job = await runToCompletion(runnerFor(env), "seed", { remote: authRemote(env, ref.remote, token), seed: (seedFrom as string) ?? "" }, {}, SEED_TIMEOUT_MS);
+    const job = await runToCompletion(runnerFor(env), "seed", { remote: authRemote(env, ref.remote, token), seed: (seedFrom as string) ?? "" }, access.write(name), SEED_TIMEOUT_MS);
     const sha = (job.result as { sha?: string } | undefined)?.sha;
     if (job.state !== "done" || !sha) {
       await unmake(store, name);

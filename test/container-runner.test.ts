@@ -11,6 +11,7 @@ import {
   completeUtf8Length,
   gatewayTokens,
   gitTarget,
+  isTrusted,
   jobEnvironment,
   killCommand,
   launchCommand,
@@ -29,7 +30,8 @@ const enc = new TextEncoder();
 const CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const IMAGE = "registry.test/ryke-runner@sha256:abc123";
 const GATEWAY = { gateway: "outbound" } as unknown as Fetcher;
-const allowsOf = (rules: unknown[]) => rules.map((r) => (r as { allow?: string[] }).allow);
+const allowsOf = (rules: unknown[]) => rules.map((r) => (r as { allow?: Record<string, string> }).allow);
+const egressOf = (rules: unknown[]) => rules.map((r) => (r as { egress?: string }).egress);
 const MIB = 1024 * 1024;
 
 // ------------------------------------------------------------------------------------ fakes
@@ -74,10 +76,14 @@ class FakeContainer implements Box {
     this.starts.push(options as ContainerStartupOptions);
   }
 
+  // A destroyed container takes its disk with it: what a job left behind is gone for the next one.
+  failDestroy = false;
   async destroy(): Promise<void> {
+    this.events.push("destroy");
+    if (this.failDestroy) throw new Error("destroy refused");
     this.running = false;
     this.destroys++;
-    this.events.push("destroy");
+    this.files.clear();
   }
 
   async setInactivityTimeout(ms: number | bigint): Promise<void> {
@@ -210,7 +216,7 @@ async function withRunner(fn: (h: Harness) => Promise<void>, opts: { container?:
       // Stands in for ctx.exports; the Fetcher it returns carries the props it was made with, so
       // tests can see what each registration was given.
       protected override exports() {
-        return { Outbound: ({ props }: { props: { allow?: string[] } }) => ({ ...GATEWAY, ...props }) as unknown as Fetcher };
+        return { Outbound: ({ props }: { props: { allow?: Record<string, "read" | "write">; egress?: "open" | "closed" } }) => ({ ...GATEWAY, ...props }) as unknown as Fetcher };
       }
       protected override now(): number {
         return clock.t;
@@ -476,24 +482,57 @@ describe("checkJob", () => {
   });
 });
 
-describe("parseAllow", () => {
+describe("isTrusted", () => {
+  // The kinds whose scripts are ours and read only git data. Everything else runs code a
+  // transaction's author wrote, which includes any kind added later and not listed here.
   it.each([
-    [undefined, undefined],
-    ["", []],
-    ["  ", []],
-    [",,", []],
-    ["convert", ["convert"]],
-    ["b,a", ["a", "b"]],
-    [" a , b ", ["a", "b"]],
-    ["a,,b,a", ["a", "b"]],
-    ["convert--t_1,convert", ["convert", "convert--t_1"]],
-    ["a.b_c-d", ["a.b_c-d"]],
+    ["seed", true],
+    ["land", true],
+    ["revert", true],
+    ["verify", false],
+    ["agent", false],
+    ["swarm", false],
+    ["something-new", false],
+    ["Land", false],
+    ["", false],
+  ])("%j is trusted: %s", (kind, trusted) => {
+    expect(isTrusted(kind)).toBe(trusted);
+  });
+});
+
+describe("parseAllow", () => {
+  // Absent or empty means no Artifacts access at all; the old reading of "absent" as unrestricted is what
+  // let a verify job push to trunk.
+  it.each([
+    [undefined, {}],
+    ["", {}],
+    ["  ", {}],
+    [",,", {}],
+    ["convert:read", { convert: "read" }],
+    ["convert:write", { convert: "write" }],
+    ["b:read,a:write", { a: "write", b: "read" }],
+    [" a:read , b:write ", { a: "read", b: "write" }],
+    ["a:read,,b:read,a:read", { a: "read", b: "read" }],
+    ["a:read,a:write", { a: "write" }], // the stronger entry wins, in either order
+    ["a:write,a:read", { a: "write" }],
+    ["convert--t_1:write,convert:read", { convert: "read", "convert--t_1": "write" }],
+    ["a.b_c-d:read", { "a.b_c-d": "read" }],
+    ["constructor:read,toString:write", { constructor: "read", toString: "write" }], // names of Object.prototype members
   ] as const)("reads %j as %j", (raw, expected) => {
     expect(parseAllow(raw)).toEqual(expected);
   });
 
-  it.each(["a b", "../x", "-x", ".hidden", "a/b", "a*", "ü", "a;b", "ok,bad name", ".."])("rejects %j", (raw) => {
-    expect(() => parseAllow(raw)).toThrow("RYKE_ALLOW_REPOS has an invalid repo name");
+  it.each(["a b:read", "../x:read", "-x:read", ".hidden:write", "a/b:read", "a*:read", "ü:read", "a;b:write", "ok:read,bad name:read", "..:read", ":read", "a:b:read"])(
+    "rejects the repo name in %j",
+    (raw) => {
+      expect(() => parseAllow(raw)).toThrow("RYKE_ALLOW_REPOS has an invalid repo name");
+      expect(() => parseAllow(raw)).toThrow(RunnerError);
+    },
+  );
+
+  // A bare name used to mean everything; it must not silently become read or write now.
+  it.each(["convert", "a:read,b", "a:", "a:READ", "a:rw", "a:read-write", "a:write ,b:x", "a:true"])("rejects %j for want of a mode", (raw) => {
+    expect(() => parseAllow(raw)).toThrow(/RYKE_ALLOW_REPOS entry ".*" needs a mode: <repo>:read or <repo>:write/);
     expect(() => parseAllow(raw)).toThrow(RunnerError);
   });
 });
@@ -538,22 +577,80 @@ describe("gitTarget", () => {
 
 describe("scopeOf", () => {
   const base = "https://acct.artifacts.cloudflare.net/git/ryke/convert.git";
+  // Exactly the four requests of git smart HTTP, each with the one scope it needs. Anything else
+  // (dumb HTTP, other methods, a push spelled as a GET) is not served, and so cannot be a write.
   it.each([
     ["GET", "/info/refs?service=git-upload-pack", "read"],
     ["GET", "/info/refs?service=git-receive-pack", "write"],
     ["GET", "/info/refs?service=git-receive-pack&x=1", "write"],
+    ["GET", "/info/refs?x=1&service=git-upload-pack", "read"],
     ["POST", "/git-upload-pack", "read"],
+    ["POST", "/git-upload-pack?x=1", "read"],
     ["POST", "/git-receive-pack", "write"],
     ["POST", "/git-receive-pack?x=1", "write"],
-    ["GET", "/git-receive-pack", "read"], // not a push: receive-pack is only ever POSTed
-    ["HEAD", "/git-receive-pack", "read"],
-    ["GET", "/info/refs", "read"],
-    ["GET", "/HEAD", "read"],
-    ["GET", "/info/refs?service=git-upload-pack-evil", "read"],
-    ["GET", "/info/refs?service=GIT-RECEIVE-PACK", "read"],
-    ["POST", "/not-git-receive-pack-x", "read"],
   ] as const)("%s %s needs %s", (method, path, scope) => {
     expect(scopeOf(new URL(base + path), method)).toBe(scope);
+  });
+
+  it.each([
+    ["GET", "/git-receive-pack"], // not a push: receive-pack is only ever POSTed
+    ["GET", "/git-upload-pack"],
+    ["HEAD", "/git-receive-pack"],
+    ["HEAD", "/info/refs?service=git-upload-pack"],
+    ["POST", "/info/refs?service=git-upload-pack"],
+    ["POST", "/info/refs?service=git-receive-pack"],
+    ["PUT", "/git-receive-pack"],
+    ["DELETE", "/git-receive-pack"],
+    ["PATCH", "/git-upload-pack"],
+    ["OPTIONS", "/git-upload-pack"],
+    ["GET", "/info/refs"], // dumb HTTP, which Artifacts does not speak
+    ["GET", "/info/refs?service="],
+    ["GET", "/info/refs?service=git-upload-pack-evil"],
+    ["GET", "/info/refs?service=GIT-RECEIVE-PACK"],
+    ["GET", "/info/refs?service=git-upload-pack&service=git-receive-pack"], // which one does the server read?
+    ["GET", "/info/refs?service=git-receive-pack&service=git-upload-pack"],
+    ["GET", "/info/refs?service=git-upload-pack&service=git-upload-pack"],
+    ["GET", "/HEAD"],
+    ["GET", "/objects/info/packs"],
+    ["GET", ""],
+    ["GET", "/"],
+    ["POST", "/not-git-receive-pack-x"],
+    ["POST", "/git-receive-pack/extra"],
+    ["POST", "/x/git-receive-pack"],
+    ["POST", "/git-receive-pack/"],
+    ["GET", "/info/refs/?service=git-upload-pack"],
+  ] as const)("%s %s is not served", (method, path) => {
+    expect(scopeOf(new URL(base + path), method)).toBeNull();
+  });
+
+  it.each([
+    "https://acct.artifacts.cloudflare.net/git/ryke/convert/info/refs?service=git-upload-pack",
+    "https://acct.artifacts.cloudflare.net/git/ryke/.git/info/refs?service=git-upload-pack",
+    "https://acct.artifacts.cloudflare.net/git/ryke/a.git/b.git/git-receive-pack", // a second repo segment: one request, two readings
+    "https://acct.artifacts.cloudflare.net/v1/repos/convert/git-receive-pack",
+    "https://acct.artifacts.cloudflare.net/git/ryke/convert.git/../other/git-receive-pack",
+  ])("%s is not served, whatever the method", (url) => {
+    expect(scopeOf(new URL(url), "POST")).toBeNull();
+    expect(scopeOf(new URL(url), "GET")).toBeNull();
+  });
+
+  it("reads the path as the URL parser normalised it, which is also the path that is forwarded", () => {
+    // Dot segments, encoded or not, are resolved before any check sees them, so a request cannot be
+    // classified for one repo and sent to another.
+    for (const path of ["/git/ryke/convert.git/../b.git/git-receive-pack", "/git/ryke/convert.git/%2e%2e/b.git/git-receive-pack"]) {
+      const url = new URL(`https://acct.artifacts.cloudflare.net${path}`);
+      expect(url.pathname).toBe("/git/ryke/b.git/git-receive-pack");
+      expect(scopeOf(url, "POST")).toBe("write");
+      expect(gitTarget(url)).toEqual({ namespace: "ryke", repo: "b" });
+    }
+  });
+
+  it("names the same repo as gitTarget wherever it names a scope", () => {
+    for (const path of ["/git/ryke/convert.git/git-receive-pack", "/git/ryke/a.git.git/git-upload-pack", "/git/ryke/convert--t_1.git/git-upload-pack"]) {
+      const url = new URL(`https://acct.artifacts.cloudflare.net${path}`);
+      expect(scopeOf(url, "POST")).not.toBeNull();
+      expect(gitTarget(url)!.repo).toBe(path.split("/")[3]!.replace(/\.git$/, ""));
+    }
   });
 });
 
@@ -610,8 +707,10 @@ describe("Runner.start", () => {
       await runner.start(id, "land", { repo: "convert", train: "tr_1" }, JOB_ENV);
 
       expect(box.starts).toEqual([{ image: IMAGE, instance: "standard-2", enableInternet: false, env: { RYKE_ROOT: "/opt/ryke" } }]);
-      expect(box.httpsRules).toEqual([{ addr: "*", binding: GATEWAY }]);
-      expect(box.httpRules).toEqual([GATEWAY]);
+      // The land job names no repo, so its gateway reaches none; land is trusted, so it keeps its egress.
+      const registered = { ...GATEWAY, allow: {}, egress: "open" };
+      expect(box.httpsRules).toEqual([{ addr: "*", binding: registered }]);
+      expect(box.httpRules).toEqual([registered]);
       expect(box.inactivity).toEqual([600_000]);
       // Hostname rules go in before the plain-HTTP catch-all, and all of it before the first exec.
       expect(box.events).toEqual(["start", "https", "http", "inactivity", "exec mkdir", "exec bash"]);
@@ -642,7 +741,7 @@ describe("Runner.start", () => {
   it("passes the job's env through exec only, never on a command line or in the start options", async () => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await runner.start(id, "agent", ARGS, { SECRET_FOR_JOB: "s3cret-value" });
+      await runner.start(id, "land", ARGS, { SECRET_FOR_JOB: "s3cret-value" });
       expect(JSON.stringify(box.starts)).not.toContain("s3cret-value");
       expect(JSON.stringify(box.execs.map((e) => e.cmd))).not.toContain("s3cret-value");
       expect(box.execs[1]!.options?.env?.SECRET_FOR_JOB).toBe("s3cret-value");
@@ -652,7 +751,7 @@ describe("Runner.start", () => {
   it("does not start a container that is already running, nor register the gateway twice", async () => {
     await withRunner(async ({ runner, box }) => {
       await runner.start(jobId(), "land", ARGS, {});
-      await runner.start(jobId(), "verify", ARGS, {});
+      await runner.start(jobId(), "revert", ARGS, {});
       expect(box.starts).toHaveLength(1);
       expect(box.httpsRules).toHaveLength(1);
       expect(box.httpRules).toHaveLength(1);
@@ -677,7 +776,7 @@ describe("Runner.start", () => {
       let release!: () => void;
       box.gate = new Promise<void>((r) => (release = r));
       const a = runner.start(jobId(), "land", ARGS, {});
-      const b = runner.start(jobId(), "verify", ARGS, {});
+      const b = runner.start(jobId(), "revert", ARGS, {});
       await tick();
       expect(box.running).toBe(true); // running flips at start(), well before the gateway is registered
       expect(box.execs).toHaveLength(0);
@@ -868,7 +967,7 @@ describe("Runner.status", () => {
   it("finds the result at the end of a log far larger than the window", async () => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await runner.start(id, "verify", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       box.finishJob(id, 0, `${"x".repeat(2 * MIB)}\n{"ok":true}\n`);
       expect((await runner.status(id)).result).toEqual({ ok: true });
     });
@@ -877,7 +976,7 @@ describe("Runner.status", () => {
   it("does not trust the fragment a window cuts off when the log is one huge line", async () => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await runner.start(id, "verify", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       box.finishJob(id, 0, `{"pad":"${"x".repeat(2 * MIB)}"}`);
       expect((await runner.status(id)).result).toBeUndefined();
     });
@@ -947,7 +1046,7 @@ describe("Runner.status", () => {
   it("kills and fails a job that outlives the two-hour backstop with 124", async () => {
     await withRunner(async ({ runner, box, clock }) => {
       const id = jobId();
-      await runner.start(id, "agent", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       clock.t += 2 * 3600_000;
       expect((await runner.status(id)).state).toBe("running");
       expect(box.killed).toEqual([]);
@@ -960,7 +1059,7 @@ describe("Runner.status", () => {
   it("still ends a job past the backstop when the container cannot be reached for the kill", async () => {
     await withRunner(async ({ runner, box, clock }) => {
       const id = jobId();
-      await runner.start(id, "agent", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       clock.t += 2 * 3600_000 + 1;
       box.throwOn = (cmd) => cmd[0] === "bash";
       expect(await runner.status(id)).toMatchObject({ state: "failed", exitCode: 124 });
@@ -1031,7 +1130,7 @@ describe("Runner.log", () => {
   it("serves the log of a failed job as well", async () => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await runner.start(id, "verify", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       box.finishJob(id, 1, "", "FAIL adds\n");
       expect(await runner.log(id, 0)).toEqual({ text: "FAIL adds\n", next: 10 });
     });
@@ -1078,7 +1177,7 @@ describe("Runner.log", () => {
   it("returns at most one megabyte per call and lets the reader continue", async () => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await runner.start(id, "agent", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       box.finishJob(id, 0, "a".repeat(MIB + 10));
       const first = await runner.log(id, 0);
       expect(first.text).toHaveLength(MIB);
@@ -1091,7 +1190,7 @@ describe("Runner.log", () => {
   it("spills a chunk over the cap into the next file without re-reading", async () => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await runner.start(id, "agent", ARGS, {});
+      await runner.start(id, "land", ARGS, {});
       box.finishJob(id, 0, "a".repeat(MIB - 2), "bcdef");
       const first = await runner.log(id, 0);
       expect(first.text).toBe("a".repeat(MIB - 2) + "bc");
@@ -1304,7 +1403,7 @@ describe("Runner keep-alive", () => {
       const a = jobId();
       const b = jobId();
       await runner.start(a, "land", ARGS, {});
-      await runner.start(b, "verify", ARGS, {});
+      await runner.start(b, "revert", ARGS, {});
       box.finishJob(a, 0);
       await state.storage.deleteAlarm();
       clock.t += 60_000;
@@ -1327,7 +1426,7 @@ describe("Runner keep-alive", () => {
       const a = jobId();
       const b = jobId();
       await runner.start(a, "land", ARGS, {});
-      await runner.start(b, "verify", ARGS, {});
+      await runner.start(b, "revert", ARGS, {});
       box.finishJob(b, 0);
       box.throwOn = (cmd) => cmd[0] === "cat" && cmd[1] === `/work/${a}/exit`;
       await state.storage.deleteAlarm();
@@ -1390,49 +1489,79 @@ describe("Runner gateway allow-list", () => {
   const job = (allow?: string): Record<string, string> => (allow === undefined ? {} : { RYKE_ALLOW_REPOS: allow });
   const httpsAllows = (box: FakeContainer) => allowsOf(box.httpsRules.map((r) => r.binding));
   const httpAllows = (box: FakeContainer) => allowsOf(box.httpRules);
+  const R = "read" as const;
+  const W = "write" as const;
 
-  it("registers an unrestricted gateway when the job names no repos (the lander)", async () => {
+  it("registers a gateway that reaches no repo when the job names none: absent means no Artifacts access", async () => {
     await withRunner(async ({ runner, box }) => {
       await runner.start(jobId(), "land", ARGS, job());
-      expect(httpsAllows(box)).toEqual([undefined]);
-      expect(httpAllows(box)).toEqual([undefined]);
+      expect(httpsAllows(box)).toEqual([{}]);
+      expect(httpAllows(box)).toEqual([{}]);
     });
   });
 
-  it("registers the job's repos on both rules, and still hands the job its own list", async () => {
+  it("registers the job's repos and modes on both rules, and still hands the job its own list", async () => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job("convert--t_1"));
-      expect(httpsAllows(box)).toEqual([["convert--t_1"]]);
-      expect(httpAllows(box)).toEqual([["convert--t_1"]]);
-      expect(box.execs[1]!.options?.env?.RYKE_ALLOW_REPOS).toBe("convert--t_1");
+      await runner.start(jobId(), "agent", ARGS, job("convert--t_1:write,convert:read"));
+      expect(httpsAllows(box)).toEqual([{ convert: R, "convert--t_1": W }]);
+      expect(httpAllows(box)).toEqual([{ convert: R, "convert--t_1": W }]);
+      expect(box.execs[1]!.options?.env?.RYKE_ALLOW_REPOS).toBe("convert--t_1:write,convert:read");
     });
   });
 
   it.each([
-    [" b, a ,a", ["a", "b"]],
-    ["", []], // present but empty means nothing, never everything
-    [" , ", []],
+    [" b:read, a:write ,a:read", { a: W, b: R }],
+    ["", {}], // present but empty means nothing, the same as absent
+    [" , ", {}],
   ])("reads RYKE_ALLOW_REPOS=%j as %j", async (raw, expected) => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job(raw));
+      await runner.start(jobId(), "land", ARGS, job(raw));
       expect(httpsAllows(box)).toEqual([expected]);
     });
   });
 
-  it.each(["a b", "../x", "-x", "a/b", ".hidden", "ok,bad name"])("rejects RYKE_ALLOW_REPOS=%j before touching the container", async (raw) => {
+  it.each([
+    ["a b:read", "invalid repo name"],
+    ["../x:read", "invalid repo name"],
+    ["-x:write", "invalid repo name"],
+    ["a/b:read", "invalid repo name"],
+    [".hidden:read", "invalid repo name"],
+    ["ok:read,bad name:read", "invalid repo name"],
+    ["convert", "needs a mode"], // a bare name used to mean unrestricted
+    ["a:read,b", "needs a mode"],
+    ["a:rw", "needs a mode"],
+  ])("rejects RYKE_ALLOW_REPOS=%j before touching the container", async (raw, why) => {
     await withRunner(async ({ runner, box }) => {
       const id = jobId();
-      await expect(runner.start(id, "agent", ARGS, job(raw))).rejects.toThrow("RYKE_ALLOW_REPOS has an invalid repo name");
+      await expect(runner.start(id, "agent", ARGS, job(raw))).rejects.toThrow(`RYKE_ALLOW_REPOS ${why === "needs a mode" ? "entry" : "has an"}`);
       expect(box.starts).toHaveLength(0);
       expect(box.execs).toHaveLength(0);
       await expect(runner.status(id)).rejects.toThrow("no such job");
     });
   });
 
+  it("never gives a verify job write access, whatever its caller asks for", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const id = jobId();
+      await expect(runner.start(id, "verify", ARGS, job("convert:read,convert--t_1:write"))).rejects.toThrow("verify jobs never get write access");
+      await expect(runner.start(id, "verify", ARGS, job("convert:read,convert--t_1:write"))).rejects.toThrow(RunnerError);
+      expect(box.starts).toHaveLength(0);
+      await runner.start(id, "verify", ARGS, job("convert:read"));
+      expect(httpsAllows(box)).toEqual([{ convert: R }]);
+    });
+  });
+
+  it("lets an agent job write the one repo it was given", async () => {
+    await withRunner(async ({ runner, box }) => {
+      await runner.start(jobId(), "agent", ARGS, job("convert--t_1:write,convert:read"));
+      expect(httpsAllows(box)).toEqual([{ convert: R, "convert--t_1": W }]);
+    });
+  });
+
   it("does not register again for a second job with the same list", async () => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job("a"));
-      await runner.start(jobId(), "agent", ARGS, job("a"));
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
       expect(box.httpsRules).toHaveLength(1);
       expect(box.httpRules).toHaveLength(1);
     });
@@ -1440,51 +1569,59 @@ describe("Runner gateway allow-list", () => {
 
   it("widens the registration to the union while jobs run side by side, HTTPS rule first", async () => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job("a"));
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
       box.events.length = 0;
-      await runner.start(jobId(), "agent", ARGS, job("b"));
-      expect(httpsAllows(box)).toEqual([["a"], ["a", "b"]]);
-      expect(httpAllows(box)).toEqual([["a"], ["a", "b"]]);
+      await runner.start(jobId(), "land", ARGS, job("b:write"));
+      expect(httpsAllows(box)).toEqual([{ a: R }, { a: R, b: W }]);
+      expect(httpAllows(box)).toEqual([{ a: R }, { a: R, b: W }]);
       expect(box.events.filter((e) => e === "https" || e === "http")).toEqual(["https", "http"]);
       expect(box.events.indexOf("exec cat")).toBeLessThan(box.events.indexOf("https")); // running jobs are polled first
       expect(box.starts).toHaveLength(1); // same container, new props
     });
   });
 
-  it("becomes unrestricted while an unrestricted job runs, and stays so", async () => {
+  it("takes the stronger mode for a repo two jobs name, and does not narrow it again", async () => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job("a"));
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
+      await runner.start(jobId(), "land", ARGS, job("a:write"));
+      await runner.start(jobId(), "land", ARGS, job("a:read")); // the write entry still holds
+      expect(httpsAllows(box)).toEqual([{ a: R }, { a: W }]);
+    });
+  });
+
+  it("adds nothing for a job without a list, which has no repo access of its own", async () => {
+    await withRunner(async ({ runner, box }) => {
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
       await runner.start(jobId(), "land", ARGS, job());
-      await runner.start(jobId(), "agent", ARGS, job("c")); // cannot narrow it again
-      expect(httpsAllows(box)).toEqual([["a"], undefined]);
+      expect(httpsAllows(box)).toEqual([{ a: R }]);
     });
   });
 
   it("narrows again once the earlier jobs have ended", async () => {
     await withRunner(async ({ runner, box }) => {
       const first = jobId();
-      await runner.start(first, "agent", ARGS, job("a"));
+      await runner.start(first, "land", ARGS, job("a:write"));
       box.finishJob(first, 0);
-      await runner.start(jobId(), "agent", ARGS, job("b"));
-      expect(httpsAllows(box)).toEqual([["a"], ["b"]]);
+      await runner.start(jobId(), "land", ARGS, job("b:read"));
+      expect(httpsAllows(box)).toEqual([{ a: W }, { b: R }]);
     });
   });
 
   it("does not let a cancelled or failed job keep its repos in the registration", async () => {
     await withRunner(async ({ runner, box }) => {
       const first = jobId();
-      await runner.start(first, "agent", ARGS, job("a"));
+      await runner.start(first, "land", ARGS, job("a:write"));
       await runner.cancel(first);
-      await runner.start(jobId(), "agent", ARGS, job("b"));
-      expect(httpsAllows(box)).toEqual([["a"], ["b"]]);
+      await runner.start(jobId(), "land", ARGS, job("b:read"));
+      expect(httpsAllows(box)).toEqual([{ a: W }, { b: R }]);
     });
   });
 
   it("registers again after the Durable Object restarted, since it cannot know what is registered", async () => {
     await withRunner(async ({ runner, box, make }) => {
-      await runner.start(jobId(), "agent", ARGS, job("a"));
-      await make().start(jobId(), "agent", ARGS, job("a"));
-      expect(httpsAllows(box)).toEqual([["a"], ["a"]]);
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
+      await make().start(jobId(), "land", ARGS, job("a:read"));
+      expect(httpsAllows(box)).toEqual([{ a: R }, { a: R }]);
       expect(box.starts).toHaveLength(1);
     });
   });
@@ -1492,23 +1629,23 @@ describe("Runner gateway allow-list", () => {
   it("registers a fresh container with only what is running now", async () => {
     await withRunner(async ({ runner, box }) => {
       const first = jobId();
-      await runner.start(first, "agent", ARGS, job("a"));
+      await runner.start(first, "land", ARGS, job("a:read"));
       box.finishJob(first, 0);
       await runner.status(first);
       box.running = false;
-      await runner.start(jobId(), "agent", ARGS, job("b"));
+      await runner.start(jobId(), "land", ARGS, job("b:read"));
       expect(box.starts).toHaveLength(2);
-      expect(httpsAllows(box)).toEqual([["a"], ["b"]]);
+      expect(httpsAllows(box)).toEqual([{ a: R }, { b: R }]);
     });
   });
 
   it("marks the jobs of a container that is gone as lost when the next one boots, and drops their repos", async () => {
     await withRunner(async ({ runner, box, state }) => {
       const old = jobId();
-      await runner.start(old, "agent", ARGS, job("a"));
+      await runner.start(old, "land", ARGS, job("a:read"));
       box.running = false; // idle stop or crash, nobody polled in between
-      await runner.start(jobId(), "agent", ARGS, job("b"));
-      expect(httpsAllows(box)).toEqual([["a"], ["b"]]);
+      await runner.start(jobId(), "land", ARGS, job("b:read"));
+      expect(httpsAllows(box)).toEqual([{ a: R }, { b: R }]);
       expect(box.execsOf("cat")).toEqual([]); // no polling was needed to know
       box.running = true;
       expect(await runner.status(old)).toEqual({ state: "failed", exitCode: 137, result: undefined });
@@ -1520,39 +1657,39 @@ describe("Runner gateway allow-list", () => {
     await withRunner(async ({ runner, box }) => {
       let release!: () => void;
       box.gate = new Promise<void>((r) => (release = r));
-      const a = runner.start(jobId(), "agent", ARGS, job("a"));
-      const b = runner.start(jobId(), "agent", ARGS, job("b"));
+      const a = runner.start(jobId(), "land", ARGS, job("a:read"));
+      const b = runner.start(jobId(), "land", ARGS, job("b:read"));
       await tick();
       release();
       await Promise.all([a, b]);
-      expect(httpsAllows(box)).toEqual([["a", "b"]]);
+      expect(httpsAllows(box)).toEqual([{ a: R, b: R }]);
     });
   });
 
   it("registers again after a half-finished registration instead of trusting what it last registered", async () => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job("a"));
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
       box.failHttp = true; // the HTTPS rule goes in widened to a,b, the HTTP rule does not
-      await expect(runner.start(jobId(), "agent", ARGS, job("b"))).rejects.toThrow("http intercept refused");
+      await expect(runner.start(jobId(), "land", ARGS, job("b:read"))).rejects.toThrow("http intercept refused");
       box.failHttp = false;
-      await runner.start(jobId(), "agent", ARGS, job("a")); // wants exactly what was registered before the failure
-      expect(httpsAllows(box).at(-1)).toEqual(["a"]);
-      expect(httpAllows(box).at(-1)).toEqual(["a"]);
+      await runner.start(jobId(), "land", ARGS, job("a:read")); // wants exactly what was registered before the failure
+      expect(httpsAllows(box).at(-1)).toEqual({ a: R });
+      expect(httpAllows(box).at(-1)).toEqual({ a: R });
     });
   });
 
   it("registers once, not once per start, when starts race for a widened list", async () => {
     await withRunner(async ({ runner, box }) => {
-      await runner.start(jobId(), "agent", ARGS, job("a"));
+      await runner.start(jobId(), "land", ARGS, job("a:read"));
       let release!: () => void;
       box.gate = new Promise<void>((r) => (release = r)); // holds the HTTPS registration open
-      const b = runner.start(jobId(), "agent", ARGS, job("b"));
-      const c = runner.start(jobId(), "agent", ARGS, job("c"));
+      const b = runner.start(jobId(), "land", ARGS, job("b:read"));
+      const c = runner.start(jobId(), "land", ARGS, job("c:read"));
       await tick();
       release();
       await Promise.all([b, c]);
-      expect(httpsAllows(box)).toEqual([["a"], ["a", "b", "c"]]);
-      expect(httpAllows(box)).toEqual([["a"], ["a", "b", "c"]]);
+      expect(httpsAllows(box)).toEqual([{ a: R }, { a: R, b: R, c: R }]);
+      expect(httpAllows(box)).toEqual([{ a: R }, { a: R, b: R, c: R }]);
     });
   });
 
@@ -1560,17 +1697,347 @@ describe("Runner gateway allow-list", () => {
     await withRunner(async ({ runner, box }) => {
       const first = jobId();
       const second = jobId();
-      await runner.start(first, "agent", ARGS, job("a"));
+      await runner.start(first, "land", ARGS, job("a:read"));
       box.failIntercept = true;
-      await expect(runner.start(second, "agent", ARGS, job("b"))).rejects.toThrow("intercept refused");
+      await expect(runner.start(second, "land", ARGS, job("b:read"))).rejects.toThrow("intercept refused");
       expect(box.destroys).toBe(0);
       expect(box.running).toBe(true);
       expect((await runner.status(first)).state).toBe("running");
       expect(await runner.status(second)).toMatchObject({ state: "failed", exitCode: 127 });
 
       box.failIntercept = false;
-      await runner.start(jobId(), "agent", ARGS, job("b")); // the failed registration is retried, not assumed
-      expect(httpsAllows(box).at(-1)).toEqual(["a", "b"]);
+      await runner.start(jobId(), "land", ARGS, job("b:read")); // the failed registration is retried, not assumed
+      expect(httpsAllows(box).at(-1)).toEqual({ a: R, b: R });
+    });
+  });
+
+  describe("egress", () => {
+    // A verify job needs Artifacts and nothing else, and its tests are agent-written: everything the
+    // gateway would otherwise pass through is closed for it. Agents need api.anthropic.com, and the
+    // trusted kinds keep their old reach.
+    it.each([
+      ["verify", "closed"],
+      ["agent", "open"],
+      ["land", "open"],
+      ["revert", "open"],
+      ["seed", "open"],
+    ])("registers %s with egress %s on both rules", async (kind, egress) => {
+      await withRunner(async ({ runner, box }) => {
+        await runner.start(jobId(), kind as JobKind, ARGS, job("a:read"));
+        expect(egressOf(box.httpsRules.map((r) => r.binding))).toEqual([egress]);
+        expect(egressOf(box.httpRules)).toEqual([egress]);
+      });
+    });
+
+    it("registers a closed gateway for a verify job that names no repo at all", async () => {
+      await withRunner(async ({ runner, box }) => {
+        await runner.start(jobId(), "verify", ARGS, job());
+        expect(httpsAllows(box)).toEqual([{}]);
+        expect(egressOf(box.httpsRules.map((r) => r.binding))).toEqual(["closed"]);
+      });
+    });
+
+    it("registers again when the egress mode changes on a container that stays up", async () => {
+      await withRunner(async ({ runner, box }) => {
+        const first = jobId();
+        await runner.start(first, "verify", ARGS, job("a:read"));
+        box.finishJob(first, 0);
+        await runner.status(first); // the verify container is torn down here
+        await runner.start(jobId(), "land", ARGS, job("a:read"));
+        expect(egressOf(box.httpsRules.map((r) => r.binding))).toEqual(["closed", "open"]);
+        expect(box.starts).toHaveLength(2);
+      });
+    });
+  });
+});
+
+describe("Runner isolation of untrusted jobs", () => {
+  const job = (allow: string): Record<string, string> => ({ RYKE_ALLOW_REPOS: allow });
+  // A kind nobody listed is untrusted too, so a job kind added later cannot join a trusted container by omission.
+  const UNTRUSTED: JobKind[] = ["verify", "agent", "some-new-kind" as unknown as JobKind];
+  const TRUSTED: JobKind[] = ["seed", "land", "revert"];
+
+  it.each(UNTRUSTED)("runs a %s job alone in its container: a second one is turned away and launches nothing", async (kind) => {
+    await withRunner(async ({ runner, box, state }) => {
+      await runner.start(jobId(), kind, ARGS, job("a:read"));
+      const second = jobId();
+      expect(await runner.start(second, kind, ARGS, job("b:read"))).toBe("busy");
+      expect(box.execsOf("bash")).toHaveLength(1); // only the first job's launch
+      expect(box.execsOf("mkdir")).toHaveLength(1);
+      expect(box.starts).toHaveLength(1);
+      expect(box.httpsRules).toHaveLength(1);
+      await expect(runner.status(second)).rejects.toThrow("no such job");
+      await state.storage.deleteAlarm();
+    });
+  });
+
+  it.each(UNTRUSTED)("does not let a trusted job into the container of a running %s job", async (kind) => {
+    await withRunner(async ({ runner, box }) => {
+      await runner.start(jobId(), kind, ARGS, job("a:read"));
+      for (const other of TRUSTED) {
+        const id = jobId();
+        expect(await runner.start(id, other, ARGS, {})).toBe("busy");
+        await expect(runner.status(id)).rejects.toThrow("no such job");
+      }
+      expect(box.execsOf("bash")).toHaveLength(1);
+    });
+  });
+
+  it.each(TRUSTED)("does not let a %s job into a container an untrusted job is still queued in", async (kind) => {
+    await withRunner(async ({ runner, box }) => {
+      let release!: () => void;
+      box.gate = new Promise<void>((r) => (release = r));
+      const untrusted = runner.start(jobId(), "verify", ARGS, job("a:read"));
+      await tick();
+      expect(await runner.start(jobId(), kind, ARGS, {})).toBe("busy");
+      release();
+      expect(await untrusted).toBe("started");
+    });
+  });
+
+  it.each(UNTRUSTED)("does not let a %s job into a container a trusted job is running in", async (kind) => {
+    await withRunner(async ({ runner, box }) => {
+      await runner.start(jobId(), "land", ARGS, {});
+      const id = jobId();
+      expect(await runner.start(id, kind, ARGS, job("a:read"))).toBe("busy");
+      await expect(runner.status(id)).rejects.toThrow("no such job");
+      expect(box.execsOf("bash")).toHaveLength(1);
+    });
+  });
+
+  it("lets trusted jobs share a container, and keeps it up when they end", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const ids = TRUSTED.map(() => jobId());
+      for (const [i, kind] of TRUSTED.entries()) expect(await runner.start(ids[i]!, kind, ARGS, {})).toBe("started");
+      for (const id of ids) box.finishJob(id, 0, '{"ok":true}\n');
+      for (const id of ids) expect((await runner.status(id)).state).toBe("done");
+      expect(box.starts).toHaveLength(1);
+      expect(box.destroys).toBe(0);
+      expect(box.running).toBe(true);
+    });
+  });
+
+  it("starts exactly one of two untrusted jobs that arrive together", async () => {
+    await withRunner(async ({ runner, box, state }) => {
+      const answers = await Promise.all([runner.start(jobId(), "verify", ARGS, job("a:read")), runner.start(jobId(), "verify", ARGS, job("b:read"))]);
+      expect(answers.sort()).toEqual(["busy", "started"]);
+      expect(box.execsOf("bash")).toHaveLength(1);
+      await state.storage.deleteAlarm();
+    });
+  });
+
+  it.each(UNTRUSTED)("stops the container when a %s job is seen to end, and keeps its outcome", async (kind) => {
+    await withRunner(async ({ runner, box }) => {
+      const id = jobId();
+      await runner.start(id, kind, ARGS, job("a:read"));
+      box.write(`/work/${id}/leftover`, "a daemon's pid file");
+      box.finishJob(id, 0, 'tests ok\n{"pass":true}\n');
+      expect(await runner.status(id)).toEqual({ state: "done", exitCode: 0, result: { pass: true } });
+      expect(box.destroys).toBe(1);
+      expect(box.running).toBe(false);
+      expect(box.files.size).toBe(0);
+      // The result was read before the container went, so a later poll answers from storage.
+      expect(box.events.lastIndexOf("destroy")).toBeGreaterThan(box.events.lastIndexOf("exec tail"));
+      expect(await runner.status(id)).toEqual({ state: "done", exitCode: 0, result: { pass: true } });
+      expect(box.destroys).toBe(1);
+    });
+  });
+
+  it("stops the container after a failed untrusted job as well", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const id = jobId();
+      await runner.start(id, "verify", ARGS, job("a:read"));
+      box.finishJob(id, 1, '{"pass":false}\n');
+      expect(await runner.status(id)).toMatchObject({ state: "failed", exitCode: 1 });
+      expect(box.destroys).toBe(1);
+    });
+  });
+
+  it("serves the log of an untrusted job that ends under a log poll before it stops the container", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const id = jobId();
+      await runner.start(id, "verify", ARGS, job("a:read"));
+      box.finishJob(id, 0, "out\n", "err\n");
+      expect(await runner.log(id, 0)).toEqual({ text: "out\nerr\n", next: 8 });
+      expect(box.destroys).toBe(1);
+      expect(await runner.log(id, 8)).toEqual({ text: "", next: 8 }); // the disk went with the container
+    });
+  });
+
+  it("stops the container when a running untrusted job is cancelled, after killing it", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const id = jobId();
+      await runner.start(id, "agent", ARGS, job("a:write"));
+      await runner.cancel(id);
+      expect(box.killed).toEqual([id]);
+      expect(box.events.lastIndexOf("destroy")).toBeGreaterThan(box.events.lastIndexOf("exec bash")); // the kill comes first
+      expect(box.destroys).toBe(1);
+      expect(await runner.status(id)).toMatchObject({ state: "failed", exitCode: 143 });
+    });
+  });
+
+  it("stops the container when an untrusted job is cancelled while it boots, once the boot is over", async () => {
+    await withRunner(async ({ runner, box }) => {
+      let release!: () => void;
+      box.gate = new Promise<void>((r) => (release = r));
+      const id = jobId();
+      const started = runner.start(id, "verify", ARGS, job("a:read"));
+      await tick();
+      await runner.cancel(id); // does not wait for the boot
+      expect(box.destroys).toBe(0);
+      release();
+      expect(await started).toBe("started");
+      expect(box.killed).toEqual([id]);
+      expect(box.destroys).toBe(1);
+      expect(await runner.status(id)).toMatchObject({ state: "failed", exitCode: 143 });
+    });
+  });
+
+  it.each([
+    ["mkdir fails", (box: FakeContainer) => (box.mkdirExit = 1)],
+    ["the launch shell fails", (box: FakeContainer) => (box.launchExit = 2)],
+    ["exec itself fails", (box: FakeContainer) => (box.throwOn = (cmd) => cmd[0] === "bash")],
+  ])("stops the container when an untrusted job cannot be launched: %s", async (_name, sabotage) => {
+    await withRunner(async ({ runner, box }) => {
+      sabotage(box);
+      const id = jobId();
+      await expect(runner.start(id, "verify", ARGS, job("a:read"))).rejects.toThrow();
+      expect(box.destroys).toBe(1);
+      expect(await runner.status(id)).toMatchObject({ state: "failed", exitCode: 127 });
+    });
+  });
+
+  it("boots a fresh container for the next untrusted job, with nothing of the last one in it", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const first = jobId();
+      await runner.start(first, "verify", ARGS, job("a:read"));
+      box.write("/opt/ryke/containers/runner/lib/land.mjs", "tampered"); // what a test could do as root
+      box.finishJob(first, 0);
+      await runner.status(first);
+
+      const second = jobId();
+      expect(await runner.start(second, "verify", ARGS, job("b:read"))).toBe("started");
+      expect(box.starts).toHaveLength(2);
+      expect(box.files.has("/opt/ryke/containers/runner/lib/land.mjs")).toBe(false);
+      expect(box.files.has(`/work/${first}/exit`)).toBe(false);
+      expect(box.httpsRules.map((r) => (r.binding as unknown as { allow: object }).allow)).toEqual([{ a: "read" }, { b: "read" }]);
+    });
+  });
+
+  it("lets a trusted job in once the untrusted container is stopped, on a fresh one", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const first = jobId();
+      await runner.start(first, "verify", ARGS, job("a:read"));
+      box.write("/opt/ryke/containers/runner/lib/land.mjs", "tampered");
+      box.finishJob(first, 0);
+      await runner.status(first);
+      expect(await runner.start(jobId(), "land", ARGS, {})).toBe("started");
+      expect(box.starts).toHaveLength(2);
+      expect(box.destroys).toBe(1);
+      expect(box.files.has("/opt/ryke/containers/runner/lib/land.mjs")).toBe(false);
+    });
+  });
+
+  it("notices on its own start that an untrusted job ended, nobody having polled, and stops that container first", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const first = jobId();
+      await runner.start(first, "verify", ARGS, job("a:read"));
+      box.finishJob(first, 0, '{"pass":true}\n');
+      const second = jobId();
+      expect(await runner.start(second, "verify", ARGS, job("b:read"))).toBe("started");
+      expect(box.destroys).toBe(1);
+      expect(box.starts).toHaveLength(2);
+      expect(await runner.status(first)).toEqual({ state: "done", exitCode: 0, result: { pass: true } });
+    });
+  });
+
+  it("stops the untrusted container before a trusted job takes the slot over, even when nobody polled", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const first = jobId();
+      await runner.start(first, "agent", ARGS, job("a:write"));
+      box.finishJob(first, 0);
+      expect(await runner.start(jobId(), "land", ARGS, {})).toBe("started");
+      expect(box.destroys).toBe(1);
+      expect(box.starts).toHaveLength(2);
+    });
+  });
+
+  it("clears the mark of a container that went away by itself, without destroying anything", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const first = jobId();
+      await runner.start(first, "verify", ARGS, job("a:read"));
+      box.running = false; // idle stop or crash
+      expect(await runner.status(first)).toMatchObject({ state: "failed", exitCode: 137 });
+      expect(box.destroys).toBe(0);
+      expect(await runner.start(jobId(), "land", ARGS, {})).toBe("started");
+    });
+  });
+
+  describe("when the container will not stop", () => {
+    it("keeps the slot closed to every job and retries from the alarm until it stops", async () => {
+      await withRunner(async ({ runner, box, state, clock }) => {
+        const id = jobId();
+        await runner.start(id, "verify", ARGS, job("a:read"));
+        box.finishJob(id, 0);
+        box.failDestroy = true;
+        expect(await runner.status(id)).toMatchObject({ state: "done" }); // the outcome is not held back by it
+        expect(box.running).toBe(true);
+        expect(await runner.start(jobId(), "land", ARGS, {})).toBe("busy");
+        expect(await runner.start(jobId(), "verify", ARGS, job("b:read"))).toBe("busy");
+
+        clock.t += 60_000;
+        await runner.alarm();
+        expect(await state.storage.getAlarm()).not.toBeNull(); // still marked, so still scheduled
+
+        box.failDestroy = false;
+        await state.storage.deleteAlarm();
+        await runner.alarm();
+        expect(box.running).toBe(false);
+        expect(await state.storage.getAlarm()).toBeNull(); // nothing left to watch
+        expect(await runner.start(jobId(), "land", ARGS, {})).toBe("started");
+      });
+    });
+
+    it("is retried by a poll as well", async () => {
+      await withRunner(async ({ runner, box }) => {
+        const id = jobId();
+        await runner.start(id, "verify", ARGS, job("a:read"));
+        box.finishJob(id, 0);
+        box.failDestroy = true;
+        await runner.status(id);
+        box.failDestroy = false;
+        await runner.status(id);
+        expect(box.running).toBe(false);
+      });
+    });
+
+    it("is remembered by a Durable Object that restarted in between", async () => {
+      await withRunner(async ({ runner, box, make }) => {
+        const id = jobId();
+        await runner.start(id, "verify", ARGS, job("a:read"));
+        box.finishJob(id, 0);
+        box.failDestroy = true;
+        await runner.status(id);
+        const restarted = make();
+        expect(await restarted.start(jobId(), "land", ARGS, {})).toBe("busy");
+        box.failDestroy = false;
+        await restarted.alarm();
+        expect(box.running).toBe(false);
+      });
+    });
+  });
+
+  it("keeps the alarm while an untrusted job runs, and drops it when the container is stopped", async () => {
+    await withRunner(async ({ runner, box, state, clock }) => {
+      const id = jobId();
+      await runner.start(id, "verify", ARGS, job("a:read"));
+      expect(await state.storage.getAlarm()).not.toBeNull();
+      box.finishJob(id, 0);
+      clock.t += 60_000;
+      await state.storage.deleteAlarm();
+      await runner.alarm();
+      expect(box.destroys).toBe(1);
+      expect(await state.storage.getAlarm()).toBeNull();
     });
   });
 });
@@ -1599,6 +2066,8 @@ function fakeNamespace(overrides: Partial<Record<"start" | "status" | "log" | "c
   };
 }
 
+const slotOfName = (name: string) => Number(name.slice("slot-".length));
+
 function clientEnv(ns: unknown, slots?: string): Env {
   return { RUNNER: ns, RYKE_RUNNER: "container", ...(slots === undefined ? {} : { RYKE_RUNNER_SLOTS: slots }) } as unknown as Env;
 }
@@ -1614,27 +2083,129 @@ describe("ContainerRunner", () => {
     expect(calls).toEqual([{ slot: `slot-${slot}`, method: "start", args: [id, "land", { repo: "convert" }, { FOO: "bar" }] }]);
   });
 
+  // The first third of the slots (at least one) belong to the kinds whose scripts are ours; the rest take
+  // everything that runs code a transaction's author wrote. A container never serves both.
   it.each([
-    ["3", 3],
-    [undefined, 6],
-    ["", 6],
-    ["abc", 6],
-    ["0", 6],
-    ["-2", 6],
-    ["2.5", 6],
-    ["1", 1],
-    ["64", 64],
-    ["1000", 64],
-  ])("with RYKE_RUNNER_SLOTS=%j spreads over %i slots round-robin", async (config, slots) => {
+    ["3", 3, 1],
+    [undefined, 6, 2],
+    ["", 6, 2],
+    ["abc", 6, 2],
+    ["0", 6, 2], // not a count at all
+    ["-2", 6, 2],
+    ["2.5", 6, 2],
+    ["1", 2, 1],
+    ["2", 2, 1],
+    ["4", 4, 1],
+    ["6", 6, 2],
+    ["9", 9, 3],
+    ["64", 64, 21],
+    ["1000", 64, 21],
+  ])("with RYKE_RUNNER_SLOTS=%j uses %i slots, the first %i for trusted kinds, round-robin inside each range", async (config, slots, trustedSlots) => {
     const { ns, calls } = fakeNamespace();
     const runner = new ContainerRunner(clientEnv(ns, config));
-    const n = Math.min(slots * 2 + 1, 130);
-    for (let i = 0; i < n; i++) await runner.start("verify", {}, {});
-    const used = calls.map((c) => Number(c.slot.slice("slot-".length)));
-    expect(new Set(used).size).toBe(Math.min(n, slots));
-    expect(Math.max(...used)).toBeLessThan(slots);
-    // Consecutive starts take consecutive slots, wrapping at the slot count.
-    for (let i = 1; i < used.length; i++) expect(used[i]).toBe((used[i - 1]! + 1) % slots);
+    const usedBy = async (kind: JobKind, n: number) => {
+      calls.length = 0;
+      for (let i = 0; i < n; i++) await runner.start(kind, {}, {});
+      return calls.map((c) => slotOfName(c.slot));
+    };
+    for (const [kind, from, to] of [
+      ["land", 0, trustedSlots],
+      ["verify", trustedSlots, slots],
+    ] as const) {
+      const used = await usedBy(kind, Math.min((to - from) * 2 + 1, 130));
+      expect(new Set(used).size).toBe(to - from);
+      expect(Math.min(...used)).toBe(from);
+      expect(Math.max(...used)).toBe(to - 1);
+      // Consecutive starts take consecutive slots, wrapping at the end of the range.
+      for (let i = 1; i < used.length; i++) expect(used[i]).toBe(used[i - 1]! + 1 < to ? used[i - 1]! + 1 : from);
+    }
+  });
+
+  it.each([
+    ["seed", true],
+    ["land", true],
+    ["revert", true],
+    ["verify", false],
+    ["agent", false],
+    ["a-kind-added-later", false],
+  ])("routes %s so that trusted is %s", async (kind, trusted) => {
+    const { ns, calls } = fakeNamespace();
+    await new ContainerRunner(clientEnv(ns, "6")).start(kind as JobKind, {}, {});
+    expect(slotOfName(calls[0]!.slot) < 2).toBe(trusted);
+  });
+
+  it.each(["2", "3", "6", "9", "64", undefined])("never puts a trusted and an untrusted job on the same slot (RYKE_RUNNER_SLOTS=%j)", async (config) => {
+    const { ns, calls } = fakeNamespace();
+    const runner = new ContainerRunner(clientEnv(ns, config));
+    const trusted = new Set<number>();
+    const untrusted = new Set<number>();
+    const kinds: JobKind[] = ["land", "verify", "seed", "agent", "revert", "verify", "land", "agent"];
+    for (let round = 0; round < 40; round++) {
+      for (const kind of kinds) {
+        const id = await runner.start(kind, {}, {});
+        (isTrusted(kind) ? trusted : untrusted).add(slotOf(id)!);
+      }
+    }
+    expect(calls.length).toBe(40 * kinds.length);
+    expect([...trusted].filter((slot) => untrusted.has(slot))).toEqual([]);
+    expect(trusted.size).toBeGreaterThan(0);
+    expect(untrusted.size).toBeGreaterThan(0);
+  });
+
+  describe("when a slot is busy", () => {
+    const busyOn = (busy: (slot: number) => boolean) => (...args: unknown[]) => (busy(slotOf(args[0] as string)!) ? "busy" : "started");
+
+    it("tries the next slot of the same range and returns the id of the one that took the job", async () => {
+      const { ns, calls } = fakeNamespace({ start: busyOn((slot) => slot !== 5) });
+      const runner = new ContainerRunner(clientEnv(ns, "6"));
+      const id = await runner.start("verify", {}, {});
+      expect(slotOf(id)).toBe(5);
+      const tried = calls.map((c) => slotOfName(c.slot));
+      expect(tried.at(-1)).toBe(5);
+      expect(new Set(tried).size).toBe(tried.length); // each slot at most once per pass
+      expect(tried.every((slot) => slot >= 2)).toBe(true);
+      expect(calls.at(-1)!.args[0]).toBe(id);
+    });
+
+    it("never spills a trusted job into the untrusted range, nor the other way round", async () => {
+      const { ns, calls } = fakeNamespace({ start: busyOn(() => true) });
+      const trusted = new ContainerRunner(clientEnv(ns, "6"), { acquireMs: 20, retryMs: 2 });
+      await expect(trusted.start("land", {}, {})).rejects.toThrow("no free runner slot for land jobs");
+      expect(calls.every((c) => slotOfName(c.slot) < 2)).toBe(true);
+      calls.length = 0;
+      const untrusted = new ContainerRunner(clientEnv(ns, "6"), { acquireMs: 20, retryMs: 2 });
+      await expect(untrusted.start("verify", {}, {})).rejects.toThrow("no free runner slot for verify jobs");
+      expect(calls.every((c) => slotOfName(c.slot) >= 2)).toBe(true);
+      expect(new Set(calls.map((c) => c.slot)).size).toBe(4); // every slot of the range was tried
+    });
+
+    it("keeps trying until a slot frees up, within the time it was given", async () => {
+      let attempts = 0;
+      const { ns, calls } = fakeNamespace({ start: () => (++attempts > 9 ? "started" : "busy") }); // two passes over four slots, then one more try
+      const runner = new ContainerRunner(clientEnv(ns, "6"), { acquireMs: 5_000, retryMs: 1 });
+      const id = await runner.start("verify", {}, {});
+      expect(calls).toHaveLength(10);
+      expect(slotOf(id)).toBe(slotOfName(calls.at(-1)!.slot));
+    });
+
+    it("gives up with a RunnerError that says what to raise", async () => {
+      const { ns } = fakeNamespace({ start: busyOn(() => true) });
+      const runner = new ContainerRunner(clientEnv(ns, "6"), { acquireMs: 10, retryMs: 2 });
+      const err = await runner.start("verify", {}, {}).catch((e) => e);
+      expect(err).toBeInstanceOf(RunnerError);
+      expect(err.message).toMatch(/no free runner slot for verify jobs .*RYKE_RUNNER_SLOTS/);
+    });
+
+    it("does not try other slots when one fails for another reason", async () => {
+      const { ns, calls } = fakeNamespace({
+        start: () => {
+          throw new Error("container image 'runner' missing");
+        },
+      });
+      const runner = new ContainerRunner(clientEnv(ns, "6"));
+      await expect(runner.start("verify", {}, {})).rejects.toThrow("runner start failed: container image 'runner' missing");
+      expect(calls).toHaveLength(1);
+    });
   });
 
   it("routes status, log and cancel to the slot in the job id, whatever the current slot count", async () => {
@@ -1708,8 +2279,8 @@ describe("ContainerRunner", () => {
     // accepted by the DO, and what the DO answers must come back in the contract's shape.
     await withRunner(async ({ runner, box }) => {
       const ns = { idFromName: (n: string) => n, get: () => runner };
-      const client = new ContainerRunner(clientEnv(ns, "1"));
-      const id = await client.start("verify", { repo: "convert" }, JOB_ENV);
+      const client = new ContainerRunner(clientEnv(ns, "2"));
+      const id = await client.start("land", { repo: "convert" }, JOB_ENV);
       expect(id).toMatch(/^j_0_[0-9a-z]{10}$/);
       expect(await client.status(id)).toEqual({ state: "running", exitCode: undefined, result: undefined });
       box.finishJob(id, 0, 'tests ok\n{"passed":12}\n', "");
@@ -1719,6 +2290,20 @@ describe("ContainerRunner", () => {
       expect(box.killed).toEqual([]); // already done: nothing to kill
       // The stub here is the DO itself, so its RunnerError arrives as is; over real RPC it would be wrapped.
       await expect(client.status("j_0_zzzzzzzz")).rejects.toThrow(new RunnerError('no such job "j_0_zzzzzzzz"'));
+    });
+  });
+
+  it("starts an untrusted job in the DO of its own range, and finds the DO busy for a second one", async () => {
+    await withRunner(async ({ runner, box }) => {
+      const ns = { idFromName: (n: string) => n, get: () => runner };
+      const client = new ContainerRunner(clientEnv(ns, "2"), { acquireMs: 10, retryMs: 2 });
+      const id = await client.start("verify", { repo: "convert" }, { RYKE_ALLOW_REPOS: "convert:read" });
+      expect(id).toMatch(/^j_1_[0-9a-z]{10}$/);
+      await expect(client.start("verify", {}, {})).rejects.toThrow("no free runner slot for verify jobs"); // the one slot of the range is taken
+      box.finishJob(id, 0, '{"pass":true}\n');
+      expect(await client.status(id)).toEqual({ state: "done", exitCode: 0, result: { pass: true } });
+      expect(box.destroys).toBe(1);
+      expect(slotOf(await client.start("verify", {}, {}))).toBe(1); // free again, on a fresh container
     });
   });
 });
@@ -1743,7 +2328,8 @@ describe("Outbound gateway", () => {
   beforeEach(() => gatewayTokens.clear());
 
   const KEY = "sk-ant-real-key";
-  const gateway = (extra: Record<string, unknown> = { ANTHROPIC_API_KEY: KEY }, props?: { allow?: string[] }) => {
+  type Props = { allow?: Record<string, "read" | "write">; egress?: "open" | "closed" };
+  const gateway = (extra: Record<string, unknown> = { ANTHROPIC_API_KEY: KEY }, props?: Props) => {
     const ctx = createExecutionContext();
     if (props) Object.defineProperty(ctx, "props", { value: props });
     return new Outbound(ctx, extra as unknown as Env);
@@ -1752,9 +2338,11 @@ describe("Outbound gateway", () => {
   // The lib setting of this repo predates Symbol.dispose; workerd has it, and `using` needs it.
   const dispose = (Symbol as unknown as { dispose: symbol }).dispose;
 
-  // An ARTIFACTS binding that counts what the gateway asks of it.
-  function fakeArtifacts(opts: { lifetimeMs?: number; missing?: string[]; failMint?: () => boolean } = {}) {
+  // An ARTIFACTS binding that counts what the gateway asks of it. Its remotes, like the real
+  // binding's, live on one account host.
+  function fakeArtifacts(opts: { lifetimeMs?: number; missing?: string[]; failMint?: () => boolean; account?: string; failInfo?: () => Error | null; remote?: (name: string) => string } = {}) {
     const gets: string[] = [];
+    const infos: string[] = [];
     const mints: { repo: string; scope: string; ttl: number }[] = [];
     let disposed = 0;
     let n = 0;
@@ -1763,6 +2351,12 @@ describe("Outbound gateway", () => {
         gets.push(name);
         if (opts.missing?.includes(name)) throw Object.assign(new Error("no such repo"), { code: "NOT_FOUND" });
         return {
+          async info() {
+            infos.push(name);
+            const failure = opts.failInfo?.();
+            if (failure) throw failure;
+            return { name, remote: opts.remote?.(name) ?? `https://${opts.account ?? "acct123"}.artifacts.cloudflare.net/git/ryke/${name}.git` };
+          },
           async createToken(scope: "read" | "write", ttl: number) {
             mints.push({ repo: name, scope, ttl });
             if (opts.failMint?.()) throw Object.assign(new Error("internal detail that must not leak"), { code: "INTERNAL_ERROR" });
@@ -1775,7 +2369,7 @@ describe("Outbound gateway", () => {
         };
       },
     };
-    return { binding: binding as unknown as Artifacts, gets, mints, disposed: () => disposed };
+    return { binding: binding as unknown as Artifacts, gets, infos, mints, disposed: () => disposed };
   }
 
   function upstream(response: Response = new Response("upstream", { status: 200 })) {
@@ -1790,8 +2384,13 @@ describe("Outbound gateway", () => {
   describe("Artifacts hosts", () => {
     const HOST = "acct123.artifacts.cloudflare.net";
     const git = (path: string) => `https://${HOST}/git/ryke/${path}`;
-    const gw = (a: ReturnType<typeof fakeArtifacts>, props?: { allow?: string[] }, extra: Record<string, unknown> = {}) =>
-      gateway({ ARTIFACTS: a.binding, RYKE_NAMESPACE: "ryke", ANTHROPIC_API_KEY: KEY, ...extra }, props);
+    // Every repo these tests name, with write access: what a gateway built for the lander would have.
+    const EVERYTHING: Props = {
+      allow: Object.fromEntries(["convert", "convert--t_1", "convert--t_2", "one", "two", "ghost", "trunk", "mine", "anything-at-all"].map((r) => [r, "write" as const])),
+    };
+    // `props` undefined gives the gateway everything; null gives it no props at all.
+    const gw = (a: ReturnType<typeof fakeArtifacts>, props?: Props | null, extra: Record<string, unknown> = {}) =>
+      gateway({ ARTIFACTS: a.binding, RYKE_NAMESPACE: "ryke", ANTHROPIC_API_KEY: KEY, ...extra }, props === null ? undefined : (props ?? EVERYTHING));
     const auth = (req: Request) => req.headers.get("authorization");
 
     it.each([
@@ -1799,9 +2398,7 @@ describe("Outbound gateway", () => {
       ["GET", "convert.git/info/refs?service=git-receive-pack", "write"],
       ["POST", "convert.git/git-upload-pack", "read"],
       ["POST", "convert.git/git-receive-pack", "write"],
-      ["GET", "convert.git/git-receive-pack", "read"],
-      ["HEAD", "convert.git/info/refs", "read"],
-      ["GET", "convert--t_1.git/HEAD", "read"],
+      ["GET", "convert--t_1.git/info/refs?service=git-upload-pack", "read"],
     ] as const)("%s %s mints a %s token for the repo in the path", async (method, path, scope) => {
       const a = fakeArtifacts();
       const { sent, response } = upstream();
@@ -1812,10 +2409,30 @@ describe("Outbound gateway", () => {
       expect(auth(sent())).toMatch(new RegExp(`^Bearer art_v1_${repo}_${scope}_1\\?expires=\\d+$`)); // the full token, `?expires=` included
     });
 
+    it.each([
+      ["GET", "convert.git/git-receive-pack"],
+      ["HEAD", "convert.git/info/refs"],
+      ["GET", "convert.git/info/refs"],
+      ["GET", "convert--t_1.git/HEAD"],
+      ["PUT", "convert.git/git-receive-pack"],
+      ["DELETE", "convert.git/info/refs?service=git-upload-pack"],
+      ["POST", "convert.git/info/refs?service=git-receive-pack"],
+      ["GET", "convert.git/info/refs?service=git-upload-pack&service=git-receive-pack"],
+    ])("serves nothing but the four git requests: %s %s is a 403 that costs Artifacts nothing", async (method, path) => {
+      const a = fakeArtifacts();
+      const { spy } = upstream();
+      const res = await gw(a).fetch(new Request(git(path), { method }));
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toMatch(/only git fetch and push requests/);
+      expect(a.gets).toEqual([]);
+      expect(a.mints).toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
     it("releases the repo handle after minting", async () => {
       const a = fakeArtifacts();
       upstream();
-      await gw(a).fetch(new Request(git("convert.git/info/refs")));
+      await gw(a).fetch(new Request(git("convert.git/info/refs?service=git-upload-pack")));
       expect(a.gets).toEqual(["convert"]);
       expect(a.disposed()).toBe(1);
     });
@@ -1849,7 +2466,7 @@ describe("Outbound gateway", () => {
     it("no longer reads a token out of URL userinfo", async () => {
       const a = fakeArtifacts();
       const { sent } = upstream();
-      await gw(a).fetch(new Request(`https://x:art_v1_stolen@${HOST}/git/ryke/convert.git/info/refs`));
+      await gw(a).fetch(new Request(`https://x:art_v1_stolen@${HOST}/git/ryke/convert.git/info/refs?service=git-upload-pack`));
       expect(auth(sent())).not.toContain("stolen");
       expect(a.mints).toHaveLength(1);
     });
@@ -1873,6 +2490,7 @@ describe("Outbound gateway", () => {
         await get(gw(a)); // another request, another entrypoint instance: still the same isolate
         expect(a.mints).toHaveLength(1);
         expect(a.gets).toHaveLength(1);
+        expect(a.infos).toHaveLength(1);
         const sentAuth = spy.mock.calls.map((c) => auth(c[0] as Request));
         expect(new Set(sentAuth).size).toBe(1);
       });
@@ -1896,9 +2514,9 @@ describe("Outbound gateway", () => {
         const a = fakeArtifacts();
         upstream();
         const g = gw(a);
-        await get(g, "convert.git/info/refs");
-        await get(g, "convert--t_1.git/info/refs");
-        await get(g, "convert--t_2.git/info/refs");
+        await get(g, "convert.git/info/refs?service=git-upload-pack");
+        await get(g, "convert--t_1.git/info/refs?service=git-upload-pack");
+        await get(g, "convert--t_2.git/info/refs?service=git-upload-pack");
         expect(a.mints.map((m) => m.repo)).toEqual(["convert", "convert--t_1", "convert--t_2"]);
       });
 
@@ -1930,28 +2548,91 @@ describe("Outbound gateway", () => {
       it("drops expired entries when it caches another", async () => {
         const a = fakeArtifacts({ lifetimeMs: 4 * 60_000 }); // inside the renewal window from the start
         upstream();
-        const g = gw(a);
-        await get(g, "one.git/info/refs");
-        await get(g, "two.git/info/refs");
-        await get(g, "one.git/info/refs");
+        const g = gw(a, { allow: { one: "read", two: "read" } });
+        await get(g, "one.git/info/refs?service=git-upload-pack");
+        await get(g, "two.git/info/refs?service=git-upload-pack");
+        await get(g, "one.git/info/refs?service=git-upload-pack");
         expect(a.mints.map((m) => m.repo)).toEqual(["one", "two", "one"]);
         expect(gatewayTokens.size).toBe(1); // each insert swept the expired entries before it
       });
     });
 
-    describe("allow-list", () => {
-      it("serves a repo that is on the list", async () => {
+    describe("access modes (RYKE_ALLOW_REPOS)", () => {
+      const UPLOAD = ["GET", "convert.git/info/refs?service=git-upload-pack"] as const;
+      const UPLOAD_POST = ["POST", "convert.git/git-upload-pack"] as const;
+      const RECEIVE = ["GET", "convert.git/info/refs?service=git-receive-pack"] as const;
+      const RECEIVE_POST = ["POST", "convert.git/git-receive-pack"] as const;
+      const call = (g: Outbound, [method, path]: readonly [string, string]) => g.fetch(new Request(git(path), { method, body: method === "POST" ? "x" : undefined }));
+
+      it("serves a fetch of a repo with a read entry, with a read token", async () => {
+        for (const request of [UPLOAD, UPLOAD_POST]) {
+          gatewayTokens.clear();
+          const a = fakeArtifacts();
+          const { sent } = upstream();
+          const res = await call(gw(a, { allow: { convert: "read" } }), request);
+          expect(res.status).toBe(200);
+          expect(a.mints).toEqual([{ repo: "convert", scope: "read", ttl: 3600 }]);
+          expect(auth(sent())).toMatch(/^Bearer art_v1_convert_read/);
+          vi.restoreAllMocks();
+        }
+      });
+
+      // The finding: a verify job's test ran `git push <trunk remote> HEAD:refs/heads/main` and landed.
+      it.each([RECEIVE, RECEIVE_POST])("refuses a push, %s %s, to a repo with only a read entry", async (...request) => {
+        const a = fakeArtifacts();
+        const { spy } = upstream();
+        const res = await call(gw(a, { allow: { convert: "read", other: "write" } }), request);
+        expect(res.status).toBe(403);
+        expect(((await res.json()) as { error: string }).error).toBe('repo "convert" is read-only for this container');
+        expect(a.gets).toEqual([]);
+        expect(a.mints).toEqual([]);
+        expect(spy).not.toHaveBeenCalled();
+      });
+
+      it("serves a push to a repo with a write entry, with a write token", async () => {
+        for (const request of [RECEIVE, RECEIVE_POST]) {
+          gatewayTokens.clear();
+          const a = fakeArtifacts();
+          const { sent } = upstream();
+          const res = await call(gw(a, { allow: { convert: "write" } }), request);
+          expect(res.status).toBe(200);
+          expect(a.mints).toEqual([{ repo: "convert", scope: "write", ttl: 3600 }]);
+          expect(auth(sent())).toMatch(/^Bearer art_v1_convert_write/);
+          vi.restoreAllMocks();
+        }
+      });
+
+      it("fetches from a repo with a write entry with a read token: a clone needs no more", async () => {
         const a = fakeArtifacts();
         const { sent } = upstream();
-        const res = await gw(a, { allow: ["convert--t_1", "other"] }).fetch(new Request(git("convert--t_1.git/info/refs")));
-        expect(res.status).toBe(200);
-        expect(auth(sent())).toMatch(/^Bearer art_v1_convert--t_1_read/);
+        expect((await call(gw(a, { allow: { convert: "write" } }), UPLOAD)).status).toBe(200);
+        expect(a.mints.map((m) => m.scope)).toEqual(["read"]);
+        expect(auth(sent())).toMatch(/_read_/);
       });
 
       it.each([
-        ["a repo that is not on the list", ["convert--t_1"], "convert.git/info/refs"],
-        ["a repo whose name only starts like an allowed one", ["convert"], "convert--t_1.git/info/refs"],
-        ["any repo when the list is empty", [], "convert.git/info/refs"],
+        ["no props at all", null],
+        ["props without a list", {}],
+        ["an empty list", { allow: {} }],
+        ["only egress settings", { egress: "open" as const }],
+      ])("answers 403 to a fetch and to a push with %s: nothing was granted", async (_name, props) => {
+        for (const request of [UPLOAD, UPLOAD_POST, RECEIVE, RECEIVE_POST]) {
+          const a = fakeArtifacts();
+          const { spy } = upstream();
+          const res = await call(gw(a, props), request);
+          expect(res.status).toBe(403);
+          expect(((await res.json()) as { error: string }).error).toBe('repo "convert" is not allowed for this container');
+          expect(a.gets).toEqual([]);
+          expect(a.mints).toEqual([]);
+          expect(spy).not.toHaveBeenCalled();
+          vi.restoreAllMocks();
+        }
+      });
+
+      it.each([
+        ["a repo that is not on the list", { "convert--t_1": "read" as const }, "convert.git/info/refs?service=git-upload-pack"],
+        ["a repo whose name only starts like an allowed one", { convert: "write" as const }, "convert--t_1.git/info/refs?service=git-upload-pack"],
+        ["a repo whose name an allowed one starts with", { "convert--t_1": "write" as const }, "convert.git/info/refs?service=git-upload-pack"],
       ])("answers 403 for %s, without contacting Artifacts or upstream", async (_name, allow, path) => {
         const a = fakeArtifacts();
         const { spy } = upstream();
@@ -1963,23 +2644,107 @@ describe("Outbound gateway", () => {
         expect(spy).not.toHaveBeenCalled();
       });
 
-      it.each([
-        ["no props at all", undefined],
-        ["props without a list", {}],
-      ])("serves any repo in the namespace with %s", async (_name, props) => {
-        const a = fakeArtifacts();
-        upstream();
-        const res = await gw(a, props).fetch(new Request(git("anything-at-all.git/info/refs")));
-        expect(res.status).toBe(200);
-        expect(a.mints[0]?.repo).toBe("anything-at-all");
+      // Repo names are valid property names too; an object lookup that falls through to the
+      // prototype would grant them, for a fetch most plainly.
+      it.each(["constructor", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"])("does not grant a repo called %s through the object prototype", async (name) => {
+        for (const path of [`${name}.git/info/refs?service=git-upload-pack`, `${name}.git/info/refs?service=git-receive-pack`]) {
+          const a = fakeArtifacts();
+          const { spy } = upstream();
+          const res = await gw(a, { allow: { convert: "write" } }).fetch(new Request(git(path)));
+          expect(res.status).toBe(403);
+          expect(((await res.json()) as { error: string }).error).toBe(`repo "${name}" is not allowed for this container`);
+          expect(a.mints).toEqual([]);
+          expect(spy).not.toHaveBeenCalled();
+          vi.restoreAllMocks();
+        }
       });
 
-      it("refuses a push as well as a fetch for a repo off the list", async () => {
+      it("serves a repo that is on the list next to others, and each by its own entry", async () => {
         const a = fakeArtifacts();
         upstream();
-        const res = await gw(a, { allow: ["mine"] }).fetch(new Request(git("trunk.git/git-receive-pack"), { method: "POST", body: "x" }));
+        const g = gw(a, { allow: { "convert--t_1": "write", convert: "read" } });
+        expect((await g.fetch(new Request(git("convert--t_1.git/info/refs?service=git-receive-pack")))).status).toBe(200);
+        expect((await g.fetch(new Request(git("convert.git/info/refs?service=git-upload-pack")))).status).toBe(200);
+        expect((await g.fetch(new Request(git("convert.git/info/refs?service=git-receive-pack")))).status).toBe(403);
+        expect(a.mints.map((m) => `${m.repo}:${m.scope}`)).toEqual(["convert--t_1:write", "convert:read"]);
+      });
+    });
+
+    describe("host pinning", () => {
+      const read: Props = { allow: { convert: "read", trunk: "write" } };
+      const fetchRefs = "convert.git/info/refs?service=git-upload-pack";
+
+      it("attaches the token for the host of the namespace's remotes", async () => {
+        const a = fakeArtifacts();
+        const { sent } = upstream();
+        expect((await gw(a, read).fetch(new Request(git(fetchRefs)))).status).toBe(200);
+        expect(a.infos).toEqual(["convert"]);
+        expect(auth(sent())).toMatch(/^Bearer art_v1_convert_read/);
+      });
+
+      it.each([
+        ["another account's Artifacts host", "https://attacker.artifacts.cloudflare.net/git/ryke/convert.git/info/refs?service=git-upload-pack"],
+        ["another account's host over plain HTTP", "http://attacker.artifacts.cloudflare.net/git/ryke/convert.git/info/refs?service=git-upload-pack"],
+        ["another account's host, for a push", "https://attacker.artifacts.cloudflare.net/git/ryke/trunk.git/info/refs?service=git-receive-pack"],
+        ["a deeper subdomain of the right account", `https://x.${HOST}/git/ryke/convert.git/info/refs?service=git-upload-pack`],
+        ["the right host on another port", `https://${HOST}:8443/git/ryke/convert.git/info/refs?service=git-upload-pack`],
+        ["the right host on another port over plain HTTP", `http://${HOST}:8080/git/ryke/convert.git/info/refs?service=git-upload-pack`],
+      ])("never attaches a token for %s", async (_name, url) => {
+        const a = fakeArtifacts();
+        const { spy } = upstream();
+        const res = await gw(a, read).fetch(new Request(url, { method: url.includes("trunk") ? "GET" : "GET", headers: { authorization: "Bearer from-the-container" } }));
         expect(res.status).toBe(403);
+        expect(((await res.json()) as { error: string }).error).toMatch(/is not the Artifacts host of this namespace/);
+        expect(a.mints).toEqual([]); // not even a token minted for the request
+        expect(spy).not.toHaveBeenCalled(); // and nothing sent anywhere
+      });
+
+      it("does not serve a foreign host from the cache either", async () => {
+        const a = fakeArtifacts();
+        const { spy } = upstream();
+        const g = gw(a, read);
+        expect((await g.fetch(new Request(git(fetchRefs)))).status).toBe(200); // caches the token
+        const res = await g.fetch(new Request("https://attacker.artifacts.cloudflare.net/git/ryke/convert.git/info/refs?service=git-upload-pack"));
+        expect(res.status).toBe(403);
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(a.mints).toHaveLength(1);
+      });
+
+      it("takes the host from the binding's own remote for the repo, not from the request", async () => {
+        const a = fakeArtifacts({ account: "someone-else" });
+        const { spy } = upstream();
+        const res = await gw(a, read).fetch(new Request(git(fetchRefs))); // acct123 is no longer the namespace's host
+        expect(res.status).toBe(403);
+        expect(spy).not.toHaveBeenCalled();
         expect(a.mints).toEqual([]);
+      });
+
+      it("compares the host in lower case, as the URL parser gives it", async () => {
+        const a = fakeArtifacts({ remote: (name) => `https://ACCT123.artifacts.cloudflare.net/git/ryke/${name}.git` });
+        upstream();
+        expect((await gw(a, read).fetch(new Request(`https://ACCT123.artifacts.cloudflare.net/git/ryke/${fetchRefs}`))).status).toBe(200);
+      });
+
+      it.each([
+        ["not found", () => Object.assign(new Error("gone"), { code: "NOT_FOUND" }), 404, 'repo "convert" does not exist'],
+        ["failing", () => Object.assign(new Error("internal detail that must not leak"), { code: "INTERNAL_ERROR" }), 502, 'could not mint a token for "convert"'],
+      ])("answers %s info() with %i and sends nothing", async (_name, failure, status, error) => {
+        const a = fakeArtifacts({ failInfo: failure });
+        const { spy } = upstream();
+        const res = await gw(a, read).fetch(new Request(git(fetchRefs)));
+        expect(res.status).toBe(status);
+        expect(await res.json()).toEqual({ error });
+        expect(a.mints).toEqual([]);
+        expect(spy).not.toHaveBeenCalled();
+      });
+
+      it.each(["", "not a url", "git@example.com:ryke/convert.git", "ssh://artifacts.cloudflare.net/x"])("answers 502 for a remote that is %j", async (remote) => {
+        const a = fakeArtifacts({ remote: () => remote });
+        const { spy } = upstream();
+        const res = await gw(a, read).fetch(new Request(git(fetchRefs)));
+        expect(res.status).toBe(502);
+        expect(a.mints).toEqual([]);
+        expect(spy).not.toHaveBeenCalled();
       });
     });
 
@@ -1987,7 +2752,7 @@ describe("Outbound gateway", () => {
       it("refuses a namespace other than the gateway's", async () => {
         const a = fakeArtifacts();
         const { spy } = upstream();
-        const res = await gw(a).fetch(new Request(`https://${HOST}/git/other/convert.git/info/refs`));
+        const res = await gw(a).fetch(new Request(`https://${HOST}/git/other/convert.git/info/refs?service=git-upload-pack`));
         expect(res.status).toBe(403);
         expect(((await res.json()) as { error: string }).error).toBe('namespace "other" is not served');
         expect(a.gets).toEqual([]);
@@ -1997,7 +2762,7 @@ describe("Outbound gateway", () => {
       it("does not check the namespace when none is configured", async () => {
         const a = fakeArtifacts();
         upstream();
-        const res = await gw(a, undefined, { RYKE_NAMESPACE: "" }).fetch(new Request(`https://${HOST}/git/other/convert.git/info/refs`));
+        const res = await gw(a, undefined, { RYKE_NAMESPACE: "" }).fetch(new Request(`https://${HOST}/git/other/convert.git/info/refs?service=git-upload-pack`));
         expect(res.status).toBe(200);
       });
 
@@ -2017,7 +2782,7 @@ describe("Outbound gateway", () => {
     describe("failures", () => {
       it("answers 503 with a clear message when the gateway has no ARTIFACTS binding", async () => {
         const { spy } = upstream();
-        const res = await gateway({ RYKE_NAMESPACE: "ryke" }).fetch(new Request(git("convert.git/info/refs")));
+        const res = await gateway({ RYKE_NAMESPACE: "ryke" }, EVERYTHING).fetch(new Request(git("convert.git/info/refs?service=git-upload-pack")));
         expect(res.status).toBe(503);
         expect(await res.json()).toEqual({ error: "the ARTIFACTS binding is not configured on the gateway" });
         expect(spy).not.toHaveBeenCalled();
@@ -2025,14 +2790,14 @@ describe("Outbound gateway", () => {
 
       it("checks the allow-list before the binding, so a denied repo is 403 either way", async () => {
         upstream();
-        const res = await gateway({ RYKE_NAMESPACE: "ryke" }, { allow: [] }).fetch(new Request(git("convert.git/info/refs")));
+        const res = await gateway({ RYKE_NAMESPACE: "ryke" }, { allow: {} }).fetch(new Request(git("convert.git/info/refs?service=git-upload-pack")));
         expect(res.status).toBe(403);
       });
 
       it("answers 404 for a repo that does not exist, without forwarding", async () => {
         const a = fakeArtifacts({ missing: ["ghost"] });
         const { spy } = upstream();
-        const res = await gw(a).fetch(new Request(git("ghost.git/info/refs")));
+        const res = await gw(a).fetch(new Request(git("ghost.git/info/refs?service=git-upload-pack")));
         expect(res.status).toBe(404);
         expect(await res.json()).toEqual({ error: 'repo "ghost" does not exist' });
         expect(a.mints).toEqual([]);
@@ -2042,7 +2807,7 @@ describe("Outbound gateway", () => {
       it("answers 502 when Artifacts cannot mint, without leaking its error", async () => {
         const a = fakeArtifacts({ failMint: () => true });
         const { spy } = upstream();
-        const res = await gw(a).fetch(new Request(git("convert.git/info/refs")));
+        const res = await gw(a).fetch(new Request(git("convert.git/info/refs?service=git-upload-pack")));
         expect(res.status).toBe(502);
         expect(await res.json()).toEqual({ error: 'could not mint a token for "convert"' });
         expect(spy).not.toHaveBeenCalled();
@@ -2052,6 +2817,7 @@ describe("Outbound gateway", () => {
     it.each([
       ["a host that merely ends the same way", "https://x:tok@evilartifacts.cloudflare.net/git/ryke/convert.git/info/refs"],
       ["a host that contains it as a prefix", "https://x:tok@acct.artifacts.cloudflare.net.evil.test/git/ryke/convert.git/info/refs"],
+      ["the same host with a trailing dot", `https://${HOST}./git/ryke/convert.git/info/refs`],
       ["the bare parent domain", "https://x:tok@cloudflare.net/git/ryke/convert.git/info/refs"],
       ["an unrelated host", "https://example.com/git/ryke/convert.git/info/refs"],
       ["a bare artifacts domain without an account label", "https://artifacts.cloudflare.net/git/ryke/convert.git/info/refs"],
@@ -2059,9 +2825,57 @@ describe("Outbound gateway", () => {
       const a = fakeArtifacts();
       const { sent } = upstream();
       const request = new Request(url);
-      await gw(a, { allow: [] }).fetch(request);
+      await gw(a, { allow: {} }).fetch(request);
       expect(sent()).toBe(request);
       expect(a.gets).toEqual([]);
+    });
+  });
+
+  describe("closed egress", () => {
+    // The gateway of a verify container: Artifacts for the repos it was given, and nothing else, because
+    // the tests it runs were written by the transaction's author.
+    const closed = (extra: Record<string, unknown> = {}) => gateway({ ANTHROPIC_API_KEY: KEY, ...extra }, { allow: {}, egress: "closed" });
+
+    it.each([
+      "https://example.com/exfiltrate",
+      "http://example.com/plain",
+      "https://registry.npmjs.org/left-pad",
+      "https://github.com/cloudflare/workers-sdk.git/info/refs?service=git-upload-pack",
+      "https://artifacts.cloudflare.net/git/ryke/convert.git/info/refs",
+      "https://evilartifacts.cloudflare.net/git/ryke/convert.git/info/refs",
+      "https://acct.artifacts.cloudflare.net.evil.test/git/ryke/convert.git/info/refs",
+      "https://api.anthropic.com.evil.test/v1/messages",
+    ])("answers 403 for %s and sends nothing", async (url) => {
+      const { spy } = upstream();
+      const res = await closed().fetch(new Request(url, { method: "POST", body: "secret source code", headers: { "x-api-key": "placeholder" } }));
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toMatch(/egress to ".*" is not allowed for this container/);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("does not reach api.anthropic.com, nor attach the key for it", async () => {
+      const { spy } = upstream();
+      const res = await closed().fetch(new Request("https://api.anthropic.com/v1/messages", { method: "POST", body: "{}", headers: { "x-api-key": "placeholder" } }));
+      expect(res.status).toBe(403);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("still serves the git requests of the repos it was given, and only those", async () => {
+      const a = fakeArtifacts();
+      const { sent } = upstream();
+      const g = gateway({ ARTIFACTS: a.binding, RYKE_NAMESPACE: "ryke" }, { allow: { convert: "read" }, egress: "closed" });
+      const ok = await g.fetch(new Request("https://acct123.artifacts.cloudflare.net/git/ryke/convert.git/info/refs?service=git-upload-pack"));
+      expect(ok.status).toBe(200);
+      expect(sent().headers.get("authorization")).toMatch(/^Bearer art_v1_convert_read/);
+      const push = await g.fetch(new Request("https://acct123.artifacts.cloudflare.net/git/ryke/convert.git/info/refs?service=git-receive-pack"));
+      expect(push.status).toBe(403);
+    });
+
+    it("is closed whatever else the props say", async () => {
+      const { spy } = upstream();
+      const g = gateway({ ANTHROPIC_API_KEY: KEY }, { allow: { convert: "write" }, egress: "closed" });
+      expect((await g.fetch(new Request("https://example.com/"))).status).toBe(403);
+      expect(spy).not.toHaveBeenCalled();
     });
   });
 
@@ -2086,6 +2900,12 @@ describe("Outbound gateway", () => {
       expect(req.headers.get("content-type")).toBe("application/json");
       expect(await req.text()).toBe('{"model":"m"}');
       expect(req.redirect).toBe("manual");
+    });
+
+    it("swaps it for an open gateway that names its egress", async () => {
+      const { sent } = upstream();
+      await gateway({ ANTHROPIC_API_KEY: KEY }, { allow: {}, egress: "open" }).fetch(new Request(URL_, { headers: { "x-api-key": "placeholder" } }));
+      expect(sent().headers.get("x-api-key")).toBe(KEY);
     });
 
     it("adds the key when the container sent none", async () => {
@@ -2123,7 +2943,7 @@ describe("Outbound gateway", () => {
       "https://registry.npmjs.org/left-pad",
       "http://example.com/plain",
       "https://github.com/cloudflare/workers-sdk.git/info/refs?service=git-upload-pack",
-    ])("passes %s through unchanged", async (url) => {
+    ])("passes %s through unchanged on an open gateway", async (url) => {
       const { sent, response } = upstream();
       const request = new Request(url, { headers: { authorization: "Bearer keep", "x-api-key": "keep" } });
       expect(await gateway().fetch(request)).toBe(response);

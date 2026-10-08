@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 import type { Res } from "./ledger/ledger";
-import { begin, ledger, txnLedger } from "./service";
+import { begin, ledger, NAME_ERROR, repoKnown, txnLedger, validRepoName } from "./service";
 import { normalizePath } from "../shared/policy";
 import { storeFor } from "./store/store";
 
@@ -14,6 +14,13 @@ function result<T>(res: Res<T>): ToolResult {
 }
 
 const unknownTxn = (id: string): ToolResult => ({ content: [{ type: "text", text: JSON.stringify({ error: `unknown transaction ${id}`, status: 404 }) }], isError: true });
+
+// The same gate as /api/repos/:repo (api.ts): a malformed name or a repo nobody created never reaches,
+// and never creates, a Ledger.
+async function repoProblem(env: Env, repo: string): Promise<ToolResult | null> {
+  if (!validRepoName(repo)) return result({ ok: false, status: 422, error: NAME_ERROR });
+  return (await repoKnown(env, repo)) ? null : result({ ok: false, status: 404, error: "repo is not initialised" });
+}
 
 const READS_RULE =
   "Ryke lands your change only if nothing you READ changed on trunk since your snapshot, so report every file you read; a transaction with no reported reads is treated as having read every file in the directories it wrote, which serialises it against much more work.";
@@ -28,7 +35,7 @@ export function mcpServer(env: Env): McpServer {
         "Call this before starting work. Returns the trunk head and seq, the repo policy (protected paths you must not modify, union paths, the verify command), every in-flight transaction with its intent and live footprint (files read or written), and the hottest files (frequent conflicts). Use it to avoid duplicating or colliding with work already in flight.",
       inputSchema: z.object({ repo: z.string().describe("Repo name, e.g. convert") }),
     },
-    async ({ repo }) => result(await ledger(env, repo).summary()),
+    async ({ repo }) => (await repoProblem(env, repo)) ?? result(await ledger(env, repo).summary()),
   );
 
   s.registerTool(
@@ -43,7 +50,7 @@ export function mcpServer(env: Env): McpServer {
         model: z.string().optional().describe("Model id, used for recall by model"),
       }),
     },
-    async ({ repo, intent, criteria, agent, model }) => result(await begin(env, repo, { intent, criteria, agent, model })),
+    async ({ repo, intent, criteria, agent, model }) => (await repoProblem(env, repo)) ?? result(await begin(env, repo, { intent, criteria, agent, model })),
   );
 
   s.registerTool(
@@ -99,12 +106,20 @@ export function mcpServer(env: Env): McpServer {
   s.registerTool(
     "ryke_status",
     {
-      description: "State of your transaction: open, submitted, ready, verifying, landed, stale (with the stale paths), failed (with failing tests), needs_human, aborted, rejected, recalled. Also returns stale warnings for files you read that changed on trunk.",
+      description:
+        "State of your transaction: open, submitted, ready, verifying, landed, stale (with the stale paths, and in `delta` the trunk diff of each since your snapshot), failed (with failing tests), needs_human, aborted, rejected, recalled. `verdicts` are the judge's answers for this attempt, so you can see why it went to needs_human or failed. Also returns stale warnings for files you read that changed on trunk.",
       inputSchema: z.object({ txn: z.string() }),
     },
     async ({ txn }) => {
       const stub = await txnLedger(env, txn);
-      return stub ? result(await stub.status(txn)) : unknownTxn(txn);
+      if (!stub) return unknownTxn(txn);
+      const status = await stub.status(txn);
+      if (!status.ok) return result(status);
+      // Plain shapes: the RPC stub types are too deep to spread or combine.
+      const detail = (await stub.detail(txn)) as unknown as Res<{ delta: unknown[]; verdicts: { attempt: number }[] }>;
+      if (!detail.ok) return result(detail);
+      const now = status.value as unknown as { txn: { attempt: number } } & Record<string, unknown>;
+      return result({ ok: true, value: { ...now, delta: detail.value.delta, verdicts: detail.value.verdicts.filter((v) => v.attempt === now.txn.attempt) } });
     },
   );
 

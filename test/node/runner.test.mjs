@@ -24,7 +24,7 @@ import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { startRunner } from "../../dev/runner/server.mjs";
+import { inheritedEnv, startRunner } from "../../dev/runner/server.mjs";
 import { runnerEnv, stackConfig } from "../../dev/stack.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -41,7 +41,7 @@ const SCRIPT_SOURCES = {
   echo: String.raw`
 exec "$NODE_BIN" -e '
 const fs = require("fs");
-const keys = ["RYKE_JOB_ID", "RYKE_JOB_DIR", "RYKE_EVIDENCE_DIR", "RYKE_ROOT", "RYKE_TEST_P", "RYKE_TEST_PO", "RYKE_TEST_OJ", "RYKE_TEST_POJ"];
+const keys = ["RYKE_JOB_ID", "RYKE_JOB_DIR", "RYKE_EVIDENCE_DIR", "RYKE_ROOT", "RYKE_TEST_HOST", "LC_RYKE_TEST_P", "LC_RYKE_TEST_PO", "RYKE_TEST_OJ", "LC_RYKE_TEST_POJ"];
 console.log(JSON.stringify({
   argv: process.argv.slice(1),
   env: Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null])),
@@ -49,6 +49,18 @@ console.log(JSON.stringify({
   entries: fs.readdirSync("."),
 }));
 ' -- "$@"
+`,
+  // Prints the whole environment the job was started with, from process.env and, where Linux has
+  // it, from the kernel's copy of the exec-time block (what `cat /proc/self/environ` would show).
+  envdump: String.raw`
+exec "$NODE_BIN" -e '
+const fs = require("fs");
+let block = null;
+try {
+  block = fs.readFileSync("/proc/self/environ", "utf8").split("\0").filter(Boolean);
+} catch {}
+console.log(JSON.stringify({ env: process.env, block }));
+'
 `,
   // Stays running until the test creates <job dir>/gate, so tests can observe the running state.
   gated: String.raw`
@@ -289,20 +301,22 @@ it("a job moves queued -> running -> done and reports its exit code and parsed r
   assert.deepEqual(await health(), { ok: true, running: 0, queued: 0 });
 });
 
-it("args become --key value entries in insertion order and env layers process < runner < job", async (t) => {
-  Object.assign(process.env, { RYKE_TEST_P: "process", RYKE_TEST_PO: "process", RYKE_TEST_POJ: "process" });
+it("args become --key value entries in insertion order and env layers host < runner < job", async (t) => {
+  // LC_* is the one host family a job inherits whose names a test can invent; RYKE_TEST_HOST is not
+  // in the allow-list, so it shows that the host layer is filtered and not just ordered.
+  Object.assign(process.env, { RYKE_TEST_HOST: "host", LC_RYKE_TEST_P: "host", LC_RYKE_TEST_PO: "host", LC_RYKE_TEST_POJ: "host" });
   t.after(() => {
-    for (const k of ["RYKE_TEST_P", "RYKE_TEST_PO", "RYKE_TEST_POJ"]) delete process.env[k];
+    for (const k of ["RYKE_TEST_HOST", "LC_RYKE_TEST_P", "LC_RYKE_TEST_PO", "LC_RYKE_TEST_POJ"]) delete process.env[k];
   });
   const { submit, finished, stateDir, jobDir } = await boot(t, {
-    env: { NODE_BIN: process.execPath, RYKE_TEST_PO: "runner", RYKE_TEST_OJ: "runner", RYKE_TEST_POJ: "runner" },
+    env: { NODE_BIN: process.execPath, LC_RYKE_TEST_PO: "runner", RYKE_TEST_OJ: "runner", LC_RYKE_TEST_POJ: "runner" },
   });
   const tricky = `$HOME; echo 'x' "q" \`id\``;
   const id = await submit(
     "echo",
     { zeta: "1", alpha: "two words", mid: tricky, empty: "" },
     // The RYKE_* names are the runner's to set, so a job cannot claim another identity.
-    { RYKE_TEST_OJ: "job", RYKE_TEST_POJ: "job", RYKE_JOB_ID: "spoofed", RYKE_ROOT: "/spoofed" },
+    { RYKE_TEST_OJ: "job", LC_RYKE_TEST_POJ: "job", RYKE_JOB_ID: "spoofed", RYKE_ROOT: "/spoofed" },
   );
   const job = await finished(id);
 
@@ -313,11 +327,157 @@ it("args become --key value entries in insertion order and env layers process < 
     RYKE_JOB_DIR: jobDir(id),
     RYKE_EVIDENCE_DIR: join(stateDir, "evidence"),
     RYKE_ROOT: REPO_ROOT,
-    RYKE_TEST_P: "process",
-    RYKE_TEST_PO: "runner",
+    RYKE_TEST_HOST: null,
+    LC_RYKE_TEST_P: "host",
+    LC_RYKE_TEST_PO: "runner",
     RYKE_TEST_OJ: "job",
-    RYKE_TEST_POJ: "job",
+    LC_RYKE_TEST_POJ: "job",
   });
+});
+
+// A job runs candidate code (the verify command, Claude's tools), so what it inherits from the host
+// is a list of names that cannot hold a credential. Everything else, including every name nobody
+// thought of yet, is left out.
+const HOST_NAMES = ["PATH", "HOME", "USER", "LANG", "TZ", "TMPDIR", "TERM", "SHELL"];
+const PROXY_NAMES = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_USE_ENV_PROXY",
+];
+
+test("inheritedEnv keeps exactly the allow-listed host variables", () => {
+  const everything = Object.fromEntries([...HOST_NAMES, ...PROXY_NAMES, "LC_ALL", "LC_CTYPE", "LC_RYKE_ANY"].map((k) => [k, `v:${k}`]));
+  assert.deepEqual(inheritedEnv(everything), everything);
+
+  for (const name of [
+    "TYPESAFE_API_KEY",
+    "RYKE_INTERNAL_SECRET",
+    "RYKE_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "NPM_TOKEN",
+    "CLOUDFLARE_API_TOKEN",
+    "SSH_AUTH_SOCK",
+    "NODE_TEST_CONTEXT",
+    "GIT_ASKPASS",
+    "PWD",
+    "LOGNAME",
+    "LC", // not LC_
+    "LCX_ALL",
+    "lc_all", // names are case sensitive; only the proxy variables have a lower-case spelling listed
+    "path",
+    "XPATH",
+    "PATH_EXTRA",
+    "ALL_PROXY",
+    "NODE_PATH",
+  ]) {
+    assert.deepEqual(inheritedEnv({ PATH: "/bin", [name]: "x" }), { PATH: "/bin" }, name);
+  }
+  assert.deepEqual(inheritedEnv({}), {});
+});
+
+test("inheritedEnv passes NODE_OPTIONS only when it carries no --test flag", () => {
+  for (const [options, kept] of [
+    ["--max-old-space-size=4096", true],
+    ["--require ./x.js --enable-source-maps", true],
+    ["--experimental-strip-types", true],
+    ["--no-warnings", true],
+    ["", true],
+    ["--test", false],
+    ["--test-only", false],
+    ["--test-reporter=spec", false],
+    ["--test-reporter spec", false],
+    ["--max-old-space-size=4096 --test-name-pattern=x", false],
+    ["  --test-concurrency=2", false],
+    ["--test=1", false],
+    ["--require x --test", false],
+    ["--no-test-isolation", true], // contains the letters, but is another flag
+    ["--contest", true],
+    ["--require=./test-helper.js", true],
+  ]) {
+    assert.deepEqual(inheritedEnv({ NODE_OPTIONS: options }), kept ? { NODE_OPTIONS: options } : {}, JSON.stringify(options));
+  }
+});
+
+it("a job inherits the allow-listed host variables, the proxy settings and a NODE_OPTIONS without --test", async (t) => {
+  const saved = Object.fromEntries(Object.keys({ ...Object.fromEntries(PROXY_NAMES.map((k) => [k])), NODE_OPTIONS: 1, LC_ALL: 1 }).map((k) => [k, process.env[k]]));
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  for (const name of PROXY_NAMES) process.env[name] = `proxy-setting:${name}`;
+  process.env.LC_ALL = "C";
+  process.env.NODE_OPTIONS = "--max-old-space-size=512";
+  const { submit, finished } = await boot(t);
+  const job = await finished(await submit("envdump"));
+  assert.equal(job.state, "done");
+  assert.equal(job.result.env.PATH, process.env.PATH);
+  assert.equal(job.result.env.HOME, process.env.HOME);
+  for (const name of PROXY_NAMES) assert.equal(job.result.env[name], `proxy-setting:${name}`, name);
+  assert.equal(job.result.env.LC_ALL, "C");
+  assert.equal(job.result.env.NODE_OPTIONS, "--max-old-space-size=512");
+
+  process.env.NODE_OPTIONS = "--test-reporter=spec --max-old-space-size=512";
+  const dropped = await finished(await submit("envdump"));
+  assert.equal(dropped.state, "done");
+  assert.equal(dropped.result.env.NODE_OPTIONS, undefined);
+});
+
+it("a job does not see the credentials in the runner host's environment", async (t) => {
+  // A separate host process, as in production: the secrets are in its environment from the start,
+  // and the job is the child of that process.
+  const stateDir = mkdtempSync(join(ROOT, "cli-"));
+  const port = await freePort();
+  const secrets = {
+    TYPESAFE_API_KEY: "fake-typesafe-key-4f3a",
+    RYKE_INTERNAL_SECRET: "fake-internal-secret-9c1d",
+    RYKE_TOKEN: "fake-admin-token-77aa",
+    ANTHROPIC_API_KEY: "fake-anthropic-key-02ee",
+    GITHUB_TOKEN: "fake-github-token-31bc",
+  };
+  const cli = runCli(t, {
+    ...secrets,
+    HTTPS_PROXY: "http://proxy.invalid:3128",
+    RYKE_RUNNER_PORT: String(port),
+    RYKE_RUNNER_HOST: "127.0.0.1",
+    RYKE_STATE_DIR: stateDir,
+    RYKE_SCRIPTS_DIR: SCRIPTS,
+  });
+  await waitFor(() => cli.out().includes("\n"), "the startup line");
+  const { submit, finished } = client(`http://127.0.0.1:${port}`);
+  const job = await finished(await submit("envdump", {}, { NODE_BIN: process.execPath }));
+  assert.equal(job.state, "done", JSON.stringify(job));
+
+  const seen = JSON.stringify(job.result);
+  for (const [name, value] of Object.entries(secrets)) {
+    assert.equal(job.result.env[name], undefined, name);
+    assert.ok(!seen.includes(value), `${name} appears somewhere in the job's environment`);
+  }
+  // What the kernel recorded when it exec'd the job, which is what /proc/self/environ shows.
+  if (job.result.block !== null) {
+    for (const name of Object.keys(secrets)) assert.ok(!job.result.block.some((entry) => entry.startsWith(`${name}=`)), `${name} in /proc/self/environ`);
+  }
+  assert.equal(job.result.env.PATH, process.env.PATH);
+  assert.equal(job.result.env.HTTPS_PROXY, "http://proxy.invalid:3128");
+  // Nothing outside the allow-list, the runner's own variables and what bash adds to every script.
+  const allowed = new RegExp(`^(${[...HOST_NAMES, ...PROXY_NAMES, "NODE_OPTIONS", "NODE_BIN", "PWD", "OLDPWD", "SHLVL", "_"].join("|")}|LC_.*|RYKE_(JOB_ID|JOB_DIR|EVIDENCE_DIR|ROOT))$`);
+  assert.deepEqual(
+    Object.keys(job.result.env).filter((name) => !allowed.test(name)),
+    [],
+  );
 });
 
 it("each job gets a fresh empty cwd, removed when the job ends", async (t) => {

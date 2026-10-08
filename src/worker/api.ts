@@ -2,7 +2,7 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import latestBench from "../../bench/results/latest.json";
 import type { Res } from "./ledger/ledger";
 import { runnerFor, RunnerError } from "./runner/runner";
-import { agentToken, agentTokenTxn, begin, createRepo, deleteRepo, ledger, NAME_ERROR, repoKnown, txnLedger, validRepoName } from "./service";
+import { agentToken, agentTokenTxn, begin, sameText, createRepo, deleteRepo, ledger, NAME_ERROR, repoKnown, txnLedger, validRepoName } from "./service";
 import { storeFor, StoreError } from "./store/store";
 
 type App = { Bindings: Env };
@@ -24,7 +24,7 @@ async function body(c: Context<App>): Promise<Record<string, unknown> | null> {
 }
 
 export function authorized(env: Env, header: string | undefined): boolean {
-  return Boolean(env.RYKE_TOKEN) && header === `Bearer ${env.RYKE_TOKEN}`;
+  return Boolean(env.RYKE_TOKEN) && header !== undefined && sameText(header, `Bearer ${env.RYKE_TOKEN}`);
 }
 
 export const api = new Hono<App>().basePath("/api");
@@ -36,7 +36,8 @@ const AGENT_ROUTE = /^\/api\/txns\/([^/]+)\/(reads|intend-write|submit|retry|ref
 // Reads are public; every write needs the bearer token (PLAN.md §6.1) or, on AGENT_ROUTE, the agent token.
 api.use("*", async (c, next) => {
   const header = c.req.header("authorization");
-  if (c.req.method === "GET" || authorized(c.env, header)) return next();
+  // Hono answers HEAD with the GET handler, so HEAD is a read too.
+  if (c.req.method === "GET" || c.req.method === "HEAD" || authorized(c.env, header)) return next();
   const route = AGENT_ROUTE.exec(c.req.path);
   const bearer = header?.startsWith("Bearer ") ? header.slice(7) : null;
   if (route && bearer && (await agentTokenTxn(c.env, bearer)) === route[1]) return next();

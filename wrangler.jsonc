@@ -73,8 +73,10 @@
         "RYKE_NAMESPACE": "ryke",
         "RYKE_STORE_URL": "",
         "RYKE_RUNNER_URL": "",
-        "RYKE_SCREENSHOTS": "1",
-        "RYKE_RUNNER_SLOTS": "6"
+        // The runner image has no browser, so verify takes no screenshots in production yet.
+        "RYKE_SCREENSHOTS": "0",
+        // A third of the slots run seed, land and revert; the rest one verify or agent job each.
+        "RYKE_RUNNER_SLOTS": "12"
       }
     }
   }

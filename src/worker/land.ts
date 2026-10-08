@@ -5,7 +5,7 @@ import type { Policy, TestSummary } from "../shared/types";
 import { evidenceGate, type GateInput, type GateResult } from "./judge";
 import type { TrainParams, TrainTxn } from "./ledger/ledger";
 import { bisectNext, bisectRecord, bisectStart } from "./ledger/trains";
-import { runnerFor, runToCompletion } from "./runner/runner";
+import { access, runnerFor, runToCompletion, type Runner } from "./runner/runner";
 import { authRemote, ledger } from "./service";
 import { storeFor } from "./store/store";
 
@@ -37,9 +37,9 @@ export function jobResult<T>(job: { state: string; exitCode?: number; result?: u
   return r;
 }
 
-export function realDeps(env: Env, p: TrainParams, policy: Policy): LandDeps {
+// `runner` is a seam for the tests, which check what each step is allowed to touch.
+export function realDeps(env: Env, p: TrainParams, policy: Policy, runner: Runner = runnerFor(env)): LandDeps {
   const store = storeFor(env);
-  const runner = runnerFor(env);
   const trunk = async (scope: "read" | "write") => authRemote(env, (await store.info(p.repo)).remote, await store.token(p.repo, scope, 3600));
   return {
     async prepare(txns, ref) {
@@ -50,7 +50,7 @@ export function realDeps(env: Env, p: TrainParams, policy: Policy): LandDeps {
         runner,
         "land",
         { mode: "prepare", trunk: await trunk("write"), base: p.base, ref, union: JSON.stringify(policy.union), txns: JSON.stringify(forks) },
-        {},
+        access.prepare(p.repo, txns.map((t) => t.fork)),
         JOB_MS,
       );
       return jobResult<Prepared>(job, "prepare");
@@ -59,7 +59,7 @@ export function realDeps(env: Env, p: TrainParams, policy: Policy): LandDeps {
     async verify(candidate) {
       const args: Record<string, string> = { remote: await trunk("read"), ref: candidate, command: policy.verify, timeout: String(policy.verifyTimeoutSeconds) };
       if (policy.preview && env.RYKE_SCREENSHOTS === "1") Object.assign(args, { screenshot: "/", "preview-main": policy.preview.main });
-      const job = await runToCompletion(runner, "verify", args, {}, (policy.verifyTimeoutSeconds + 60) * 1000);
+      const job = await runToCompletion(runner, "verify", args, access.verify(p.repo), (policy.verifyTimeoutSeconds + 60) * 1000);
       return jobResult<Verified>(job, "verify");
     },
     async push(candidate, notes, cleanup) {
@@ -68,7 +68,7 @@ export function realDeps(env: Env, p: TrainParams, policy: Policy): LandDeps {
         runner,
         "land",
         { mode: "push", trunk: await trunk("write"), candidate, notes: JSON.stringify(notes), cleanup: JSON.stringify(cleanup) },
-        {},
+        access.write(p.repo),
         JOB_MS,
         { cancelOnTimeout: false },
       );
@@ -79,7 +79,7 @@ export function realDeps(env: Env, p: TrainParams, policy: Policy): LandDeps {
     },
     async cleanup(refs) {
       if (refs.length === 0) return;
-      await runToCompletion(runner, "land", { mode: "cleanup", trunk: await trunk("write"), refs: JSON.stringify(refs) }, {}, 60_000).catch(() => undefined);
+      await runToCompletion(runner, "land", { mode: "cleanup", trunk: await trunk("write"), refs: JSON.stringify(refs) }, access.write(p.repo), 60_000).catch(() => undefined);
     },
     gate: (input) => evidenceGate(env, input, policy),
   };

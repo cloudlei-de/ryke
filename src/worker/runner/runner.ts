@@ -18,6 +18,15 @@ export function runnerFor(env: Env): Runner {
   return env.RYKE_RUNNER === "container" ? new ContainerRunner(env) : new ProcessRunner(env.RYKE_RUNNER_URL);
 }
 
+// What each job may touch in Artifacts, as the container gateway reads it (RYKE_ALLOW_REPOS in
+// container.ts; no entry means no access). Only the lander's own jobs write, and a verify job never
+// does: it runs code the agents wrote.
+export const access = {
+  write: (repo: string) => ({ RYKE_ALLOW_REPOS: `${repo}:write` }),
+  prepare: (repo: string, forks: string[]) => ({ RYKE_ALLOW_REPOS: [`${repo}:write`, ...forks.map((f) => `${f}:read`)].join(",") }),
+  verify: (repo: string) => ({ RYKE_ALLOW_REPOS: `${repo}:read` }),
+};
+
 // Polls a job to its end. Land steps and repo seeding are short, so polling beats callbacks here.
 export async function runToCompletion(
   runner: Runner,

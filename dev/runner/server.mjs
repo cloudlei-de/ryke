@@ -33,6 +33,46 @@ const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
 };
 
+// A job runs code the transactions' authors wrote (the verify command, Claude's tools), so it must not
+// inherit whatever the host exported: TYPESAFE_API_KEY, RYKE_INTERNAL_SECRET, a cloud token. Only
+// names that cannot carry a credential pass, and a name nobody listed stays out by default. The
+// proxy and CA settings are in because the agent jobs reach the network through the host's proxy.
+// This cannot hide the runner process's own environment: a job is the same user's child, so it can
+// still read /proc/$PPID/environ. Whoever starts the runner has to start it without credentials too
+// (dev/stack.mjs hands it addresses only); only container mode isolates a job from its host.
+const INHERITED_NAMES = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LANG",
+  "TZ",
+  "TMPDIR",
+  "TERM",
+  "SHELL",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_USE_ENV_PROXY",
+]);
+// Node refuses --test flags in NODE_OPTIONS, and a runner started under `node --test` can carry them;
+// a job's own `node --test` would then die before running anything.
+const TEST_FLAG = /(?:^|\s)--test(?![A-Za-z0-9])/;
+
+export function inheritedEnv(host) {
+  const out = {};
+  for (const [name, value] of Object.entries(host)) {
+    if (INHERITED_NAMES.has(name) || name.startsWith("LC_")) out[name] = value;
+  }
+  if (host.NODE_OPTIONS !== undefined && !TEST_FLAG.test(host.NODE_OPTIONS)) out.NODE_OPTIONS = host.NODE_OPTIONS;
+  return out;
+}
+
 class ApiError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -228,7 +268,7 @@ export async function startRunner({
         cwd: job.work,
         // Job env goes before the RYKE_* variables so a job cannot spoof its own identity or dirs.
         env: {
-          ...process.env,
+          ...inheritedEnv(process.env),
           ...env,
           ...job.env,
           RYKE_JOB_ID: job.id,
