@@ -365,6 +365,39 @@ describe("POST /api/repos and DELETE /api/repos/:repo", () => {
     expect((await http("GET", `/api/repos/${name}`)).body.policy.protected).toContain("test/**");
   });
 
+  it("writes a policy override into the seeded ryke.json, keeping the demo's other rules", async () => {
+    const name = unique("api");
+    const r = await post("/api/repos", { name, seedFrom: "convert", policy: { pipeline: false, trainMax: 4 } });
+    expect(r.status).toBe(201);
+    const policy = (await http("GET", `/api/repos/${name}`)).body.policy;
+    expect(policy).toMatchObject({ pipeline: false, trainMax: 4 });
+    expect(policy.protected).toContain("test/**");
+    // The trunk says the same as the Ledger, so a later reload of ryke.json changes nothing.
+    expect(JSON.parse((await store.readFile(name, r.body.head, "ryke.json"))!)).toMatchObject({ pipeline: false, trainMax: 4 });
+  });
+
+  it("applies a policy override to the default ryke.json of a repo with no seed", async () => {
+    const name = unique("api");
+    const r = await post("/api/repos", { name, policy: { pipeline: false } });
+    expect(r.status).toBe(201);
+    expect((await http("GET", `/api/repos/${name}`)).body.policy).toMatchObject({ pipeline: false, protected: ["ryke.json"] });
+  });
+
+  it.each([
+    ["an array", []],
+    ["a string", "pipeline"],
+    ["null", null],
+    ["a field ryke.json rejects", { trainMax: 0 }],
+    ["a mistyped field", { pipeline: "off" }],
+    ["a misspelt field, which would otherwise change nothing", { pipline: false }],
+  ])("is 422 for a policy override that is %s, before anything is created", async (_label, policy) => {
+    const name = unique("api");
+    const r = await post("/api/repos", { name, seedFrom: "convert", policy });
+    expect(r.status).toBe(422);
+    expect(r.body.error).toContain("policy");
+    await expect(store.info(name)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("is 409 for a name that exists and leaves the first repo intact", async () => {
     const name = unique("api");
     const first = await post("/api/repos", { name });
@@ -909,6 +942,7 @@ describe("GET /api/repos/:repo", () => {
       inflight: [],
       heat: [],
       train: null,
+      speculative: null,
     });
     const b = await apiBegin(t.name, "agent-s", "add s");
     await post(`/api/txns/${b.txn}/reads`, { paths: ["src/b.ts", "src/a.ts"] });

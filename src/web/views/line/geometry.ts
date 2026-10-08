@@ -483,6 +483,7 @@ export function kindSignal(kind: OpKind): Signal | null {
       return "caution";
     case "txn.verifying":
     case "train.formed":
+    case "train.confirmed":
       return "run";
     case "txn.recalled":
     case "recall.planned":
@@ -530,8 +531,10 @@ export function shortData(op: Op): string {
       return `store ${shortSha(str(d.store))} ≠ ledger ${shortSha(str(d.ledger))}`;
     case "train.formed": {
       const n = strs(d.txns).length;
-      return `${str(d.train)} · ${n} txn${n === 1 ? "" : "s"}`;
+      return `${str(d.train)} · ${n} txn${n === 1 ? "" : "s"}${d.after ? ` · on ${str(d.after)}` : ""}`;
     }
+    case "train.confirmed":
+      return `${str(d.train)} · ${str(d.after)} landed its base`;
     case "train.bisect":
       return `probe ${strs(d.probe).length} · ${d.pass ? "pass" : "fail"}`;
     case "train.done":

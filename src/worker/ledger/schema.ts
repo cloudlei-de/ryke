@@ -24,6 +24,14 @@ export const MIGRATIONS: string[] = [
    CREATE TABLE train (id TEXT PRIMARY KEY, base TEXT NOT NULL, base_seq INTEGER NOT NULL, txns TEXT NOT NULL,
      state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, detail TEXT NOT NULL DEFAULT '{}');
    CREATE TABLE txn_index (txn TEXT PRIMARY KEY, repo TEXT NOT NULL);`,
+  // Speculative trains (PLAN.md §5.6): the train a train was built on, the candidate it reported after
+  // prepare with the paths that candidate changes and the trunk seq it would have, and whether its
+  // predecessor landed exactly its base.
+  `ALTER TABLE train ADD COLUMN pred TEXT;
+   ALTER TABLE train ADD COLUMN candidate TEXT;
+   ALTER TABLE train ADD COLUMN candidate_paths TEXT;
+   ALTER TABLE train ADD COLUMN candidate_seq INTEGER;
+   ALTER TABLE train ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export function migrate(sql: SqlStorage): number {

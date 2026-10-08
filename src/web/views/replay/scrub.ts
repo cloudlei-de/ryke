@@ -211,6 +211,7 @@ const SIGNALS: Record<OpKind, Signal | null> = {
   "trunk.diverged": "stop",
   "train.formed": "run",
   "train.bisect": "run",
+  "train.confirmed": "run",
   "train.done": null,
   "stale.warning": "caution",
   "heat.changed": null,

@@ -12,7 +12,7 @@ import { Workspace } from "../lib/gitops.mjs";
 import { resilient } from "../swarm.mjs";
 import { isRyke, rykeOpStats, rykeVerifyRuns, round, summarizeCell } from "./metrics.mjs";
 import { checkTrunk, controlPlane, sleep } from "./plumbing.mjs";
-import { lockPolicy, queuePolicy, rykeNoLeasePolicy, rykePolicy } from "./policies.mjs";
+import { lockPolicy, queuePolicy, rykeNoLeasePolicy, rykeNoPipePolicy, rykePolicy } from "./policies.mjs";
 import { waitWhileSettling } from "./settle.mjs";
 import { estimateIncompatibility, seedFiles } from "./workload.mjs";
 
@@ -20,6 +20,10 @@ const run = promisify(execFile);
 
 export const GRACE_SECONDS = 20;
 const SEED_MESSAGE = "Bench: add the constants tests may pin";
+
+// ryke.json fields a policy's repo is seeded with. Pipelining is a switch of the repo, not of the agents, and
+// it has to be in the seed: a flag set only in the Ledger would be undone by the next ryke.json reload.
+export const SEED_POLICY = { "ryke-nopipe": { pipeline: false } };
 
 export function endpointsOf(stack) {
   return {
@@ -123,7 +127,7 @@ export async function runCell(opts) {
   const repo = `bench-${policyName}-${agents}`;
   const say = (line) => log(`  ${line}`);
 
-  const created = await api.createRepo(repo, "convert", true);
+  const created = await api.createRepo(repo, "convert", true, SEED_POLICY[policyName]);
   const policy = (await api.repo(repo)).policy;
   say(`${repo}: seeded from convert at ${created.head.slice(0, 8)}`);
   await seedTrunk({ ctl, api, repo, policyName });
@@ -144,7 +148,7 @@ export async function runCell(opts) {
       ? lockPolicy(impl)
       : policyName === "queue"
         ? queuePolicy(impl)
-        : (policyName === "ryke-nolease" ? rykeNoLeasePolicy : rykePolicy)({ api, repo, clock, stats });
+        : ({ "ryke-nolease": rykeNoLeasePolicy, "ryke-nopipe": rykeNoPipePolicy }[policyName] ?? rykePolicy)({ api, repo, clock, stats });
 
   const root = await mkdtemp(join(tmpdir(), `ryke-bench-${policyName}-${agents}-`));
   const lag = monitorEventLoopDelay({ resolution: 20 });

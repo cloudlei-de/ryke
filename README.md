@@ -48,7 +48,7 @@ flowchart LR
   A -- "git push (smart HTTP)" --> F[(Artifacts fork per transaction)]
   subgraph W [Worker ryke]
     API[Hono API + MCP] --> L[Ledger Durable Object per repo<br/>SQLite: transactions, access sets,<br/>trunk index, op log, heat]
-    L -- "one train at a time" --> LW[Land Workflow]
+    L -- "one train lands at a time,<br/>the next verifies behind it" --> LW[Land Workflow]
     LW --> R[Runner DO + Container<br/>land.sh · verify.sh · revert.sh]
     P[Previews: Dynamic Workers]
   end

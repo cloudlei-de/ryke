@@ -194,3 +194,10 @@ export function rykeNoLeasePolicy(opts) {
   const { admit: _leases, ...rest } = rykePolicy(opts);
   return { ...rest, name: "ryke-nolease" };
 }
+
+// Ryke with speculative pipelining off: the agents are exactly Ryke's, leases included. The switch is not
+// theirs to flip; the cell seeds the repo's ryke.json with `pipeline: false` (cell.mjs SEED_POLICY), so the
+// Ledger forms one train at a time. The difference to `ryke` is what pipelining buys.
+export function rykeNoPipePolicy(opts) {
+  return { ...rykePolicy(opts), name: "ryke-nopipe" };
+}

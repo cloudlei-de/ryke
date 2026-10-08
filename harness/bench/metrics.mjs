@@ -4,9 +4,10 @@ import { POLICIES, parseBench } from "../../src/shared/bench.ts";
 
 export { POLICIES };
 
-// `ryke-nolease` is Ryke with write leases switched off, for the lease comparison. The dashboard's results
-// format only knows POLICIES, so a run that includes it is kept apart from bench/results/latest.json.
-export const ABLATION_POLICIES = ["ryke-nolease"];
+// `ryke-nolease` is Ryke with write leases switched off, for the lease comparison; `ryke-nopipe` is Ryke with
+// speculative pipelining switched off (§5.6), for the pipelining comparison. The dashboard's results format only
+// knows POLICIES, so a run that includes either is kept apart from bench/results/latest.json.
+export const ABLATION_POLICIES = ["ryke-nolease", "ryke-nopipe"];
 export const BENCH_POLICIES = [...POLICIES, ...ABLATION_POLICIES];
 export const isRyke = (name) => name === "ryke" || ABLATION_POLICIES.includes(name);
 
@@ -85,8 +86,9 @@ export function buildResults({ cells, durationSeconds, note, generatedAt = new D
 // ---------------------------------------------------------------------------------------------
 
 // One verify per train that had something to merge, plus one per bisection probe, for the trains that
-// finished inside the window (so the count lines up with the changes it is divided by). `sinceAt` and
-// `untilAt` are epoch milliseconds, like op.at.
+// finished inside the window (so the count lines up with the changes it is divided by). A discarded
+// speculative train counts too: its prepare and verify ran and nothing landed, which is the price of
+// pipelining and belongs in the ratio. `sinceAt` and `untilAt` are epoch milliseconds, like op.at.
 export function rykeVerifyRuns(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
   const done = new Map();
   const empty = new Set();
@@ -118,6 +120,8 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
   let conflictAborts = 0;
   const formedAt = new Map();
   const cycles = [];
+  // A speculative train is one formed on another train's candidate (`after`); it ends confirmed or discarded.
+  const speculative = { formed: 0, confirmed: 0, discarded: 0 };
   // A change that went stale straight after `ready` was waiting for a train when trunk moved under it;
   // one that went stale straight after `submitted` was already stale when it was handed in.
   const lastKind = new Map();
@@ -130,7 +134,10 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
       trains++;
       bump(trainSizes, String(o.data.txns?.length ?? 0));
       formedAt.set(o.data.train, o.at);
-    } else if (o.kind === "train.bisect") bisectProbes++;
+      if (o.data.after) speculative.formed++;
+    } else if (o.kind === "train.confirmed") speculative.confirmed++;
+    else if (o.kind === "train.done" && o.data.outcome === "discarded") speculative.discarded++;
+    else if (o.kind === "train.bisect") bisectProbes++;
     else if (o.kind === "stale.warning") staleWarnings++;
     else if (o.kind === "trunk.advanced" && formedAt.has(o.data.train)) cycles.push((o.at - formedAt.get(o.data.train)) / 1000);
     else if (o.kind === "txn.stale" || (o.kind === "txn.aborted" && o.data.cause?.state === "stale")) {
@@ -153,6 +160,7 @@ export function rykeOpStats(ops, { sinceAt = 0, untilAt = Infinity } = {}) {
     meanTrainSize: sizes.length === 0 ? 0 : round(sizes.reduce((a, b) => a + b, 0) / sizes.length),
     maxTrainSize: Math.max(0, ...sizes),
     bisectProbes,
+    speculative,
     staleWarnings,
     staleAborts,
     staleWhileReady,

@@ -1,4 +1,5 @@
 // The operations behind both /api (api.ts) and /mcp (mcp.ts), so the two interfaces cannot drift.
+import { parsePolicy, PolicyError } from "../shared/policy";
 import { screenIntent } from "./judge";
 import type { Ledger, Res, Screen } from "./ledger/ledger";
 import { access, RunnerError, runnerFor, runToCompletion } from "./runner/runner";
@@ -117,10 +118,26 @@ export function authRemote(env: Env, remote: string, token: string): string {
   return u.toString();
 }
 
-export async function createRepo(env: Env, name: unknown, seedFrom: unknown): Promise<Res<{ repo: string; head: string }>> {
+const POLICY_KEYS = ["protected", "union", "verify", "verifyTimeoutSeconds", "human", "trainMax", "preview", "pipeline"];
+
+// `override` is merged into the seed's ryke.json before the first commit, so trunk and Ledger start out
+// agreeing; the bench uses it to run one policy with a switch flipped.
+export async function createRepo(env: Env, name: unknown, seedFrom: unknown, override?: unknown): Promise<Res<{ repo: string; head: string }>> {
   if (!validRepoName(name)) return { ok: false, status: 422, error: NAME_ERROR };
   if (seedFrom !== undefined && (typeof seedFrom !== "string" || !/^[a-z0-9-]+$/.test(seedFrom)))
     return { ok: false, status: 422, error: "seedFrom must name a directory under demo/" };
+  if (override !== undefined) {
+    if (typeof override !== "object" || override === null || Array.isArray(override)) return { ok: false, status: 422, error: "policy must be an object of ryke.json fields" };
+    // parsePolicy ignores keys it does not know, so a misspelt switch would quietly change nothing.
+    const unknown = Object.keys(override).filter((k) => !POLICY_KEYS.includes(k));
+    if (unknown.length > 0) return { ok: false, status: 422, error: `policy: unknown field ${unknown.join(", ")}` };
+    try {
+      parsePolicy(JSON.stringify(override));
+    } catch (e) {
+      if (!(e instanceof PolicyError)) throw e;
+      return { ok: false, status: 422, error: `policy: ${e.message}` };
+    }
+  }
   let store: RepoStore | undefined;
   let created = false;
   try {
@@ -128,7 +145,7 @@ export async function createRepo(env: Env, name: unknown, seedFrom: unknown): Pr
     const ref = await store.create(name, { description: "Ryke trunk" });
     created = true;
     const token = await store.token(name, "write", 600);
-    const job = await runToCompletion(runnerFor(env), "seed", { remote: authRemote(env, ref.remote, token), seed: (seedFrom as string) ?? "" }, access.write(name), SEED_TIMEOUT_MS);
+    const job = await runToCompletion(runnerFor(env), "seed", { remote: authRemote(env, ref.remote, token), seed: (seedFrom as string) ?? "", ...(override ? { policy: JSON.stringify(override) } : {}) }, access.write(name), SEED_TIMEOUT_MS);
     const sha = (job.result as { sha?: string } | undefined)?.sha;
     if (job.state !== "done" || !sha) {
       await unmake(store, name);

@@ -331,6 +331,195 @@ describe("trains", () => {
   });
 });
 
+describe("speculative trains (PLAN.md §5.6)", () => {
+  const cand = "c".repeat(40);
+  // A head train holding x (writes src/x.ts), plus y (independent) and z (reads src/x.ts) ready behind it.
+  async function pipeline(policy?: string) {
+    const t = await newRepo(policy ? { policy } : {});
+    const x = await readyTxn(t, { "src/x.ts": "x\n" }, ["src/a.ts"], "agent-x");
+    const head = ok(await t.L.formTrain()).train!;
+    const y = await readyTxn(t, { "src/y.ts": "y\n" }, ["src/b.ts"], "agent-y");
+    const z = await readyTxn(t, { "src/z.ts": "z\n" }, ["src/x.ts"], "agent-z");
+    return { t, x, y, z, head };
+  }
+  async function withSpec() {
+    const p = await pipeline();
+    ok(await p.t.L.trainCandidate(p.head, cand, ["src/x.ts"], 1));
+    const spec = ok(await p.t.L.formTrain()).train!;
+    return { ...p, spec };
+  }
+  const landErrors = async (t: TestRepo, id: string) => (ok(await t.L.detail(id)).detail as { landErrors?: number }).landErrors ?? 0;
+
+  it("forms a second train on the first one's candidate, without what the first would make stale", async () => {
+    const { t, y, z, head } = await pipeline();
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+    ok(await t.L.trainCandidate(head, cand, ["src/x.ts"], 1));
+    const spec = ok(await t.L.formTrain());
+    // The candidate will be trunk seq 1 once x lands, so that is the base the second train is built on.
+    expect(spec.params).toMatchObject({ base: cand, baseSeq: 1, after: head, txns: [{ id: y.b.txn }] });
+    expect((await opsOf(t, "train.formed")).at(-1)!.data).toMatchObject({ train: spec.train, txns: [y.b.txn], base: cand, baseSeq: 1, after: head });
+    expect(ok(await t.L.status(z.b.txn)).txn).toMatchObject({ state: "ready", train: null });
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+    expect(ok(await t.L.summary())).toMatchObject({ train: head, speculative: spec.train });
+  });
+
+  it("waits while its predecessor runs, goes once trunk is exactly its base, then takes over", async () => {
+    const { t, x, y, head, spec } = await withSpec();
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("wait");
+    ok(await t.L.trainVerdicts(head, x.b.txn, [{ question: "criterion_1", value: 0.9, confidence: null }]));
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("wait");
+    ok(await t.L.commitTrain(head, cand, [{ txn: x.b.txn, sha: cand, paths: ["src/x.ts"] }]));
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("go");
+    expect((await opsOf(t, "train.confirmed")).map((o) => o.data)).toEqual([{ train: spec, after: head }]);
+    ok(await t.L.trainDone(head, "landed"));
+    expect(ok(await t.L.summary())).toMatchObject({ train: spec, speculative: null });
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("go");
+    ok(await t.L.commitTrain(spec, y.sha, [{ txn: y.b.txn, sha: y.sha, paths: ["src/y.ts"] }]));
+    ok(await t.L.trainDone(spec, "landed"));
+    expect(ok(await t.L.status(x.b.txn)).txn).toMatchObject({ state: "landed", landedSeq: 1 });
+    expect(ok(await t.L.status(y.b.txn)).txn).toMatchObject({ state: "landed", landedSeq: 2 });
+    expect(ok(await t.L.summary())).toMatchObject({ seq: 2, train: null, speculative: null });
+  });
+
+  it.each([
+    ["reads a path the candidate changes", { "src/r.ts": "r\n" }, ["src/x.ts"], false],
+    ["writes a path the candidate changes", { "src/x.ts": "mine\n" }, [], false],
+    ["shares only a union path with it", { "src/u.ts": "u\n", "CHANGELOG.md": "# Changelog\n- u\n" }, ["src/b.ts"], true],
+    ["touches nothing it changes", { "src/v.ts": "v\n" }, ["src/b.ts"], true],
+  ])("puts a change that %s %s the train on the candidate", async (_name, files, reads, joins) => {
+    const t = await newRepo();
+    await readyTxn(t, { "src/x.ts": "x\n", "CHANGELOG.md": "# Changelog\n- x\n" }, ["src/a.ts"], "agent-x");
+    const head = ok(await t.L.formTrain()).train!;
+    const c = await readyTxn(t, files, reads, "agent-c");
+    ok(await t.L.trainCandidate(head, cand, ["src/x.ts", "CHANGELOG.md"], 1));
+    const formed = ok(await t.L.formTrain()).params;
+    expect(formed?.txns.map((m) => m.id) ?? []).toEqual(joins ? [c.b.txn] : []);
+  });
+
+  it("keeps a speculative train that committed before its predecessor reported done", async () => {
+    const { t, x, y, head, spec } = await withSpec();
+    ok(await t.L.commitTrain(head, cand, [{ txn: x.b.txn, sha: cand, paths: ["src/x.ts"] }]));
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("go");
+    ok(await t.L.commitTrain(spec, y.sha, [{ txn: y.b.txn, sha: y.sha, paths: ["src/y.ts"] }]));
+    ok(await t.L.trainDone(head, "landed"));
+    expect(ok(await t.L.summary())).toMatchObject({ train: spec, speculative: null });
+    ok(await t.L.trainDone(spec, "landed"));
+    expect(ok(await t.L.status(y.b.txn)).txn).toMatchObject({ state: "landed", landedSeq: 2 });
+    expect((await opsOf(t, "train.done")).map((o) => o.data.outcome)).toEqual(["landed", "landed"]);
+  });
+
+  const other = "d".repeat(40);
+  it.each([
+    ["fails its verify", async (t: TestRepo, head: string, x: string) => {
+      ok(await t.L.trainOutcome(head, x, "failed", "tests"));
+      ok(await t.L.trainDone(head, "failed"));
+    }],
+    ["starts to bisect", async (t: TestRepo, head: string, x: string) => {
+      ok(await t.L.trainProbe(head, [x], true));
+    }],
+    ["lands a different candidate", async (t: TestRepo, head: string, x: string) => {
+      ok(await t.L.commitTrain(head, other, [{ txn: x, sha: other, paths: ["src/x.ts"] }]));
+      ok(await t.L.trainDone(head, "landed"));
+    }],
+    ["errors", async (t: TestRepo, head: string) => {
+      ok(await t.L.trainDone(head, "error"));
+    }],
+    ["has its push rejected", async (t: TestRepo, head: string, x: string) => {
+      ok(await t.L.trainOutcome(head, x, "ready", null, { cas: true }));
+      ok(await t.L.trainDone(head, "cas_rejected"));
+    }],
+  ])("is discarded when its predecessor %s, and its members are requeued uncharged", async (_name, act) => {
+    const { t, x, y, head, spec } = await withSpec();
+    await act(t, head, x.b.txn);
+    expect(ok(await t.L.status(y.b.txn)).txn).toMatchObject({ state: "ready", train: null });
+    expect(await landErrors(t, y.b.txn)).toBe(0);
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("discard");
+    expect((await opsOf(t, "train.done")).find((o) => o.data.train === spec)!.data.outcome).toBe("discarded");
+    expect(ok(await t.L.summary()).speculative).toBeNull();
+  });
+
+  it("counts a train that takes over because trunk is its base as confirmed, so its errors charge again", async () => {
+    const { t, x, y, head, spec } = await withSpec();
+    ok(await t.L.commitTrain(head, cand, [{ txn: x.b.txn, sha: cand, paths: ["src/x.ts"] }]));
+    ok(await t.L.trainDone(head, "landed"));
+    expect((await opsOf(t, "train.confirmed")).map((o) => o.data)).toEqual([{ train: spec, after: head }]);
+    expect(ok(await t.L.trainTurn(spec)).turn).toBe("go");
+    ok(await t.L.trainDone(spec, "error"));
+    expect(await landErrors(t, y.b.txn)).toBe(1);
+  });
+
+  it("forms the next train on the candidate of the one that took over", async () => {
+    const { t, x, head, spec } = await withSpec();
+    ok(await t.L.commitTrain(head, cand, [{ txn: x.b.txn, sha: cand, paths: ["src/x.ts"] }]));
+    ok(await t.L.trainDone(head, "landed"));
+    const w = await readyTxn(t, { "src/w.ts": "w\n" }, ["src/b.ts"], "agent-w");
+    const next = "e".repeat(40);
+    ok(await t.L.trainCandidate(spec, next, ["src/y.ts"], 1));
+    const third = ok(await t.L.formTrain()).params;
+    expect(third).toMatchObject({ after: spec, base: next, baseSeq: 2 });
+    expect(third!.txns.map((m) => m.id)).toContain(w.b.txn);
+  });
+
+  it.each([
+    ["bisected, then judged", async (t: TestRepo, head: string, x: string) => {
+      ok(await t.L.trainProbe(head, [x], true));
+      ok(await t.L.trainVerdicts(head, x, [{ question: "criterion_1", value: 0.9, confidence: null }]));
+    }],
+    ["lost a member while still running", async (t: TestRepo, head: string, x: string) => {
+      ok(await t.L.trainOutcome(head, x, "failed", "tests"));
+    }],
+  ])("builds nothing on the candidate of a train that %s", async (_name, act) => {
+    const { t, x, head } = await pipeline();
+    ok(await t.L.trainCandidate(head, cand, ["src/x.ts"], 1));
+    await act(t, head, x.b.txn);
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+  });
+
+  it("refuses a candidate whose paths are not a list of strings, and a turn for an unknown train", async () => {
+    const { t, head } = await pipeline();
+    expect(err(await t.L.trainCandidate(head, cand, "src/x.ts" as unknown as string[], 1))).toBe(422);
+    expect(err(await t.L.trainCandidate(head, cand, ["src/x.ts"], -1))).toBe(422);
+    expect(err(await t.L.trainTurn("tr_nope"))).toBe(404);
+  });
+
+  it("charges no land error for a speculative train that errors before its turn, and one after it", async () => {
+    const before = await withSpec();
+    ok(await before.t.L.trainDone(before.spec, "error"));
+    expect(ok(await before.t.L.status(before.y.b.txn)).txn.state).toBe("ready");
+    expect(await landErrors(before.t, before.y.b.txn)).toBe(0);
+    expect(ok(await before.t.L.summary())).toMatchObject({ train: before.head, speculative: null });
+
+    const after = await withSpec();
+    ok(await after.t.L.commitTrain(after.head, cand, [{ txn: after.x.b.txn, sha: cand, paths: ["src/x.ts"] }]));
+    expect(ok(await after.t.L.trainTurn(after.spec)).turn).toBe("go");
+    ok(await after.t.L.trainDone(after.spec, "error"));
+    expect(await landErrors(after.t, after.y.b.txn)).toBe(1);
+  });
+
+  it("keeps one train at a time when the policy turns pipelining off", async () => {
+    const { t, head } = await pipeline(JSON.stringify({ pipeline: false }));
+    ok(await t.L.trainCandidate(head, cand, ["src/x.ts"], 1));
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+  });
+
+  it("builds nothing on a train that is bisecting or over, or on a candidate that is not a sha", async () => {
+    const bisecting = await pipeline();
+    ok(await bisecting.t.L.trainCandidate(bisecting.head, cand, ["src/x.ts"], 1));
+    ok(await bisecting.t.L.trainProbe(bisecting.head, [bisecting.x.b.txn], false));
+    expect(ok(await bisecting.t.L.formTrain()).train).toBeNull();
+
+    const over = await pipeline();
+    ok(await over.t.L.trainDone(over.head, "failed"));
+    ok(await over.t.L.trainCandidate(over.head, cand, ["src/x.ts"], 1));
+    // The lander is free again, so this is an ordinary train on trunk, not one on the dead candidate.
+    expect(ok(await over.t.L.formTrain()).params).toMatchObject({ base: over.t.head });
+
+    const junk = await pipeline();
+    ok(await junk.t.L.trainCandidate(junk.head, "not-a-sha", ["src/x.ts"], 1));
+    expect(ok(await junk.t.L.formTrain()).train).toBeNull();
+  });
+});
+
 describe("human gate", () => {
   async function needsHuman() {
     const t = await newRepo();
@@ -791,6 +980,38 @@ describe("train scheduling failures and the watchdog", () => {
       expect(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'create_failures'").toArray()).toEqual([]);
     });
     expect(await detailOf(t, b.txn)).toMatchObject({ state: "verifying", attempt: 1 });
+  });
+
+  // A head train in verify with x, a speculative one on its candidate with y.
+  async function specInFlight() {
+    const t = await newRepo();
+    const x = await readyTxn(t, { "src/n.ts": "n\n" }, [], "agent-x");
+    const head = ok(await t.L.formTrain()).train!;
+    ok(await t.L.trainCandidate(head, "c".repeat(40), ["src/n.ts"], 1));
+    const y = await readyTxn(t, { "src/m.ts": "m\n" }, [], "agent-y");
+    return { t, x, y, head };
+  }
+
+  it("drops a speculative train whose workflow could not be created and leaves the train ahead running", async () => {
+    const { t, x, y, head } = await specInFlight();
+    await inside(t, async (o) => {
+      withLand(o, { create: async () => { throw new Error("workflows unavailable"); } });
+      expect(await o.startTrain(false)).toBeNull();
+    });
+    expect((await detailOf(t, y.b.txn)).state).toBe("ready");
+    expect((await detailOf(t, x.b.txn))).toMatchObject({ state: "verifying", train: head });
+    expect(ok(await t.L.summary())).toMatchObject({ train: head, speculative: null });
+  });
+
+  it("ends a stuck speculative train without charging it and leaves the train ahead running", async () => {
+    const { t, x, y, head } = await specInFlight();
+    const spec = ok(await t.L.formTrain()).train!;
+    await inside(t, async (_o, state) => void state.storage.sql.exec("UPDATE train SET updated_at = ? WHERE id = ?", Date.now() - 200_000, spec));
+    await inside(t, async (o) => (withLand(o, { get: async (id: string) => ({ status: async () => ({ status: id === spec ? "errored" : "running" }) }) }), o.alarm()));
+    expect((await detailOf(t, y.b.txn)).state).toBe("ready");
+    expect(ok(await t.L.detail(y.b.txn)).detail).not.toHaveProperty("landErrors", 1);
+    expect((await detailOf(t, x.b.txn))).toMatchObject({ state: "verifying", train: head });
+    expect(ok(await t.L.summary())).toMatchObject({ train: head, speculative: null });
   });
 
   it("leaves a train alone for 120 s, and before 30 min when the status lookup fails", async () => {

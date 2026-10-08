@@ -26,7 +26,10 @@ export type LandDeps = {
 };
 
 // The subset of WorkflowStep landTrain uses; tests pass a step that just runs the callback.
-export type StepLike = { do<T>(name: string, fn: () => Promise<T>): Promise<T> };
+export type StepLike = { do<T>(name: string, fn: () => Promise<T>): Promise<T>; sleep(name: string, ms: number): Promise<void> };
+
+// A speculative train asks for its turn this often, backing off while the train ahead is slow.
+const TURN_POLL_MS = [500, 1000, 1000, 2000];
 
 const JOB_MS = 10 * 60_000;
 
@@ -109,7 +112,8 @@ export async function landTrain(env: Env, p: TrainParams, step: StepLike, depsFo
     deps = depsFor(policy);
     const d = deps;
 
-    const build = async (ids: string[], label: string) => {
+    const turn = () => step.do(named("turn"), async () => unwrap<{ turn: "go" | "wait" | "discard" }>(await L.trainTurn(t)).turn);
+    const build = async (ids: string[], label: string, report = false) => {
       const ref = `refs/ryke/candidates/${t}/${refs.length}`;
       refs.push(ref);
       const prepared = await step.do(named(`prepare-${label}`), async () => {
@@ -120,8 +124,16 @@ export async function landTrain(env: Env, p: TrainParams, step: StepLike, depsFo
         if (unreachable.length > 0) throw new Error(`prepare could not fetch ${unreachable.map((c) => c.txn).join(", ")}: ${unreachable[0]!.error}`);
         return res;
       });
+      // The next train may be built on this candidate while this one verifies (PLAN.md §5.6).
+      if (report && prepared.applied.length > 0) {
+        const paths = [...new Set(prepared.applied.flatMap((a) => a.paths))];
+        await step.do(named("candidate"), async () => unwrap(await L.trainCandidate(t, prepared.candidate, paths, prepared.applied.length)));
+      }
+      // A speculative train whose base already failed skips its verify: it would only compete with the
+      // train ahead's bisection for runner slots.
+      if (report && p.after && (await turn()) === "discard") return { prepared, verified: null, discarded: true };
       const verified = prepared.applied.length > 0 ? await step.do(named(`verify-${label}`), () => d.verify(prepared.candidate)) : null;
-      return { prepared, verified };
+      return { prepared, verified, discarded: false };
     };
     const outcome = (id: string, state: "failed" | "needs_human" | "ready", reason: string | null, detail: Record<string, unknown> = {}) =>
       step.do(named(`outcome-${id}`), async () => unwrap(await L.trainOutcome(t, id, state, reason, detail)));
@@ -130,7 +142,19 @@ export async function landTrain(env: Env, p: TrainParams, step: StepLike, depsFo
 
     // 1. prepare + 2. verify the whole train.
     let members = p.txns.map((x) => x.id);
-    let { prepared, verified } = await build(members, "train");
+    const first = await build(members, "train", true);
+    if (first.discarded) return await finish("discarded");
+    let { prepared, verified } = first;
+    // A train built on the candidate of the train ahead has so far only tried that candidate out: it
+    // records nothing (conflicts, failures, verdicts) until trunk is exactly what it was built on.
+    if (p.after) {
+      for (let i = 0; ; i++) {
+        const now = await turn();
+        if (now === "go") break;
+        if (now === "discard") return await finish("discarded");
+        await step.sleep(named("wait"), TURN_POLL_MS[Math.min(i, TURN_POLL_MS.length - 1)]!);
+      }
+    }
     if (prepared.conflicts.length > 0) {
       const conflicts = prepared.conflicts.map((c) => ({ txn: c.txn, paths: c.paths }));
       await step.do(named("conflicts"), async () => unwrap(await L.trainConflicts(t, conflicts)));
@@ -276,6 +300,7 @@ export class Land extends WorkflowEntrypoint<Env, TrainParams> {
     // Step results are plain JSON; the cast only bridges WorkflowStep's Serializable<T> typing.
     const steps: StepLike = {
       do: (name, fn) => step.do(name, { retries: { limit: 2, delay: "1 second", backoff: "constant" }, timeout: "15 minutes" }, fn as never) as never,
+      sleep: (name, ms) => step.sleep(name, ms),
     };
     return landTrain(this.env, p, steps, (policy) => realDeps(this.env, p, policy));
   }

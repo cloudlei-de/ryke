@@ -94,7 +94,7 @@ api.post("/repos", async (c) => {
   const b = await body(c);
   if (!b) return c.json({ error: "body must be a JSON object" }, 422);
   if (b.fresh === true && validRepoName(b.name)) await deleteRepo(c.env, b.name);
-  return respond(c, await createRepo(c.env, b.name, b.seedFrom), 201);
+  return respond(c, await createRepo(c.env, b.name, b.seedFrom, b.policy), 201);
 });
 
 api.delete("/repos/:repo", async (c) => respond(c, await deleteRepo(c.env, c.req.param("repo"))));

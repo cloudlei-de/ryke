@@ -86,6 +86,14 @@ describe("parsePolicy", () => {
     });
   });
 
+  it.each([
+    ["absent: pipelining stays on", {}, undefined],
+    ["off", { pipeline: false }, false],
+    ["on, said explicitly", { pipeline: true }, true],
+  ])("pipeline %s", (_name, o, expected) => {
+    expect(parsePolicy(JSON.stringify(o)).pipeline).toBe(expected);
+  });
+
   it("always protects ryke.json itself", () => {
     expect(parsePolicy(JSON.stringify({ protected: ["test/**"] })).protected).toEqual(["test/**", "ryke.json"]);
     expect(parsePolicy("{}").protected).toEqual(["ryke.json"]);
@@ -105,6 +113,8 @@ describe("parsePolicy", () => {
     ["huge trainMax", JSON.stringify({ trainMax: 65 })],
     ["preview without main", JSON.stringify({ preview: {} })],
     ["preview null", JSON.stringify({ preview: null })],
+    ["pipeline not a boolean", JSON.stringify({ pipeline: "no" })],
+    ["pipeline null", JSON.stringify({ pipeline: null })],
   ])("rejects %s", (_name, text) => {
     expect(() => parsePolicy(text)).toThrow(PolicyError);
   });

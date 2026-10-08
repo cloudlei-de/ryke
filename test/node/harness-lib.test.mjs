@@ -12,7 +12,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { admit, describeWarnings, LEASE_PATIENCE_MS, runTask } from "../../harness/agents/scripted.mjs";
-import { ApiError } from "../../harness/lib/client.mjs";
+import { ApiError, client } from "../../harness/lib/client.mjs";
 import { buildReport, checkPreview, evaluateCriteria, foldTxns, formatReport, landedCategories } from "../../harness/lib/report.mjs";
 import {
   categoryName,
@@ -473,6 +473,36 @@ describe("limiter and resilient", () => {
   });
 });
 
+describe("the API client's createRepo", () => {
+  let platform;
+  before(async () => {
+    platform = await fakePlatform();
+  });
+  after(async () => {
+    await platform.close();
+  });
+
+  const seeded = { name: "r", seedFrom: "convert" };
+  const cases = [
+    ["a name and a seed: fresh defaults to false and no policy is sent", ["r", "convert"], { ...seeded, fresh: false }],
+    ["fresh", ["r", "convert", true], { ...seeded, fresh: true }],
+    ["a policy is sent as given", ["r", "convert", true, { pipeline: false }], { ...seeded, fresh: true, policy: { pipeline: false } }],
+    ["a policy without fresh", ["r", "convert", false, { pipeline: false }], { ...seeded, fresh: false, policy: { pipeline: false } }],
+    ["a policy with several fields", ["r", "convert", true, { pipeline: false, verifyTimeoutSeconds: 5 }], { ...seeded, fresh: true, policy: { pipeline: false, verifyTimeoutSeconds: 5 } }],
+    ["an empty policy is still sent: what it means is the Worker's to say", ["r", "convert", true, {}], { ...seeded, fresh: true, policy: {} }],
+    ["an undefined policy is not sent", ["r", "convert", true, undefined], { ...seeded, fresh: true }],
+    ["no seed", ["r"], { name: "r", fresh: false }],
+  ];
+  for (const [name, args, body] of cases) {
+    it(name, async () => {
+      platform.requests.length = 0;
+      const created = await client(platform.url, "tok").createRepo(...args);
+      assert.deepEqual(platform.requests, [{ method: "POST", path: "/api/repos", body }]);
+      assert.equal(created.repo, "r");
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------------------------
@@ -545,7 +575,7 @@ describe("report from the recorded e2e:land log", () => {
     assert.deepEqual(r.final, { landed: 5, stale: 1, failed: 1 });
     assert.deepEqual(r.landedTasks, [A, B, "t_muyvqs3cis1c", "t_muyvqs360kd2", "t_muyvqs3621r4"]);
     assert.deepEqual(r.aborts, { stale_read: 1, text_conflict: 0, failed_verify: 1, duplicate: 0, protected: 0, max_attempts: 0, agent: {}, other: {} });
-    assert.deepEqual(r.trains, { formed: 2, sizes: { 2: 1, 4: 1 }, max: 4, bisected: 1 });
+    assert.deepEqual(r.trains, { formed: 2, sizes: { 2: 1, 4: 1 }, max: 4, bisected: 1, speculative: { formed: 0, confirmed: 0, discarded: 0 } });
     assert.deepEqual(r.landedPerMinuteBuckets.reduce((a, b) => a + b, 0), 5);
     assert.ok(r.durationMs > 0 && r.durationMs < 60_000);
     assert.ok(r.landedPerMinute > 5);
@@ -579,7 +609,7 @@ describe("report from the recorded e2e:land log", () => {
       "landed         5 tasks: t-precision, cat-area,",
       "not landed     cat-volume stale (stale_read); cat-never not_run",
       "aborts         stale_read 1, text_conflict 0, failed_verify 1, duplicate 0, protected 0, max_attempts 0",
-      "trains         2 formed (size x count: 1x2 1x4), largest 4, 1 bisected",
+      "trains         2 formed (count x size: 1x2 1x4), largest 4, 1 bisected",
       `t-precision    ${A}: 1 stale aborts caused, 0 landed after the retry`,
       "[FAIL] >= 34 tasks landed: 5 landed",
       "[n/a ] G3 duplicates rejected or warned: no G3 task in this run",
@@ -609,7 +639,7 @@ describe("report from synthetic logs", () => {
     assert.equal(r.landedPerMinute, 0);
     assert.deepEqual(r.landedPerMinuteBuckets, []);
     assert.deepEqual(r.final, {});
-    assert.deepEqual(r.trains, { formed: 0, sizes: {}, max: 0, bisected: 0 });
+    assert.deepEqual(r.trains, { formed: 0, sizes: {}, max: 0, bisected: 0, speculative: { formed: 0, confirmed: 0, discarded: 0 } });
     assert.equal(r.precision, null);
     assert.equal(r.outcomes.every((o) => o.state === "not_run"), true);
     assert.match(formatReport(r), /transactions   0   none/);
@@ -723,7 +753,61 @@ describe("report from synthetic logs", () => {
     add("train.formed", null, { train: "tr_3", txns: ["a"] });
     add("train.bisect", null, { train: "tr_2", probe: ["a"], pass: false });
     add("train.bisect", null, { train: "tr_2", probe: ["b"], pass: true });
-    assert.deepEqual(buildReport({ ops, tasks: [] }).trains, { formed: 3, sizes: { 1: 2, 3: 1 }, max: 3, bisected: 1 });
+    assert.deepEqual(buildReport({ ops, tasks: [] }).trains, { formed: 3, sizes: { 1: 2, 3: 1 }, max: 3, bisected: 1, speculative: { formed: 0, confirmed: 0, discarded: 0 } });
+  });
+
+  describe("speculative trains (PLAN.md section 5.6)", () => {
+    // tr_1 lands; tr_2 was formed on tr_1's candidate and is confirmed once trunk is its base; tr_3 was formed
+    // on tr_2's candidate and discarded when tr_2 lost a member; tr_4 is still waiting when the log ends.
+    const speculative = () => {
+      const { ops, add } = opLog();
+      add("train.formed", null, { train: "tr_1", txns: ["a", "b"], base: "b0" });
+      add("train.formed", null, { train: "tr_2", txns: ["c"], base: "c1", after: "tr_1" });
+      add("train.done", null, { train: "tr_1", outcome: "landed" });
+      add("train.confirmed", null, { train: "tr_2", after: "tr_1" });
+      add("train.formed", null, { train: "tr_3", txns: ["d", "e", "f"], base: "c2", after: "tr_2" });
+      add("train.bisect", null, { train: "tr_2", probe: ["c"], pass: false });
+      add("train.done", null, { train: "tr_3", outcome: "discarded" });
+      add("train.done", null, { train: "tr_2", outcome: "landed" });
+      add("train.formed", null, { train: "tr_4", txns: ["g"], base: "c3", after: "tr_2" });
+      return ops;
+    };
+    const cases = [
+      ["one plain train", [{ kind: "train.formed", data: { train: "t", txns: ["a"], base: "b" } }], { formed: 0, confirmed: 0, discarded: 0 }],
+      ["`after: null` is not speculative", [{ kind: "train.formed", data: { train: "t", txns: ["a"], base: "b", after: null } }], { formed: 0, confirmed: 0, discarded: 0 }],
+      ["formed, confirmed and discarded each count once", speculative(), { formed: 3, confirmed: 1, discarded: 1 }],
+      ["done trains that landed or came up empty are not discards", [{ kind: "train.done", data: { train: "t", outcome: "landed" } }, { kind: "train.done", data: { train: "u", outcome: "empty" } }, { kind: "train.done", data: { train: "v", outcome: "error" } }], { formed: 0, confirmed: 0, discarded: 0 }],
+      ["a discard seen without its formation still counts (a log read from the middle)", [{ kind: "train.done", data: { train: "t", outcome: "discarded" } }], { formed: 0, confirmed: 0, discarded: 1 }],
+    ];
+    for (const [name, ops, want] of cases) {
+      it(`counts them: ${name}`, () => {
+        const log = ops.map((o, i) => ({ seq: i + 1, at: 1_700_000_000_000 + i, txn: null, ...o }));
+        assert.deepEqual(buildReport({ ops: log, tasks: [] }).trains.speculative, want);
+      });
+    }
+
+    it("speculative trains are counted among the formed trains and their sizes, not on top of them", () => {
+      const t = buildReport({ ops: speculative(), tasks: [] }).trains;
+      assert.deepEqual([t.formed, t.sizes, t.max, t.bisected], [4, { 1: 2, 2: 1, 3: 1 }, 3, 1]);
+    });
+
+    it("appends the speculative numbers to the trains line, and only when there were any", () => {
+      const text = formatReport(buildReport({ ops: speculative(), tasks: [] }));
+      assert.ok(text.includes("trains         4 formed (count x size: 2x1 1x2 1x3), largest 3, 1 bisected; 3 speculative: 1 confirmed, 1 discarded\n"), text);
+      const plain = opLog();
+      plain.add("train.formed", null, { train: "tr_1", txns: ["a"] });
+      plain.add("train.formed", null, { train: "tr_2", txns: ["b", "c"] });
+      const line = formatReport(buildReport({ ops: plain.ops, tasks: [] })).split("\n").find((l) => l.startsWith("trains"));
+      assert.equal(line, "trains         2 formed (count x size: 1x1 1x2), largest 2, 0 bisected");
+    });
+
+    it("says 0 confirmed and 0 discarded when every speculative train is still waiting", () => {
+      const { ops, add } = opLog();
+      add("train.formed", null, { train: "tr_1", txns: ["a"], base: "b" });
+      add("train.formed", null, { train: "tr_2", txns: ["b"], base: "c", after: "tr_1" });
+      const line = formatReport(buildReport({ ops, tasks: [] })).split("\n").find((l) => l.startsWith("trains"));
+      assert.equal(line, "trains         2 formed (count x size: 2x1), largest 1, 0 bisected; 1 speculative: 0 confirmed, 0 discarded");
+    });
   });
 });
 

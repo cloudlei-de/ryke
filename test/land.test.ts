@@ -22,6 +22,12 @@ type Fake = {
   unreachable?: string[];
   unreachableFor?: number;
   head?: string | null;
+  // verify waits for this, so a test can hold a train in verify while another one runs.
+  hold?: Promise<void>;
+  // Two fakes in one test must not mint the same commit shas.
+  id?: string;
+  // prepare waits for this, so a test can decide what happens ahead of a train before it verifies.
+  holdPrepare?: Promise<void>;
   calls: { prepare: string[][]; verify: string[]; push: string[]; gate: string[]; cleanup: string[][] };
   candidates?: Map<string, string[]>;
 };
@@ -38,13 +44,16 @@ function fakeDeps(f: Fake): LandDeps {
     },
     async prepare(txns: TrainTxn[], ref: string): Promise<Prepared> {
       f.calls.prepare.push(txns.map((t) => t.id));
+      await f.holdPrepare;
       const down = (id: string) => f.unreachable?.includes(id) && f.calls.prepare.length <= (f.unreachableFor ?? Infinity);
       const applied = txns.filter((t) => !f.conflicts?.includes(t.id) && !down(t.id));
-      const candidate = sha(`c${f.calls.prepare.length}${ref.length}`);
+      const commits = applied.map((_t, i) => sha(`${f.id ?? ""}a${f.calls.prepare.length}b${i}`));
+      // As in land.mjs: the candidate is the last squash commit.
+      const candidate = commits.at(-1) ?? sha(`c${f.calls.prepare.length}${ref.length}`);
       candidates.set(candidate, applied.map((t) => t.id));
       return {
         candidate,
-        applied: applied.map((t, i) => ({ txn: t.id, commit: sha(`a${f.calls.prepare.length}b${i}`), paths: [`src/${t.id}.ts`], diffstat: "1 file changed", tamper: false, newTests: [] })),
+        applied: applied.map((t, i) => ({ txn: t.id, commit: commits[i]!, paths: [`src/${t.id}.ts`], diffstat: "1 file changed", tamper: false, newTests: [] })),
         conflicts: [
           ...txns.filter((t) => f.conflicts?.includes(t.id)).map((t) => ({ txn: t.id, paths: ["src/registry.ts"] })),
           ...txns.filter((t) => f.unreachable?.includes(t.id) && f.calls.prepare.length <= (f.unreachableFor ?? Infinity)).map((t) => ({ txn: t.id, paths: [], error: "fetch failed: unable to access" })),
@@ -53,6 +62,7 @@ function fakeDeps(f: Fake): LandDeps {
     },
     async verify(candidate: string): Promise<Verified> {
       f.calls.verify.push(candidate);
+      await f.hold;
       const bad = (candidates.get(candidate) ?? []).filter((id) => f.culprits?.includes(id));
       if (f.failRebuild && f.calls.verify.length > 1) bad.push("rebuild");
       return {
@@ -79,6 +89,10 @@ const steps: StepLike & { names: string[] } = {
   async do(name, fn) {
     this.names.push(name);
     return fn();
+  },
+  async sleep(name) {
+    this.names.push(name);
+    await new Promise((r) => setTimeout(r, 5));
   },
 };
 
@@ -128,6 +142,7 @@ describe("landTrain", () => {
         }
       }
     },
+    sleep: async () => {},
   };
 
   it("retries prepare when a fork could not be fetched, and lands everyone once it can", async () => {
@@ -280,6 +295,9 @@ describe("landTrain", () => {
         cache.set(name, v);
         return v;
       },
+      async sleep(name) {
+        names[run]!.push(name);
+      },
     });
     const f = fake({ culprits: [params.txns[1]!.id] });
     expect((await landTrain(env, params, memo(0), () => fakeDeps(f))).outcome).toBe("landed");
@@ -329,6 +347,130 @@ describe("landTrain", () => {
 
 // In container mode the gateway attaches Artifacts credentials per job from RYKE_ALLOW_REPOS, so what
 // each step passes there is all it can reach: only the lander's own steps write, verify only reads.
+describe("speculative trains (PLAN.md §5.6)", () => {
+  // Train A holds x and stays in verify until released; y is ready behind it and goes into train B,
+  // built on A's candidate.
+  async function pipelined(fa: Fake, fb: Fake, stepsB: StepLike = steps) {
+    const { t, ids, params: a } = await train(1);
+    const b = await beginTxn(t, "agent-y", "intent y");
+    ok(await t.L.reads(b.txn, ["src/other.ts"]));
+    expect(ok(await t.L.submit(b.txn, { head: await commitToFork(b, { "src/y.ts": "y\n" }) })).state).toBe("ready");
+    const runA = landTrain(env, a, steps, () => fakeDeps(fa));
+    let spec: TrainParams | null = null;
+    for (let i = 0; i < 200 && !spec; i++) {
+      spec = ok(await t.L.formTrain()).params;
+      if (!spec) await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(spec).toMatchObject({ after: a.trainId, base: fa.calls.prepare.length ? [...fa.candidates!.keys()][0] : "?", txns: [{ id: b.txn }] });
+    const runB = landTrain(env, spec!, stepsB, () => fakeDeps(fb));
+    return { t, x: ids[0]!, y: b.txn, a, spec: spec!, runA, runB };
+  }
+  const gate = () => {
+    let open!: () => void;
+    const hold = new Promise<void>((r) => (open = r));
+    return { hold, open };
+  };
+
+  it("verifies on the candidate ahead while that one verifies, then lands right after it", async () => {
+    const g = gate();
+    const fa = fake({ hold: g.hold, id: "a" });
+    const fb = fake({ id: "b" });
+    const { t, x, y, runA, runB } = await pipelined(fa, fb);
+    // B prepared and verified while A is still held in verify, and is now waiting for its turn.
+    for (let i = 0; i < 200 && fb.calls.verify.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(fb.calls.verify).toHaveLength(1);
+    expect(fb.calls.push).toHaveLength(0);
+    expect(await states(t, [x, y])).toEqual(["verifying", "verifying"]);
+    g.open();
+    expect(await runA).toEqual({ outcome: "landed" });
+    expect(await runB).toEqual({ outcome: "landed" });
+    expect(ok(await t.L.status(x)).txn).toMatchObject({ state: "landed", landedSeq: 1 });
+    expect(ok(await t.L.status(y)).txn).toMatchObject({ state: "landed", landedSeq: 2 });
+    expect(fb.calls.verify).toHaveLength(1);
+    expect(fb.calls.push).toHaveLength(1);
+    expect(ok(await t.L.summary())).toMatchObject({ seq: 2, train: null, speculative: null });
+  });
+
+  it("is thrown away when the train ahead fails, and its own failing verify blames nobody", async () => {
+    const g = gate();
+    const fa = fake({ hold: g.hold, id: "a" });
+    const fb = fake({ hold: g.hold, id: "b" });
+    const { t, x, y, spec, runA, runB } = await pipelined(fa, fb);
+    // B's verify fails as well, the way it would on top of A's broken change.
+    fa.culprits = [x];
+    fb.culprits = [y];
+    g.open();
+    expect(await runA).toEqual({ outcome: "failed" });
+    expect((await runB).outcome).toBe("discarded");
+    expect(ok(await t.L.status(y)).txn).toMatchObject({ state: "ready", train: null });
+    expect(ok(await t.L.detail(y)).verdicts).toEqual([]);
+    expect((await opsOf(t, "train.done")).find((o) => o.data.train === spec.trainId)!.data.outcome).toBe("discarded");
+    expect((await opsOf(t, "train.bisect")).filter((o) => o.data.train === spec.trainId)).toEqual([]);
+  });
+
+  it("stops before its verify when the train ahead has already failed", async () => {
+    const ga = gate();
+    const gb = gate();
+    const fa = fake({ hold: ga.hold, id: "a" });
+    const fb = fake({ holdPrepare: gb.hold, id: "b" });
+    const { t, x, y, runA, runB } = await pipelined(fa, fb);
+    fa.culprits = [x];
+    ga.open();
+    expect(await runA).toEqual({ outcome: "failed" });
+    gb.open();
+    expect((await runB).outcome).toBe("discarded");
+    expect(fb.calls.verify).toEqual([]);
+    expect(ok(await t.L.status(y)).txn).toMatchObject({ state: "ready", train: null });
+  });
+
+  it("replays to the same steps and results, waits included", async () => {
+    const g = gate();
+    const fa = fake({ hold: g.hold, id: "a" });
+    const fb = fake({ id: "b" });
+    const cache = new Map<string, unknown>();
+    const names: string[][] = [[], []];
+    const memo = (run: number): StepLike => ({
+      async do(name, fn) {
+        names[run]!.push(name);
+        if (cache.has(name)) return cache.get(name) as never;
+        const v = await fn();
+        cache.set(name, v);
+        return v;
+      },
+      async sleep(name) {
+        names[run]!.push(name);
+        await new Promise((r) => setTimeout(r, 5));
+      },
+    });
+    const { t, y, spec, runA, runB } = await pipelined(fa, fb, memo(0));
+    g.open();
+    expect(await runA).toEqual({ outcome: "landed" });
+    expect(await runB).toEqual({ outcome: "landed" });
+    expect(ok(await t.L.status(y)).txn.state).toBe("landed");
+    expect(names[0]!.filter((n) => n.startsWith("wait-")).length).toBeGreaterThan(0);
+    const verifies = fb.calls.verify.length;
+    expect(await landTrain(env, spec, memo(1), () => fakeDeps(fb))).toEqual({ outcome: "landed" });
+    expect(names[1]).toEqual(names[0]);
+    expect(fb.calls.verify.length).toBe(verifies);
+  });
+
+  it("records its own failure only once the train ahead has landed", async () => {
+    const g = gate();
+    const fa = fake({ hold: g.hold, id: "a" });
+    const fb = fake({ hold: g.hold, id: "b" });
+    const { t, x, y, spec, runA, runB } = await pipelined(fa, fb);
+    fb.culprits = [y];
+    g.open();
+    expect(await runA).toEqual({ outcome: "landed" });
+    expect(await runB).toEqual({ outcome: "failed" });
+    expect(ok(await t.L.status(x)).txn.state).toBe("landed");
+    expect(ok(await t.L.status(y)).txn).toMatchObject({ state: "failed", reason: "tests" });
+    const confirmed = (await opsOf(t, "train.confirmed")).find((o) => o.data.train === spec.trainId)!;
+    const failed = (await opsOf(t, "txn.failed")).find((o) => o.txn === y)!;
+    expect(confirmed.seq).toBeLessThan(failed.seq);
+  });
+});
+
 describe("realDeps: what each land step may touch", () => {
   function recordingRunner(result: (kind: string, args: Record<string, string>) => unknown) {
     const started: { kind: string; args: Record<string, string>; env: Record<string, string> }[] = [];

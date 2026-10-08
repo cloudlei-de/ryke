@@ -18,9 +18,10 @@ const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const USAGE = `usage: bench.mjs [--agents 10,50,100,200] [--policy lock,queue,ryke] [--duration 300]
                 [--time-factor 1] [--seed 7] [--offset 70] [--grace 20] [--out bench/results]
                 [--caveat "text" ...] [--detail file.json]
-  --policy       any of lock, queue, ryke, ryke-nolease (Ryke with write leases off, for the lease comparison).
-                 A run that includes ryke-nolease writes to bench/results/ablation by default, because the
-                 dashboard's results format does not know that name
+  --policy       any of lock, queue, ryke, ryke-nolease (Ryke with write leases off, for the lease comparison),
+                 ryke-nopipe (Ryke with speculative pipelining off, for the pipelining comparison).
+                 A run that includes either ablation writes to bench/results/ablation by default, because the
+                 dashboard's results format does not know those names
   --duration     seconds of wall time per cell; only changes landed inside it count
   --time-factor  multiplies every think time (median 6 s), the same for every policy
   --offset       port offset of the private stack (store 8788, runner 8789, worker 5173 + offset)
@@ -109,12 +110,23 @@ const STATIC_CAVEATS = [
 // Facts about a run that a reader needs before trusting its numbers.
 export function caveatsFor(details, extra = []) {
   const out = [...STATIC_CAVEATS, ...extra];
+  const ran = (policy) => details.some((d) => d.policy === policy);
   if (details.some((d) => ABLATION_POLICIES.includes(d.policy))) {
-    out.push("`ryke-nolease` is Ryke with write leases off: identical agents and refresh on a stale warning, but they never call intend-write. The dashboard's results format only knows lock, queue and ryke, so this run is not written to bench/results/latest.json.");
+    out.push(
+      [
+        ran("ryke-nolease") && "`ryke-nolease` is Ryke with write leases off: identical agents and refresh on a stale warning, but they never call intend-write.",
+        ran("ryke-nopipe") && "`ryke-nopipe` is Ryke with speculative pipelining off (`pipeline: false` in the seeded ryke.json): identical agents and leases, but the Ledger forms one train at a time.",
+        "The dashboard's results format only knows lock, queue and ryke, so this run is not written to bench/results/latest.json.",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
   const cpus = availableParallelism();
   for (const d of details) {
     const where = `${d.policy} x ${d.agents}`;
+    // The switch is in the seeded ryke.json; a train formed on another's candidate means it did not take.
+    if (d.policy === "ryke-nopipe" && d.ryke?.speculative?.formed > 0) out.push(`${where}: ${d.ryke.speculative.formed} speculative train(s) formed although pipelining was off, so the ablation did not take effect.`);
     if (d.errors > 0) out.push(`${where}: ${d.errors} agent error(s), for example: ${d.errorSamples[0]}`);
     if (d.loopLagMs.p99 > 250) out.push(`${where}: the bench process's event loop lagged (p99 ${d.loopLagMs.p99} ms, max ${d.loopLagMs.max} ms), so agents were partly starved by the machine rather than by the policy.`);
     if (d.loadAverage1m > cpus * 1.5) out.push(`${where}: load average ${d.loadAverage1m} on ${cpus} vCPUs at the end of the cell; the machine was oversubscribed.`);

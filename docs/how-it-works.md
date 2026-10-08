@@ -69,7 +69,13 @@ not touch what another member writes (two members may read the same file). The L
 6. **commit**: the Ledger records one trunk row per transaction and the paths it changed.
 
 Exactly one train lands at a time per repo, so trunk writes are serial while all the work before
-them is parallel.
+them is parallel. The next train need not wait for the landing, though. Once a train has prepared its
+candidate, the Ledger may form a second train on top of that candidate, from the ready changes the
+first one would not make stale, and the second prepares and verifies while the first still verifies
+or is judged. It records nothing (no conflict, failure, verdict or push) until trunk is exactly the
+candidate it was built on. If the first train bisects, loses a member or fails, the second is thrown
+away and its changes wait for the next train, with no attempt or land error charged. Two trains is the
+limit, and `"pipeline": false` in `ryke.json` turns this off.
 
 ## Contention control
 
@@ -118,7 +124,7 @@ flowchart LR
   A -- "git push (smart HTTP)" --> F[(Artifacts fork repo-txn)]
   subgraph W [Worker ryke]
     API[Hono API + MCP] --> L[Ledger DO per repo<br/>SQLite: txns, access sets,<br/>trunk index, op log, heat]
-    L -- "one train at a time" --> LW[Land Workflow]
+    L -- "one train lands at a time,<br/>the next verifies behind it" --> LW[Land Workflow]
     LW --> R[Runner DO + Container<br/>land.sh · verify.sh · revert.sh]
     P[Previews: Dynamic Workers]
   end

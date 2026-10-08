@@ -115,6 +115,10 @@ export function parsePolicy(text: string | null): Policy {
     if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 64) throw new PolicyError("trainMax must be an integer 1..64");
     policy.trainMax = n;
   }
+  if (o.pipeline !== undefined) {
+    if (typeof o.pipeline !== "boolean") throw new PolicyError("pipeline must be true or false");
+    policy.pipeline = o.pipeline;
+  }
   if (o.preview !== undefined) {
     const p = o.preview as Record<string, unknown> | null;
     if (typeof p !== "object" || p === null || typeof p.main !== "string") throw new PolicyError("preview.main must be a string");

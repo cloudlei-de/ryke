@@ -3,7 +3,9 @@
 // parallel `npm test` runs with different offsets do not collide).
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { once } from "node:events";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { availableParallelism, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
@@ -11,11 +13,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { MAX_REFRESHES, runAgent } from "../../harness/agents/synthetic.mjs";
 import { caveatsFor, main as benchMain, noteFor, parseBenchArgs, runBench, startBenchStack, UsageError, writeResults } from "../../harness/bench.mjs";
-import { runCell, runVerifyCommand } from "../../harness/bench/cell.mjs";
+import { runCell, runVerifyCommand, SEED_POLICY } from "../../harness/bench/cell.mjs";
 import { ABLATION_POLICIES, BENCH_POLICIES, buildResults, isRyke, percentile, rykeOpStats, rykeVerifyRuns, summarizeCell } from "../../harness/bench/metrics.mjs";
 import { authRemote, checkTrunk, controlPlane, FifoQueue, landOne, Mutex, pickCommits, sleep } from "../../harness/bench/plumbing.mjs";
-import { lockPolicy, queuePolicy, Rejected, rykeNoLeasePolicy, rykePolicy } from "../../harness/bench/policies.mjs";
-import { chart, leaseComparison, renderMarkdown, table, verdict } from "../../harness/bench/render.mjs";
+import { lockPolicy, queuePolicy, Rejected, rykeNoLeasePolicy, rykeNoPipePolicy, rykePolicy } from "../../harness/bench/policies.mjs";
+import { chart, leaseComparison, pipelineComparison, renderMarkdown, table, verdict } from "../../harness/bench/render.mjs";
 import { inferCause, outcomeFromState, waitWhileSettling } from "../../harness/bench/settle.mjs";
 import {
   BENCH_CONSTS,
@@ -616,6 +618,24 @@ describe("the Ryke op log", () => {
   ];
   for (const [name, win, want] of cases) it(`rykeVerifyRuns: ${name}`, () => assert.equal(rykeVerifyRuns(ops, win), want));
 
+  // tr5 was formed on tr4's candidate and discarded; tr6 on tr5's and confirmed, then landed. A discarded train
+  // prepared and verified for nothing, and that cost belongs in verify runs per landed change.
+  const spec = [
+    op(100, "train.formed", { train: "tr5", txns: ["a"] }),
+    op(150, "train.formed", { train: "tr6", txns: ["b"], after: "tr5" }),
+    op(200, "train.done", { train: "tr5", outcome: "landed" }),
+    op(210, "train.confirmed", { train: "tr6", after: "tr5" }),
+    op(300, "train.done", { train: "tr6", outcome: "landed" }),
+    op(400, "train.formed", { train: "tr7", txns: ["c"], after: "tr6" }),
+    op(450, "train.done", { train: "tr7", outcome: "discarded" }),
+  ];
+  const specCases = [
+    ["a confirmed speculative train is one run, like any train", { untilAt: 300 }, 2],
+    ["a discarded one counts as a run too", {}, 3],
+    ["a discard outside the window does not", { untilAt: 400 }, 2],
+  ];
+  for (const [name, win, want] of specCases) it(`rykeVerifyRuns, speculative: ${name}`, () => assert.equal(rykeVerifyRuns(spec, win), want));
+
   it("rykeOpStats: train sizes, probes, warnings, stale and conflict causes by path", () => {
     const all = [
       ...ops,
@@ -665,6 +685,47 @@ describe("stale changes that were waiting for a train", () => {
   });
 });
 
+describe("speculative trains in the Ryke op log", () => {
+  const op = (at, kind, data) => ({ at, kind, data, txn: null });
+  const formed = (at, train, after) => op(at, "train.formed", { train, txns: ["a"], base: "b".repeat(40), ...(after === undefined ? {} : { after }) });
+  const done = (at, train, outcome) => op(at, "train.done", { train, outcome });
+  const plain = [formed(100, "t1"), done(150, "t1", "landed"), formed(200, "t2"), done(250, "t2", "empty")];
+  const log = [
+    formed(100, "t1"),
+    formed(200, "t2", "t1"),
+    op(300, "train.confirmed", { train: "t2", after: "t1" }),
+    formed(400, "t3", "t2"),
+    done(500, "t3", "discarded"),
+    formed(600, "t4", "t2"),
+    done(700, "t1", "landed"),
+    done(800, "t2", "landed"),
+    formed(900, "t5", null),
+  ];
+  const cases = [
+    ["a log of plain trains has none", plain, {}, 2, { formed: 0, confirmed: 0, discarded: 0 }],
+    ["an empty log has none", [], {}, 0, { formed: 0, confirmed: 0, discarded: 0 }],
+    ["formed with an `after`, confirmed, discarded; landed and empty do not count and `after: null` is not speculative", log, {}, 5, { formed: 3, confirmed: 1, discarded: 1 }],
+    ["a train still waiting at the end is formed but neither confirmed nor discarded", log.slice(0, 2), {}, 2, { formed: 1, confirmed: 0, discarded: 0 }],
+    ["only what happened by 350", log, { untilAt: 350 }, 2, { formed: 1, confirmed: 1, discarded: 0 }],
+    ["only what happened from 450: the discard at 500 and the later formations", log, { sinceAt: 450 }, 2, { formed: 1, confirmed: 0, discarded: 1 }],
+    ["a discard counts in the window it happened in", log, { sinceAt: 450, untilAt: 550 }, 0, { formed: 0, confirmed: 0, discarded: 1 }],
+  ];
+  for (const [name, ops, window, trains, speculative] of cases) {
+    it(`rykeOpStats: ${name}`, () => {
+      const s = rykeOpStats(ops, window);
+      assert.equal(s.trains, trains);
+      assert.deepEqual(s.speculative, speculative);
+    });
+  }
+
+  it("speculative trains are trains: they are in the size counts and never change the other numbers", () => {
+    const s = rykeOpStats(log);
+    assert.deepEqual(s.trainSizes, { 1: 5 });
+    assert.equal(s.bisectProbes, 0);
+    assert.equal(s.staleAborts, 0);
+  });
+});
+
 describe("the results JSON", () => {
   const cell = (policy, agents) => ({ policy, agents, landed: 4, landedPerMinute: 2, p50: 9.5, p95: 20, aborts: { stale_read: 1 }, verifyRunsPerLanded: 1.25, wastedAgentSeconds: 12.5, trunkBreakages: 0 });
   const cells = POLICIES.map((p) => cell(p, 10));
@@ -687,9 +748,11 @@ describe("the results JSON", () => {
   });
 
   it("accepts ablation cells as the Ryke variant they are, and still refuses a malformed one", () => {
-    const ablation = [cell("ryke", 50), cell("ryke-nolease", 50)];
+    const ablation = [cell("ryke", 50), cell("ryke-nolease", 50), cell("ryke-nopipe", 50)];
     const r = buildResults({ cells: ablation, durationSeconds: 120, note, generatedAt: "2026-10-12T10:00:00.000Z" });
-    assert.deepEqual(r.cells.map((c) => c.policy), ["ryke", "ryke-nolease"]);
+    assert.deepEqual(r.cells.map((c) => c.policy), ["ryke", "ryke-nolease", "ryke-nopipe"]);
+    assert.throws(() => buildResults({ cells: [{ ...cell("ryke-nopipe", 50), landed: Number.NaN }], durationSeconds: 1, note }), /bench\.ts/);
+    assert.throws(() => buildResults({ cells: [cell("ryke-nopipe-x", 50)], durationSeconds: 1, note }), /bench\.ts/);
     assert.throws(() => buildResults({ cells: [{ ...cell("ryke-nolease", 50), landed: Number.NaN }], durationSeconds: 1, note }), /bench\.ts/);
     assert.throws(() => buildResults({ cells: [{ ...cell("ryke-nolease", 50), aborts: [] }], durationSeconds: 1, note }), /bench\.ts/);
     assert.throws(() => buildResults({ cells: [cell("ryke-nolease-x", 50)], durationSeconds: 1, note }), /bench\.ts/);
@@ -698,9 +761,9 @@ describe("the results JSON", () => {
   // Why a run with an ablation never goes to bench/results/latest.json: parseBench in src/shared/bench.ts
   // rejects the whole file when one cell names a policy outside POLICIES. Update this when it learns the name.
   it("the dashboard's parseBench refuses a file with a policy it does not know", () => {
-    const withAblation = { generatedAt: null, durationSeconds: 1, synthetic: true, note: "n", cells: [cell("ryke", 50), cell("ryke-nolease", 50)] };
-    assert.equal(parseBench(withAblation), null);
-    assert.ok(parseBench({ ...withAblation, cells: [cell("ryke", 50)] }));
+    const file = (cells) => ({ generatedAt: null, durationSeconds: 1, synthetic: true, note: "n", cells });
+    for (const name of ABLATION_POLICIES) assert.equal(parseBench(file([cell("ryke", 50), cell(name, 50)])), null, name);
+    assert.ok(parseBench(file([cell("ryke", 50)])));
   });
 
   it("the note says what the agents are, and the time factor, seed, VM and Jev", () => {
@@ -738,7 +801,7 @@ function detail(policy, agents, over = {}) {
     loopLagMs: { p50: 20, p99: 40, max: 90 },
     loadAverage1m: 1.5,
     ledger: null,
-    ryke: policy.startsWith("ryke") ? { trains: 5, meanTrainSize: 2.4, maxTrainSize: 5, bisectProbes: 0, staleWarnings: 3, staleAborts: 4, conflictAborts: 0, trainCycleSecondsP50: 3, trainCycleSecondsP95: 5, stalePaths: { "src/format.ts": 3, "src/ui/layout.ts": 1 } } : null,
+    ryke: policy.startsWith("ryke") ? { trains: 5, meanTrainSize: 2.4, maxTrainSize: 5, bisectProbes: 0, staleWarnings: 3, staleAborts: 4, conflictAborts: 0, trainCycleSecondsP50: 3, trainCycleSecondsP95: 5, stalePaths: { "src/format.ts": 3, "src/ui/layout.ts": 1 }, speculative: { formed: 4, confirmed: 3, discarded: 1 } } : null,
     ...over,
   };
 }
@@ -850,10 +913,198 @@ describe("the report", () => {
     });
   });
 
+  describe("with speculative pipelining off", () => {
+    const pair = (n, on, off) => [cell("ryke", n, on), cell("ryke-nopipe", n, off)];
+    const stats = (over) => ({ ...detail("ryke", 1).ryke, ...over });
+    const detailsOf = (cells, byPolicy = {}) => cells.map((c) => detail(c.policy, c.agents, byPolicy[c.policy] ? { ryke: byPolicy[c.policy] } : {}));
+    const column = (cmp, name) => {
+      const at = cmp.headers.indexOf(name);
+      assert.ok(at >= 0, `no column ${name} in ${cmp.headers}`);
+      return cmp.rows.map((r) => r[at]);
+    };
+
+    it("the chart puts the ablations after ryke, in the order of BENCH_POLICIES, without breaking the bars", () => {
+      const text = chart([cell("ryke-nopipe", 50, 10), cell("ryke-nolease", 50, 15), cell("ryke", 50, 20), cell("lock", 50, 5)], { width: 40 });
+      const lines = text.split("\n").filter((l) => l.includes("|"));
+      assert.deepEqual(lines.map((l) => l.trim().split(/\s+/)[0]), ["lock", "ryke", "ryke-nolease", "ryke-nopipe"]);
+      assert.match(text, /^ {2}ryke-nopipe {2}\|#{20} *\| 10$/m);
+      assert.match(text, /^ {2}ryke {9}\|#{40}\| 20$/m);
+    });
+
+    it("the chart pads to the ablation's own name when it is the longest", () => {
+      assert.match(chart([cell("ryke", 50, 20), cell("ryke-nopipe", 50, 10)], { width: 40 }), /^ {2}ryke {8}\|#{40}\| 20$/m);
+    });
+
+    it("an ablation that beats Ryke is still not a competitor: the verdict and the ranking ignore it", () => {
+      const cells = [cell("lock", 50, 3), cell("queue", 50, 4), ...pair(50, 9, 30)];
+      const results = buildResults({ cells, durationSeconds: 60, note: "n", generatedAt: null });
+      const md = renderMarkdown({ results, details: detailsOf(cells), meta: {} });
+      assert.match(md, /Ryke has the highest landed\/min at every N >= 50/);
+      assert.match(md, /\| 50 +\| ryke 9 > queue 4 > lock 3 +\| ryke +\|/);
+      assert.doesNotMatch(md, /ryke-nopipe \d+ >/);
+    });
+
+    const comparison = [
+      ["pipelining wins", pair(50, 24, 20), "+20 %"],
+      ["pipelining loses", pair(50, 15, 20), "-25 %"],
+      ["equal", pair(50, 20, 20), "+0 %"],
+      ["nothing lands without pipelining", pair(50, 20, 0), "n/a"],
+    ];
+    for (const [name, cells, delta] of comparison) {
+      it(`pipelineComparison, ${name}: ${delta}`, () => {
+        const withAborts = cells.map((c) => ({ ...c, aborts: { stale_read: c.policy === "ryke" ? 2 : 7, max_attempts: 1 } }));
+        const cmp = pipelineComparison(withAborts, detailsOf(withAborts));
+        assert.deepEqual(column(cmp, "policy"), ["ryke", "ryke-nopipe"]);
+        assert.deepEqual(column(cmp, "stale_read aborts"), [2, 7]);
+        assert.deepEqual(column(cmp, "max_attempts"), [1, 1]);
+        assert.equal(cmp.lines.length, 1);
+        assert.ok(cmp.lines[0].includes(`(${delta})`), cmp.lines[0]);
+        assert.match(cmp.lines[0], /^- 50 agents: pipelining on lands \d+\/min against \d+\/min with pipelining off/);
+      });
+    }
+
+    it("pipelineComparison: every column of a row, from the cell and from the Ryke op stats", () => {
+      const cells = [
+        { ...cell("ryke", 50, 24), p50: 11.5, p95: 30, verifyRunsPerLanded: 1.4, wastedAgentSeconds: 120.5, aborts: { stale_read: 5, max_attempts: 2 } },
+        { ...cell("ryke-nopipe", 50, 20), p50: 14, p95: 41.25, verifyRunsPerLanded: 1.1, wastedAgentSeconds: 180, aborts: { stale_read: 9 } },
+      ];
+      const cmp = pipelineComparison(
+        cells,
+        detailsOf(cells, { ryke: stats({ trains: 31, staleWhileReady: 6, speculative: { formed: 12, confirmed: 9, discarded: 3 } }), "ryke-nopipe": stats({ trains: 22, staleWhileReady: 11, speculative: { formed: 0, confirmed: 0, discarded: 0 } }) }),
+      );
+      assert.deepEqual(cmp.headers, ["agents", "policy", "landed/min", "p50 s", "p95 s", "verify runs/landed", "wasted agent-s", "stale_read aborts", "stale while ready", "max_attempts", "trains formed", "speculative (formed / confirmed / discarded)"]);
+      assert.deepEqual(cmp.rows, [
+        [50, "ryke", "24", "11.5", "30", "1.4", "120.5", 5, 6, 2, 31, "12 / 9 / 3"],
+        [50, "ryke-nopipe", "20", "14", "41.25", "1.1", "180", 9, 11, 0, 22, "0 / 0 / 0"],
+      ]);
+      assert.deepEqual(cmp.lines, ["- 50 agents: pipelining on lands 24/min against 20/min with pipelining off (+20 %); p95 30 s against 41.25 s; verify runs per landed change 1.4 against 1.1; wasted agent-seconds 120.5 against 180; speculative trains 12 formed, 9 confirmed, 3 discarded."]);
+    });
+
+    it("pipelineComparison: details from before the speculative counts existed show a dash, and the line drops the sentence", () => {
+      const cells = pair(50, 24, 20);
+      const old = { ...detail("ryke", 50).ryke };
+      delete old.speculative;
+      delete old.trains;
+      const cmp = pipelineComparison(cells, detailsOf(cells, { ryke: old, "ryke-nopipe": old }));
+      assert.deepEqual(column(cmp, "speculative (formed / confirmed / discarded)"), ["-", "-"]);
+      assert.deepEqual(column(cmp, "trains formed"), ["-", "-"]);
+      assert.doesNotMatch(cmp.lines[0], /speculative/);
+      const none = pipelineComparison(cells, []);
+      assert.deepEqual(column(none, "stale while ready"), ["-", "-"]);
+    });
+
+    it("pipelineComparison pairs by agent count and shows a lone ablation cell without a delta", () => {
+      const cells = [...pair(10, 5, 4), cell("ryke-nopipe", 50, 9), cell("ryke", 100, 30)];
+      const cmp = pipelineComparison(cells, detailsOf(cells));
+      assert.deepEqual(cmp.rows.map((r) => `${r[0]} ${r[1]}`), ["10 ryke", "10 ryke-nopipe", "50 ryke-nopipe"]);
+      assert.equal(cmp.lines.length, 1);
+      assert.match(cmp.lines[0], /^- 10 agents/);
+    });
+
+    it("pipelineComparison ignores the other ablation: each pairs against plain ryke only", () => {
+      const cells = [cell("ryke", 50, 20), cell("ryke-nolease", 50, 15), cell("ryke-nopipe", 50, 10)];
+      const details = detailsOf(cells);
+      assert.deepEqual(pipelineComparison(cells, details).rows.map((r) => r[1]), ["ryke", "ryke-nopipe"]);
+      assert.deepEqual(leaseComparison(cells, details).rows.map((r) => r[1]), ["ryke", "ryke-nolease"]);
+    });
+
+    it("pipelineComparison is empty, and the section absent, when no nopipe cell ran", () => {
+      assert.deepEqual(pipelineComparison([cell("ryke", 50, 9), cell("ryke-nolease", 50, 3), cell("lock", 50, 3)], []).rows, []);
+      assert.deepEqual(pipelineComparison([cell("ryke", 50, 9)], []).lines, []);
+      const cells = pair(50, 24, 20).slice(0, 1);
+      const results = buildResults({ cells, durationSeconds: 60, note: "n", generatedAt: null });
+      assert.doesNotMatch(renderMarkdown({ results, details: detailsOf(cells), meta: {} }), /Speculative pipelining on and off|ryke-nopipe/);
+    });
+
+    it("the markdown has the pipelining section with both policies, and no lease section", () => {
+      const cells = pair(50, 24, 20);
+      const results = buildResults({ cells, durationSeconds: 120, note: noteFor({ factor: 1, seed: 7 }), generatedAt: "2026-10-12T10:00:00.000Z" });
+      const details = detailsOf(cells, { "ryke-nopipe": stats({ speculative: { formed: 0, confirmed: 0, discarded: 0 } }) });
+      const md = renderMarkdown({ results, details, meta: { caveats: caveatsFor(details) } });
+      for (const part of ["## Speculative pipelining on and off", "`ryke-nopipe` is Ryke with `pipeline: false`", "pipelining on lands 24/min against 20/min with pipelining off (+20 %)", "speculative trains 4 formed, 3 confirmed, 1 discarded", "| speculative (formed / confirmed / discarded) |", "0 / 0 / 0"]) assert.ok(md.includes(part), part);
+      assert.doesNotMatch(md, /Write leases on and off/);
+      assert.equal((md.match(/^\| ryke(-nopipe)? +\| 50 /gm) ?? []).length >= 4, true, "both policies appear in every per-cell table");
+    });
+
+    it("a run with both ablations gets two tables, each against plain ryke, the lease one first", () => {
+      const cells = [...pair(50, 24, 20), cell("ryke-nolease", 50, 18), ...pair(100, 30, 25), cell("ryke-nolease", 100, 22)];
+      const results = buildResults({ cells, durationSeconds: 120, note: "n", generatedAt: "2026-10-12T10:00:00.000Z" });
+      const md = renderMarkdown({ results, details: detailsOf(cells), meta: {} });
+      const sections = Object.fromEntries(md.split(/^## /m).slice(1).map((s) => [s.split("\n")[0], s]));
+      const rowsOf = (title) => (sections[title].match(/^\| \d+ +\| (ryke\S*) /gm) ?? []).map((r) => r.replace(/^\| \d+ +\| /, "").trim());
+      assert.deepEqual(rowsOf("Write leases on and off"), ["ryke", "ryke-nolease", "ryke", "ryke-nolease"]);
+      assert.deepEqual(rowsOf("Speculative pipelining on and off"), ["ryke", "ryke-nopipe", "ryke", "ryke-nopipe"]);
+      assert.ok(md.indexOf("## Write leases on and off") < md.indexOf("## Speculative pipelining on and off"));
+      assert.ok(md.indexOf("## Speculative pipelining on and off") < md.indexOf("## Every cell"));
+      assert.match(sections["Write leases on and off"], /leases on land 24\/min against 18\/min with leases off/);
+      assert.match(sections["Speculative pipelining on and off"], /pipelining on lands 24\/min against 20\/min with pipelining off/);
+    });
+
+    it("a run with only the lease ablation renders the lease section exactly as before", () => {
+      const cells = [cell("ryke", 50, 24), cell("ryke-nolease", 50, 20)].map((c) => ({ ...c, aborts: { stale_read: c.policy === "ryke" ? 2 : 7, max_attempts: 1 } }));
+      const results = buildResults({ cells, durationSeconds: 120, note: "n", generatedAt: "2026-10-12T10:00:00.000Z" });
+      const md = renderMarkdown({ results, details: cells.map((c) => detail(c.policy, c.agents, c.policy === "ryke-nolease" ? { leaseWaits: 0 } : {})), meta: {} });
+      const section = md.slice(md.indexOf("## Write leases on and off"), md.indexOf("## Every cell"));
+      assert.equal(
+        section,
+        [
+          "## Write leases on and off",
+          "",
+          "`ryke-nolease` is Ryke with the same agents and the same refresh on a stale warning, but the agents never take write leases.",
+          "",
+          "| agents | policy       | landed/min | p50 s | p95 s | wasted agent-s | stale_read aborts | max_attempts | refreshes | lease waits | stale while ready |",
+          "| ------ | ------------ | ---------- | ----- | ----- | -------------- | ----------------- | ------------ | --------- | ----------- | ----------------- |",
+          "| 50     | ryke         | 24         | 8     | 16.5  | 4              | 2                 | 1            | 2         | 1 (0 s)     | 0                 |",
+          "| 50     | ryke-nolease | 20         | 8     | 16.5  | 4              | 7                 | 1            | 2         | 0 (0 s)     | 0                 |",
+          "",
+          "- 50 agents: leases on land 24/min against 20/min with leases off (+20 %); stale_read aborts 2 against 7; wasted agent-seconds 4 against 4.",
+          "",
+          "",
+        ].join("\n"),
+      );
+      assert.doesNotMatch(md, /Speculative pipelining|nopipe/);
+    });
+  });
+
   it("the markdown says plainly when Ryke does not win", () => {
     const cells = [cell("ryke", 50, 3), cell("queue", 50, 6)];
     const results = buildResults({ cells, durationSeconds: 60, note: "n", generatedAt: null });
     assert.match(renderMarkdown({ results, details: cells.map((c) => detail(c.policy, c.agents)), meta: {} }), /does NOT have the highest/);
+  });
+
+  describe("the ablation caveats", () => {
+    const NOLEASE = "`ryke-nolease` is Ryke with write leases off: identical agents and refresh on a stale warning, but they never call intend-write.";
+    const NOPIPE = "`ryke-nopipe` is Ryke with speculative pipelining off (`pipeline: false` in the seeded ryke.json): identical agents and leases, but the Ledger forms one train at a time.";
+    const DASHBOARD = "The dashboard's results format only knows lock, queue and ryke, so this run is not written to bench/results/latest.json.";
+    // A nopipe cell that really ran without pipelining formed no speculative train.
+    const stats = (speculative) => ({ ...detail("ryke", 50).ryke, speculative });
+    const none = { formed: 0, confirmed: 0, discarded: 0 };
+    const cellOf = (policy, agents = 50, speculative = none) => detail(policy, agents, policy === "ryke-nopipe" ? { ryke: stats(speculative) } : {});
+    const ablationLines = (policies) => caveatsFor(policies.map((p) => cellOf(p))).filter((l) => /ablation|dashboard|^`ryke-no/.test(l));
+    const cases = [
+      ["no ablation: no line at all", ["lock", "queue", "ryke"], []],
+      ["only the lease ablation: the text it always had, in one line", ["ryke", "ryke-nolease"], [`${NOLEASE} ${DASHBOARD}`]],
+      ["only the pipelining ablation", ["ryke", "ryke-nopipe"], [`${NOPIPE} ${DASHBOARD}`]],
+      ["both: one line, the dashboard sentence once", ["ryke", "ryke-nolease", "ryke-nopipe"], [`${NOLEASE} ${NOPIPE} ${DASHBOARD}`]],
+      ["a lone ablation cell without plain ryke", ["ryke-nopipe"], [`${NOPIPE} ${DASHBOARD}`]],
+    ];
+    for (const [name, policies, want] of cases) it(name, () => assert.deepEqual(ablationLines(policies), want));
+
+    it("says so when the ablation did not take effect: a ryke-nopipe cell that formed speculative trains", () => {
+      const lines = caveatsFor([cellOf("ryke-nopipe", 50, { formed: 3, confirmed: 2, discarded: 1 }), cellOf("ryke-nopipe", 100)]);
+      assert.ok(lines.some((l) => l === "ryke-nopipe x 50: 3 speculative train(s) formed although pipelining was off, so the ablation did not take effect."), lines.join("\n"));
+      assert.equal(lines.filter((l) => l.includes("did not take effect")).length, 1);
+    });
+
+    for (const [name, ryke] of [["none formed", stats(none)], ["details from before the counts existed", { trains: 4 }], ["no Ryke stats at all", null]]) {
+      it(`stays quiet about the ablation taking effect when ${name}`, () => {
+        assert.ok(!caveatsFor([detail("ryke-nopipe", 50, { ryke })]).some((l) => l.includes("did not take effect")));
+      });
+    }
+
+    it("plain ryke forming speculative trains is the point, not a caveat", () => {
+      assert.ok(!caveatsFor([detail("ryke", 50)]).some((l) => l.includes("did not take effect")));
+    });
   });
 
   it("caveatsFor flags errors, a starved event loop, an oversubscribed machine and a busy lander", () => {
@@ -890,9 +1141,14 @@ describe("the command line", () => {
     [[], ["lock", "queue", "ryke"], "bench/results"],
     [["--policy", "ryke,ryke-nolease"], ["ryke", "ryke-nolease"], "bench/results/ablation"],
     [["--policy", "ryke-nolease"], ["ryke-nolease"], "bench/results/ablation"],
+    [["--policy", "ryke,ryke-nopipe"], ["ryke", "ryke-nopipe"], "bench/results/ablation"],
+    [["--policy", "ryke-nopipe"], ["ryke-nopipe"], "bench/results/ablation"],
+    [["--policy", "ryke,ryke-nolease,ryke-nopipe"], ["ryke", "ryke-nolease", "ryke-nopipe"], "bench/results/ablation"],
     [["--policy", "lock,queue,ryke,ryke-nolease"], ["lock", "queue", "ryke", "ryke-nolease"], "bench/results/ablation"],
+    [["--policy", "lock,queue,ryke,ryke-nolease,ryke-nopipe"], ["lock", "queue", "ryke", "ryke-nolease", "ryke-nopipe"], "bench/results/ablation"],
     [["--policy", "queue,ryke"], ["queue", "ryke"], "bench/results"],
     [["--policy", "ryke,ryke-nolease", "--out", "/tmp/x"], ["ryke", "ryke-nolease"], "/tmp/x"],
+    [["--policy", "ryke,ryke-nopipe", "--out", "/tmp/x"], ["ryke", "ryke-nopipe"], "/tmp/x"],
     [["--policy", "ryke", "--out", "bench/other"], ["ryke"], "bench/other"],
   ];
   for (const [argv, policies, out] of policyCases) {
@@ -905,14 +1161,18 @@ describe("the command line", () => {
     });
   }
 
-  it("the policy names are the dashboard's three plus the one ablation", () => {
-    assert.deepEqual(BENCH_POLICIES, [...POLICIES, "ryke-nolease"]);
-    for (const [name, want] of [["ryke", true], ["ryke-nolease", true], ["lock", false], ["queue", false], ["ryke2", false], ["nolease", false]]) assert.equal(isRyke(name), want, name);
+  it("the policy names are the dashboard's three plus the two ablations", () => {
+    assert.deepEqual(ABLATION_POLICIES, ["ryke-nolease", "ryke-nopipe"]);
+    assert.deepEqual(BENCH_POLICIES, [...POLICIES, "ryke-nolease", "ryke-nopipe"]);
+    for (const [name, want] of [["ryke", true], ["ryke-nolease", true], ["ryke-nopipe", true], ["lock", false], ["queue", false], ["ryke2", false], ["nolease", false], ["nopipe", false], ["ryke-nopipe2", false]]) assert.equal(isRyke(name), want, name);
   });
 
   const bad = [
     [["--policy", "nolease"], /--policy/],
     [["--policy", "ryke-nolease2"], /--policy/],
+    [["--policy", "nopipe"], /--policy/],
+    [["--policy", "ryke-nopipe2"], /--policy/],
+    [["--policy", "ryke-nopipes"], /--policy/],
     [["--policy", "ryke,,Ryke"], /--policy/],
     [["--agents", "0"], /--agents/],
     [["--agents", "ten"], /--agents/],
@@ -999,6 +1259,21 @@ describe("runBench", () => {
     }
     assert.ok(out.some((l) => l.includes("usage: bench.mjs")));
     assert.ok(out.some((l) => l.includes("--agents")));
+  });
+
+  it("the usage names both ablations, says what each switches off, and where a run with one is written", async () => {
+    const log = console.log;
+    const out = [];
+    console.log = (...a) => out.push(a.join(" "));
+    try {
+      await benchMain(["--help"]);
+    } finally {
+      console.log = log;
+    }
+    const usage = out.join("\n");
+    assert.match(usage, /ryke-nolease \(Ryke with write leases off/);
+    assert.match(usage, /ryke-nopipe \(Ryke with speculative pipelining off/);
+    assert.match(usage, /includes either ablation writes to bench\/results\/ablation by default/);
   });
 });
 
@@ -1512,7 +1787,7 @@ describe("the policies against fakes", () => {
     });
 
     // Refresh on a warning is the part the two share, so it must behave the same.
-    for (const [name, build] of [["ryke", rykePolicy], ["ryke-nolease", rykeNoLeasePolicy]]) {
+    for (const [name, build] of [["ryke", rykePolicy], ["ryke-nolease", rykeNoLeasePolicy], ["ryke-nopipe", rykeNoPipePolicy]]) {
       it(`${name}: refresh and think behave identically`, async () => {
         const args = make();
         const p = build(args);
@@ -1525,6 +1800,28 @@ describe("the policies against fakes", () => {
         assert.equal(kind, "t");
       });
     }
+  });
+
+  describe("ryke-nopipe", () => {
+    const make = (extra = {}) => ({ api: fakeApi(extra), repo: "r", clock: clockOf(), stats: { refreshes: 0, leaseWaits: 0, leaseWaitMs: 0, leaseGaveUp: 0 } });
+
+    // The switch lives in the repo's ryke.json (see SEED_POLICY), not in the agents: they are Ryke's, leases included.
+    it("is Ryke's agents under another name, with every tool including the lease one", () => {
+      const ryke = rykePolicy(make());
+      const nopipe = rykeNoPipePolicy(make());
+      assert.deepEqual([ryke.name, nopipe.name], ["ryke", "ryke-nopipe"]);
+      assert.deepEqual(Object.keys(nopipe).sort(), Object.keys(ryke).sort());
+      assert.equal(typeof nopipe.admit, "function");
+      for (const k of Object.keys(ryke)) assert.equal(typeof nopipe[k], typeof ryke[k], k);
+    });
+
+    it("takes write leases like ryke does: a held file makes it wait", async () => {
+      let held = 1;
+      const args = make({ intendWrite: async () => (held-- > 0 ? { go: false, owner: "t_1", retryAfterMs: 5 } : { go: true }) });
+      const r = await rykeNoPipePolicy(args).admit({ id: "t_9" }, ["src/format.ts"]);
+      assert.deepEqual(r, { waited: true });
+      assert.equal(args.stats.leaseWaits, 1);
+    });
   });
 
   it("lock and queue have neither leases nor refresh", () => {
@@ -1791,6 +2088,7 @@ describe("the synthetic agent against a local git remote", () => {
   const leaseCases = [
     ["ryke", rykePolicy, true],
     ["ryke-nolease", rykeNoLeasePolicy, false],
+    ["ryke-nopipe", rykeNoPipePolicy, true],
   ];
   for (const [name, build, leases] of leaseCases) {
     it(`${name}: a held hot file ${leases ? "makes the agent wait" : "is never asked about"}`, async () => {
@@ -1959,6 +2257,50 @@ describe("the trunk check", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// What a cell asks the platform for first: its repo, with the ryke.json the policy needs. A platform that
+// answers the create and then refuses everything else stops the cell right there, with no stack needed.
+// ---------------------------------------------------------------------------------------------
+describe("the repo a cell creates", () => {
+  let server;
+  let base;
+  const requests = [];
+  before(async () => {
+    server = createServer(async (req, res) => {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const raw = Buffer.concat(chunks).toString();
+      requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : null });
+      const created = req.method === "POST" && req.url === "/api/repos";
+      res.writeHead(created ? 201 : 404, { "content-type": "application/json" });
+      res.end(JSON.stringify(created ? { repo: JSON.parse(raw).name, head: "a".repeat(40) } : { error: "stop here" }));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    base = `http://127.0.0.1:${server.address().port}`;
+  });
+  after(async () => {
+    await new Promise((r) => server.close(r));
+  });
+
+  it("only ryke-nopipe seeds a ryke.json of its own, and it turns pipelining off", () => {
+    assert.deepEqual(SEED_POLICY, { "ryke-nopipe": { pipeline: false } });
+    for (const p of BENCH_POLICIES) assert.deepEqual(SEED_POLICY[p], p === "ryke-nopipe" ? { pipeline: false } : undefined, p);
+  });
+
+  for (const policy of BENCH_POLICIES) {
+    const override = policy === "ryke-nopipe";
+    it(`${policy}: POST /api/repos ${override ? "carries policy { pipeline: false }" : "carries no policy at all"}`, async () => {
+      requests.length = 0;
+      const stack = { apiUrl: base, token: "t", storePort: 1, runnerPort: 2, internalSecret: "s", stateDir: tmp };
+      await assert.rejects(runCell({ policy, agents: 3, durationS: 5, stack }), (e) => e.status === 404 && /stop here/.test(e.message));
+      assert.deepEqual(requests[0], { method: "POST", path: "/api/repos", body: { name: `bench-${policy}-3`, seedFrom: "convert", fresh: true, ...(override ? { policy: { pipeline: false } } : {}) } });
+      assert.equal("policy" in requests[0].body, override);
+      assert.deepEqual(requests.slice(1).map((r) => `${r.method} ${r.path}`), ["GET /api/repos/bench-" + policy + "-3"], "the cell goes on to read the repo and nothing else before it fails");
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
 // One tiny real cell per policy: real git, real runner jobs, real tests, on a private stack.
 // ---------------------------------------------------------------------------------------------
 const STACK_OFFSET = 210 + 3 * Number(process.env.RYKE_PORT_OFFSET ?? 0);
@@ -1993,6 +2335,9 @@ describe(`real cells (3 agents, 20 s) on a private stack at offset ${STACK_OFFSE
         assert.ok(detail.ryke.trains >= 1);
       }
       if (policy === "ryke-nolease") assert.deepEqual([detail.leaseWaits, detail.leaseWaitSeconds, detail.leaseGaveUp], [0, 0, 0]);
+      // The speculative counts are always there for Ryke; with pipelining off the Ledger never forms a second train.
+      if (isRyke(policy)) assert.deepEqual(Object.keys(detail.ryke.speculative), ["formed", "confirmed", "discarded"]);
+      if (policy === "ryke-nopipe") assert.deepEqual(detail.ryke.speculative, { formed: 0, confirmed: 0, discarded: 0 });
     });
   }
 });

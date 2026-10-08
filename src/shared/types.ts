@@ -26,6 +26,8 @@ export type Policy = {
   human: string[];
   trainMax: number;
   preview?: { main: string };
+  // Speculative trains (PLAN.md §5.6); absent means on.
+  pipeline?: boolean;
 };
 
 export type Txn = {
@@ -72,6 +74,7 @@ export const OP_KINDS = [
   "trunk.diverged",
   "train.formed",
   "train.bisect",
+  "train.confirmed",
   "train.done",
   "stale.warning",
   "heat.changed",

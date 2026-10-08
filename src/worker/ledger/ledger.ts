@@ -58,7 +58,21 @@ type TxnRow = {
   commit_sha: string | null;
 };
 
-type TrainRow = { id: string; base: string; base_seq: number; txns: string; state: string; created_at: number; updated_at: number; detail: string };
+type TrainRow = {
+  id: string;
+  base: string;
+  base_seq: number;
+  txns: string;
+  state: string;
+  created_at: number;
+  updated_at: number;
+  detail: string;
+  pred: string | null;
+  candidate: string | null;
+  candidate_paths: string | null;
+  candidate_seq: number | null;
+  confirmed: number;
+};
 
 export type TrainTxn = {
   id: string;
@@ -72,7 +86,9 @@ export type TrainTxn = {
   criteria: string[];
   approved: boolean;
 };
-export type TrainParams = { repo: string; trainId: string; base: string; baseSeq: number; txns: TrainTxn[] };
+// `after` names the train this one was built on (PLAN.md §5.6): `base` is then that train's candidate,
+// not trunk, and the train must wait for its turn before it records or pushes anything.
+export type TrainParams = { repo: string; trainId: string; base: string; baseSeq: number; txns: TrainTxn[]; after?: string };
 
 export type BeginInput = { agent: string; model?: string | null; intent: string; criteria?: string[] };
 export type BeginResult = {
@@ -117,6 +133,7 @@ export type RepoSummary = {
   inflight: { txn: string; agent: string; intent: string; state: string; footprint: string[] }[];
   heat: { path: string; value: number; hot: boolean }[];
   train: string | null;
+  speculative: string | null;
 };
 type RevertJob = {
   ok: boolean;
@@ -165,6 +182,8 @@ const STUCK_TRAIN_MS = 120_000;
 const GIVE_UP_TRAIN_MS = 30 * 60_000;
 // A train in any other state has ended; `committed` means trunk moved and only trainDone is left.
 const LIVE_TRAIN = ["running", "bisecting", "judging", "committed"];
+// Before `committed` a train's candidate may still change or never land, so a train built on it waits.
+const PRE_COMMIT = ["running", "bisecting", "judging"];
 const MAX_CAS_REJECTIONS = 3;
 const MAX_LAND_ERRORS = 3;
 
@@ -569,7 +588,7 @@ export class Ledger extends DurableObject<Env> {
         .sort((a, b) => b.value - a.value)
         .slice(0, 20)
         .map((h) => ({ ...h, hot: isHot(h.value) }));
-      return { repo, head: head.sha, seq: head.seq, policy: this.policy(), counts, inflight, heat, train: this.meta("train") };
+      return { repo, head: head.sha, seq: head.seq, policy: this.policy(), counts, inflight, heat, train: this.meta("train"), speculative: this.meta("spec") };
     });
   }
 
@@ -1026,6 +1045,7 @@ export class Ledger extends DurableObject<Env> {
     this.expireLeases();
     this.revalidateReady();
     await this.maybeFormTrain();
+    // A speculative train only exists while the train it was built on does.
     if (this.meta("train")) await this.ctx.storage.setAlarm(this.now() + WATCHDOG_MS);
   }
 
@@ -1066,20 +1086,41 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private async maybeFormTrain(): Promise<void> {
-    const inflight = this.meta("train");
-    if (inflight) {
-      await this.watchdog(inflight);
-      return;
-    }
+    for (const live of [this.meta("train"), this.meta("spec")]) if (live) await this.watchdog(live);
     if (this.meta("autoland") === "0") return;
     await this.startTrain(false);
   }
 
+  private trainRow(id: string): TrainRow | undefined {
+    return this.sql.exec<TrainRow>("SELECT * FROM train WHERE id = ?", id).toArray()[0];
+  }
+
+  // The train the lander runs now, or a second one on that train's candidate (PLAN.md §5.6), while
+  // the first verifies or is judged. A bisecting train's candidate is about to change, so nothing is
+  // built on it; and two trains is the limit.
   private async startTrain(manual: boolean): Promise<TrainParams | null> {
-    if (this.meta("train") || this.recalling) return null;
+    if (this.recalling || this.meta("spec")) return null;
+    const lead = this.meta("train");
     if (await this.trunkDiverged()) return null;
     const policy = this.policy();
-    const ready = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE state = 'ready' ORDER BY submitted_at, id").toArray();
+    let pred: TrainRow | null = null;
+    if (lead) {
+      const t = this.trainRow(lead);
+      if (policy.pipeline === false || !t?.candidate || !["running", "judging"].includes(t.state)) return null;
+      pred = t;
+    }
+    const all = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE state = 'ready' ORDER BY submitted_at, id").toArray();
+    // A change that touches what the train ahead changes would be stale the moment that train lands.
+    const pending = pred ? (JSON.parse(pred.candidate_paths ?? "[]") as string[]) : [];
+    const ready =
+      pending.length === 0
+        ? all
+        : all.filter((r) => {
+            const changed = this.changedSince(r.snapshot_seq);
+            for (const path of pending) changed.set(path, pred!.candidate_seq!);
+            const input = { reads: this.access(r.id, r.attempt, "read"), writes: this.access(r.id, r.attempt, "write"), created: this.created(r) };
+            return validate({ ...input, changedSinceSnapshot: changed, policy }).ok;
+          });
     if (ready.length === 0) return null;
     const footprints = new Map(
       ready.map((r) => [r.id, [...new Set([...this.access(r.id, r.attempt, "read"), ...this.access(r.id, r.attempt, "write")])]]),
@@ -1096,7 +1137,8 @@ export class Ledger extends DurableObject<Env> {
     );
     if (train.length === 0) return null;
     const trainId = newId("tr_");
-    const head = this.head();
+    const trunk = this.head();
+    const head = pred ? { sha: pred.candidate!, seq: pred.candidate_seq! } : trunk;
     const now = this.now();
     const members: TrainTxn[] = [];
     for (const id of train) {
@@ -1115,19 +1157,21 @@ export class Ledger extends DurableObject<Env> {
       });
       this.transition(r, "verifying", { set: { train: trainId }, data: { train: trainId } });
     }
-    for (const id of skipped) this.sql.exec("UPDATE txn SET skips = skips + 1 WHERE id = ?", id);
+    // A speculative train may be thrown away, so only a train on trunk counts towards fairness.
+    if (!pred) for (const id of skipped) this.sql.exec("UPDATE txn SET skips = skips + 1 WHERE id = ?", id);
     this.sql.exec(
-      "INSERT INTO train (id, base, base_seq, txns, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', ?, ?)",
+      "INSERT INTO train (id, base, base_seq, txns, state, created_at, updated_at, pred) VALUES (?, ?, ?, ?, 'running', ?, ?, ?)",
       trainId,
       head.sha,
       head.seq,
       JSON.stringify(train),
       now,
       now,
+      pred?.id ?? null,
     );
-    this.setMeta("train", trainId);
-    this.op("train.formed", null, { train: trainId, txns: train, base: head.sha, baseSeq: head.seq });
-    const params: TrainParams = { repo: this.repo(), trainId, base: head.sha, baseSeq: head.seq, txns: members };
+    this.setMeta(pred ? "spec" : "train", trainId);
+    this.op("train.formed", null, { train: trainId, txns: train, base: head.sha, baseSeq: head.seq, ...(pred ? { after: pred.id } : {}) });
+    const params: TrainParams = { repo: this.repo(), trainId, base: head.sha, baseSeq: head.seq, txns: members, ...(pred ? { after: pred.id } : {}) };
     if (!manual) {
       try {
         await this.env.LAND.create({ id: trainId, params });
@@ -1146,9 +1190,9 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private async watchdog(trainId: string): Promise<void> {
-    const t = this.sql.exec<TrainRow>("SELECT * FROM train WHERE id = ?", trainId).toArray()[0];
+    const t = this.trainRow(trainId);
     if (!t) {
-      this.setMeta("train", null);
+      for (const key of ["train", "spec"]) if (this.meta(key) === trainId) this.setMeta(key, null);
       return;
     }
     const idle = this.now() - t.updated_at;
@@ -1162,8 +1206,8 @@ export class Ledger extends DurableObject<Env> {
     }
     if (["running", "queued", "waiting", "paused", "waitingForPause", "unknown"].includes(status) && idle < GIVE_UP_TRAIN_MS) return;
     // The workflow may have reported in while the lookup was in flight.
-    const now = this.sql.exec<TrainRow>("SELECT * FROM train WHERE id = ?", trainId).toArray()[0];
-    if (this.meta("train") !== trainId || !now || !LIVE_TRAIN.includes(now.state)) return;
+    const now = this.trainRow(trainId);
+    if (![this.meta("train"), this.meta("spec")].includes(trainId) || !now || !LIVE_TRAIN.includes(now.state)) return;
     this.endTrain(trainId, "error", JSON.parse(t.txns) as string[], { error: `land workflow ${status}` });
   }
 
@@ -1187,10 +1231,14 @@ export class Ledger extends DurableObject<Env> {
 
   // Requeues whatever the train still holds and frees the lander for the next train.
   private endTrain(trainId: string, outcome: string, members: string[], extra: Record<string, unknown> = {}, nextInMs = SCHEDULE_MS): void {
+    const row = this.trainRow(trainId);
+    // A speculative train that never got its turn ran on a trunk that did not exist yet; whatever went
+    // wrong there (its base ref vanished with a failed predecessor, say) is not its members' doing.
+    const charged = outcome === "error" && !(row?.pred && !row.confirmed);
     for (const id of members) {
       const r = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE id = ?", id).toArray()[0];
       if (r?.state !== "verifying" || r.train !== trainId) continue;
-      const errors = ((this.detailOf(r).landErrors as number | undefined) ?? 0) + (outcome === "error" ? 1 : 0);
+      const errors = ((this.detailOf(r).landErrors as number | undefined) ?? 0) + (charged ? 1 : 0);
       if (errors >= MAX_LAND_ERRORS)
         this.transition(r, "failed", { reason: "land_error", set: { train: null }, detail: { landErrors: errors }, data: { train: trainId, error: extra.error ?? null } });
       else this.transition(r, "ready", { set: { train: null }, detail: { landErrors: errors }, data: { train: trainId, requeued: true } });
@@ -1198,9 +1246,41 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec("UPDATE train SET state = ?, updated_at = ?, detail = ? WHERE id = ?", outcome, this.now(), JSON.stringify(extra), trainId);
     if (outcome === "cas_rejected") this.setMeta("cas_rejections", String(Number(this.meta("cas_rejections") ?? 0) + 1));
     else if (outcome === "landed") this.setMeta("cas_rejections", null);
-    if (this.meta("train") === trainId) this.setMeta("train", null);
     this.op("train.done", null, { train: trainId, outcome, ...extra });
+    if (this.meta("spec") === trainId) this.setMeta("spec", null);
+    if (this.meta("train") === trainId) {
+      this.setMeta("train", null);
+      const spec = this.meta("spec");
+      const next = spec ? this.trainRow(spec) : undefined;
+      if (spec && next) {
+        // The train behind takes over the lander when trunk is now exactly what it was built on (or it
+        // already went); otherwise its base never happened and it is thrown away.
+        if (next.confirmed || (outcome === "landed" && this.head().sha === next.base)) {
+          this.setMeta("spec", null);
+          this.setMeta("train", spec);
+          if (!next.confirmed) {
+            this.sql.exec("UPDATE train SET confirmed = 1 WHERE id = ?", spec);
+            this.op("train.confirmed", null, { train: spec, after: trainId });
+          }
+        } else this.discard(spec);
+      }
+    }
     this.scheduleSoon(nextInMs);
+  }
+
+  // `trainId` will not land the candidate it reported (a member left, or it bisects): nothing more may be
+  // built on that candidate, and a speculative train already on it that has not had its turn is ended.
+  private dropCandidate(trainId: string): void {
+    this.sql.exec("UPDATE train SET candidate = NULL, candidate_paths = NULL, candidate_seq = NULL WHERE id = ?", trainId);
+    const spec = this.meta("spec");
+    const t = spec ? this.trainRow(spec) : undefined;
+    if (spec && t && t.pred === trainId && !t.confirmed) this.discard(spec);
+  }
+
+  private discard(trainId: string): void {
+    const t = this.trainRow(trainId);
+    if (t && LIVE_TRAIN.includes(t.state)) this.endTrain(trainId, "discarded", JSON.parse(t.txns) as string[]);
+    else if (this.meta("spec") === trainId) this.setMeta("spec", null);
   }
 
   // ---------------------------------------------------------------- Land Workflow callbacks
@@ -1235,6 +1315,7 @@ export class Ledger extends DurableObject<Env> {
   async trainProbe(trainId: string, txns: string[], pass: boolean): Promise<Res<{ ok: true }>> {
     return this.run(() => {
       this.touchTrain(trainId, "bisecting");
+      this.dropCandidate(trainId);
       this.op("train.bisect", null, { train: trainId, probe: txns, pass });
       return { ok: true as const };
     });
@@ -1287,7 +1368,50 @@ export class Ledger extends DurableObject<Env> {
       this.touchTrain(trainId);
       const r = this.member(trainId, txnId);
       if (!r) return { state: null };
+      // A member leaving means the train will not land the candidate it reported.
+      this.dropCandidate(trainId);
       return { state: this.transition(r, outcome, { reason, set: { train: null }, detail, data: { train: trainId, ...detail } }).state };
+    });
+  }
+
+  // After the whole-train prepare (PLAN.md §5.6): what a train behind this one may be built on. Only a
+  // train still running reports a usable candidate; later calls are replays or zombies.
+  async trainCandidate(trainId: string, candidate: string, paths: string[], commits: number): Promise<Res<{ ok: true }>> {
+    return this.run(() => {
+      const t = this.touchTrain(trainId);
+      if (!Array.isArray(paths) || !paths.every((p) => typeof p === "string")) fail(422, "paths must be a list of strings");
+      if (!Number.isInteger(commits) || commits < 1) fail(422, "commits must be a positive integer");
+      if (t.state === "running" && SHA.test(candidate) && !t.candidate) {
+        this.sql.exec(
+          "UPDATE train SET candidate = ?, candidate_paths = ?, candidate_seq = ? WHERE id = ?",
+          candidate,
+          JSON.stringify(paths),
+          t.base_seq + commits,
+          trainId,
+        );
+        this.scheduleSoon();
+      }
+      return { ok: true as const };
+    });
+  }
+
+  // Asked by a speculative train before it records or pushes anything: `wait` while the train ahead
+  // can still change or fail, `go` once trunk is exactly the candidate it was built on, `discard` when
+  // that candidate will never be trunk.
+  async trainTurn(trainId: string): Promise<Res<{ turn: "go" | "wait" | "discard" }>> {
+    return this.run(() => {
+      const t = this.touchTrain(trainId);
+      if (!LIVE_TRAIN.includes(t.state)) return { turn: "discard" as const };
+      if (!t.pred || t.confirmed) return { turn: "go" as const };
+      const pred = this.trainRow(t.pred);
+      if (pred && PRE_COMMIT.includes(pred.state)) return { turn: "wait" as const };
+      if (this.head().sha === t.base) {
+        this.sql.exec("UPDATE train SET confirmed = 1 WHERE id = ?", trainId);
+        this.op("train.confirmed", null, { train: trainId, after: t.pred });
+        return { turn: "go" as const };
+      }
+      this.discard(trainId);
+      return { turn: "discard" as const };
     });
   }
 

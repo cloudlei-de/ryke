@@ -46,26 +46,62 @@ export function verdict(cells) {
   return { rows, rykeWinsEveryLarge: large.length > 0 && large.every((r) => r.rykeFirst), large: large.length };
 }
 
+const stale = (c) => c.aborts.stale_read ?? 0;
+const change = (on, off) => (off === 0 ? "n/a" : `${on >= off ? "+" : ""}${fmt(((on - off) / off) * 100)} %`);
+
+// Plain Ryke next to one ablation at every agent count the ablation ran at. A count that has the ablation but no
+// plain Ryke cell still gets its row: the missing side's `cell` is undefined.
+function pairedWith(ablation, cells, details) {
+  const counts = [...new Set(cells.filter((c) => c.policy === ablation).map((c) => c.agents))].sort((a, b) => a - b);
+  return counts.map((agents) => {
+    const [base, variant] = ["ryke", ablation].map((policy) => ({ cell: cells.find((c) => c.agents === agents && c.policy === policy), detail: details.find((d) => d.agents === agents && d.policy === policy) }));
+    return { agents, base, variant };
+  });
+}
+
 // Ryke with and without write leases, side by side per agent count. Only agent counts that ran both get a
 // delta line; a lone `ryke-nolease` cell still gets its row.
 export function leaseComparison(cells, details) {
   const rows = [];
   const lines = [];
-  const counts = [...new Set(cells.filter((c) => c.policy === "ryke-nolease").map((c) => c.agents))].sort((a, b) => a - b);
-  const stale = (c) => c.aborts.stale_read ?? 0;
-  for (const n of counts) {
-    const pair = ["ryke", "ryke-nolease"].map((policy) => ({ cell: cells.find((c) => c.agents === n && c.policy === policy), detail: details.find((d) => d.agents === n && d.policy === policy) }));
-    for (const { cell: c, detail: d } of pair) {
+  for (const { agents: n, base, variant } of pairedWith("ryke-nolease", cells, details)) {
+    for (const { cell: c, detail: d } of [base, variant]) {
       if (!c) continue;
       rows.push([n, c.policy, fmt(c.landedPerMinute), fmt(c.p50), fmt(c.p95), fmt(c.wastedAgentSeconds), stale(c), c.aborts.max_attempts ?? 0, d?.refreshes ?? 0, `${d?.leaseWaits ?? 0} (${d?.leaseWaitSeconds ?? 0} s)`, d?.ryke?.staleWhileReady ?? 0]);
     }
-    const [on, off] = pair.map((p) => p.cell);
+    const [on, off] = [base.cell, variant.cell];
     if (on && off) {
-      const delta = off.landedPerMinute === 0 ? "n/a" : `${on.landedPerMinute >= off.landedPerMinute ? "+" : ""}${fmt(((on.landedPerMinute - off.landedPerMinute) / off.landedPerMinute) * 100)} %`;
-      lines.push(`- ${n} agents: leases on land ${fmt(on.landedPerMinute)}/min against ${fmt(off.landedPerMinute)}/min with leases off (${delta}); stale_read aborts ${stale(on)} against ${stale(off)}; wasted agent-seconds ${fmt(on.wastedAgentSeconds)} against ${fmt(off.wastedAgentSeconds)}.`);
+      lines.push(`- ${n} agents: leases on land ${fmt(on.landedPerMinute)}/min against ${fmt(off.landedPerMinute)}/min with leases off (${change(on.landedPerMinute, off.landedPerMinute)}); stale_read aborts ${stale(on)} against ${stale(off)}; wasted agent-seconds ${fmt(on.wastedAgentSeconds)} against ${fmt(off.wastedAgentSeconds)}.`);
     }
   }
   return { rows, lines };
+}
+
+// Ryke with and without speculative pipelining (§5.6). What it trades is visible here: more landed per minute
+// against verify runs spent on trains that were discarded. `-` marks a number the cell's details do not carry
+// (details written before the speculative counts existed).
+export function pipelineComparison(cells, details) {
+  const headers = ["agents", "policy", "landed/min", "p50 s", "p95 s", "verify runs/landed", "wasted agent-s", "stale_read aborts", "stale while ready", "max_attempts", "trains formed", "speculative (formed / confirmed / discarded)"];
+  const speculative = (d) => d?.ryke?.speculative;
+  const triple = (sp) => (sp ? `${sp.formed} / ${sp.confirmed} / ${sp.discarded}` : "-");
+  const rows = [];
+  const lines = [];
+  for (const { agents: n, base, variant } of pairedWith("ryke-nopipe", cells, details)) {
+    for (const { cell: c, detail: d } of [base, variant]) {
+      if (!c) continue;
+      rows.push([n, c.policy, fmt(c.landedPerMinute), fmt(c.p50), fmt(c.p95), fmt(c.verifyRunsPerLanded), fmt(c.wastedAgentSeconds), stale(c), d?.ryke?.staleWhileReady ?? "-", c.aborts.max_attempts ?? 0, d?.ryke?.trains ?? "-", triple(speculative(d))]);
+    }
+    const [on, off] = [base.cell, variant.cell];
+    if (on && off) {
+      const sp = speculative(base.detail);
+      lines.push(
+        `- ${n} agents: pipelining on lands ${fmt(on.landedPerMinute)}/min against ${fmt(off.landedPerMinute)}/min with pipelining off (${change(on.landedPerMinute, off.landedPerMinute)}); ` +
+          `p95 ${fmt(on.p95)} s against ${fmt(off.p95)} s; verify runs per landed change ${fmt(on.verifyRunsPerLanded)} against ${fmt(off.verifyRunsPerLanded)}; ` +
+          `wasted agent-seconds ${fmt(on.wastedAgentSeconds)} against ${fmt(off.wastedAgentSeconds)}${sp ? `; speculative trains ${sp.formed} formed, ${sp.confirmed} confirmed, ${sp.discarded} discarded` : ""}.`,
+      );
+    }
+  }
+  return { headers, rows, lines };
 }
 
 // results: BenchResults; details: [{ policy, agents, ...detail }]; meta: { factor, seed, offset, commentary: [string] }
@@ -96,6 +132,14 @@ export function renderMarkdown({ results, details, meta }) {
     out.push("`ryke-nolease` is Ryke with the same agents and the same refresh on a stale warning, but the agents never take write leases.", "");
     out.push(table(["agents", "policy", "landed/min", "p50 s", "p95 s", "wasted agent-s", "stale_read aborts", "max_attempts", "refreshes", "lease waits", "stale while ready"], lease.rows), "");
     if (lease.lines.length > 0) out.push(...lease.lines, "");
+  }
+
+  const pipeline = pipelineComparison(cells, details);
+  if (pipeline.rows.length > 0) {
+    out.push("## Speculative pipelining on and off", "");
+    out.push("`ryke-nopipe` is Ryke with `pipeline: false` in the seeded ryke.json: the same agents and the same leases, but the Ledger never forms a second train on the first one's candidate, so one train runs at a time.", "");
+    out.push(table(pipeline.headers, pipeline.rows), "");
+    if (pipeline.lines.length > 0) out.push(...pipeline.lines, "");
   }
 
   out.push("## Every cell", "");

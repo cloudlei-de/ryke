@@ -27,7 +27,8 @@ export function client(base, token) {
   }
   return {
     call,
-    createRepo: (name, seedFrom, fresh = false) => call("POST", "/api/repos", { name, seedFrom, fresh }),
+    // `policy` is merged into the seeded ryke.json (the bench's ablations); JSON drops it when undefined.
+    createRepo: (name, seedFrom, fresh = false, policy) => call("POST", "/api/repos", { name, seedFrom, fresh, policy }),
     repo: (repo) => call("GET", `/api/repos/${repo}`),
     begin: (repo, input) => call("POST", `/api/repos/${repo}/txns`, input, { allow: [409] }),
     reads: (txn, paths) => call("POST", `/api/txns/${txn}/reads`, { paths }),

@@ -85,18 +85,24 @@ function abortsByCause(ops) {
   return out;
 }
 
+// Speculative trains (PLAN.md §5.6) are ordinary trains in `formed` and `sizes`; `speculative` counts the ones
+// built on another train's candidate, and how those ended: confirmed (their turn came) or discarded.
 function trainStats(ops) {
   const sizes = {};
   let formed = 0;
   const bisected = new Set();
+  const speculative = { formed: 0, confirmed: 0, discarded: 0 };
   for (const op of ops) {
     if (op.kind === "train.formed") {
       formed++;
       bump(sizes, String(op.data.txns?.length ?? 0));
+      if (op.data.after) speculative.formed++;
     } else if (op.kind === "train.bisect") bisected.add(op.data.train);
+    else if (op.kind === "train.confirmed") speculative.confirmed++;
+    else if (op.kind === "train.done" && op.data.outcome === "discarded") speculative.discarded++;
   }
   const max = Math.max(0, ...Object.keys(sizes).map(Number));
-  return { formed, sizes, max, bisected: bisected.size };
+  return { formed, sizes, max, bisected: bisected.size, speculative };
 }
 
 // t-precision rewrites the hottest file, so the stale aborts it causes are the demo's headline number.
@@ -305,7 +311,10 @@ export function formatReport(report) {
       `${agent ? `; agent aborts: ${agent}` : ""}${other ? `; other: ${other}` : ""}`,
   );
   const sizes = Object.entries(report.trains.sizes).sort((x, y) => Number(x[0]) - Number(y[0])).map(([k, v]) => `${v}x${k}`).join(" ");
-  line(`trains         ${report.trains.formed} formed (size x count: ${sizes || "none"}), largest ${report.trains.max}, ${report.trains.bisected} bisected`);
+  // Only when pipelining formed something, so a run without it prints the line it always did.
+  const spec = report.trains.speculative;
+  const pipelined = spec.formed > 0 ? `; ${spec.formed} speculative: ${spec.confirmed} confirmed, ${spec.discarded} discarded` : "";
+  line(`trains         ${report.trains.formed} formed (count x size: ${sizes || "none"}), largest ${report.trains.max}, ${report.trains.bisected} bisected${pipelined}`);
   if (report.precision) line(`t-precision    ${report.precision.txn}: ${report.precision.staleAborts} stale aborts caused, ${report.precision.landedAfterRetry} landed after the retry`);
   for (const g of ["G3", "G4", "G5", "G6"]) {
     const rows = report.outcomes.filter((o) => o.group === g);
