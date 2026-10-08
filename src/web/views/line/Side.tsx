@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { LineState } from "../../../shared/reducers";
 import type { Op } from "../../../shared/types";
-import { Icon } from "../../ui";
+import { Icon, PathName } from "../../ui";
 import { feed, rawOps, type FeedItem, type Part } from "./activity";
 import { formatHeat, HEAT_HOT_AT, tickerLine, txnHref, type HeatRow } from "./geometry";
 import { ago } from "./stats";
@@ -9,16 +9,6 @@ import { ago } from "./stats";
 // ------------------------------------------------------------------ hot files
 
 const SHOWN = 6;
-
-function PathName({ path }: { path: string }) {
-  const cut = path.lastIndexOf("/") + 1;
-  return (
-    <span className="path" title={path}>
-      {cut > 0 && <span className="path-dir">{path.slice(0, cut)}</span>}
-      <span className="path-base">{path.slice(cut)}</span>
-    </span>
-  );
-}
 
 export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: LineState["leases"]; error: string | null }) {
   const [all, setAll] = useState(false);
@@ -42,7 +32,7 @@ export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: Lin
               <li key={h.path} data-hot={String(h.hot)} data-cold={String(h.value === 0)} title={`${h.path} · heat ${h.value.toFixed(2)}${h.hot ? " · hot" : ""}${lease ? ` · leased by ${lease.txn}` : ""}`}>
                 <span className="heat-name">
                   {h.hot ? <Icon name="flame" size={13} className="heat-icon" /> : <Icon name="file" size={13} className="heat-icon cold" />}
-                  <PathName path={h.path} />
+                  <PathName path={h.path} className="path" />
                   {lease && <Icon name="lock" size={12} className="heat-lock" title={`leased by ${lease.txn}`} />}
                 </span>
                 <span className="heat-track" style={{ ["--hot-at" as string]: `${HEAT_HOT_AT * 100}%` }}>
@@ -54,7 +44,7 @@ export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: Lin
           })}
         </ul>
       )}
-      {(hidden > 0 || all) && heat.length > SHOWN && (
+      {(hidden > 0 || all) && (
         <button type="button" className="more" onClick={() => setAll((v) => !v)} aria-expanded={all}>
           {all ? "Show only warm files" : `Show all ${heat.length} files`}
           <Icon name="chevron" size={13} className={all ? "flip" : undefined} />

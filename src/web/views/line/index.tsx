@@ -13,7 +13,7 @@ import { StatStrip } from "./Stats";
 import { stats } from "./stats";
 import { Lanes, Legend, Patterns, TRUNK_H } from "./Timeline";
 
-// A phone has no screen height to share out, so its rows keep one comfortable height and the page scrolls.
+// The 1 above is the border under the sticky axis and trunk. A phone has no screen height to share out, so its rows keep one comfortable height and the page scrolls.
 const PHONE_ROW_H = 26;
 
 // Admin only: starts the scripted swarm inside the platform (PLAN.md §11.2). With no token stored it asks
@@ -92,7 +92,7 @@ export function LineView({ repo, state, ops, mode, now: nowProp, connected = tru
   const scale: Scale = { t0: win.start, t1: win.end, x0: plot.x0, x1: plot.x1 };
   const rows = buildRows(state, scale, now);
   const phone = width < 640;
-  const rowH = phone ? PHONE_ROW_H : rowHeight(rows.length, height - AXIS_H - TRUNK_H);
+  const rowH = phone ? PHONE_ROW_H : rowHeight(rows.length, height - AXIS_H - TRUNK_H - 1);
   const blocks = layoutTrunk(state.ticks, scale);
   const waves = staleWaves(rows, blocks);
   const ticks = axisTicks(win, plot.x1 - plot.x0, tzOffsetMin).map((k) => ({ ...k, x: toX(scale, k.t) }));

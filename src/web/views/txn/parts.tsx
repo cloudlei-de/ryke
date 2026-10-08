@@ -3,7 +3,7 @@ import type { TxnView } from "../../../shared/reducers";
 import { MAX_ATTEMPTS } from "../../../shared/types";
 import { simulationOf } from "../../agents";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
-import { Icon, Pill, sentence, stateIcon, type IconName } from "../../ui";
+import { Icon, PathName, Pill, sentence, stateIcon, type IconName } from "../../ui";
 import { layoutBar } from "../line/geometry";
 import { useSize } from "../line/hooks";
 import { Glyph } from "../line/Timeline";
@@ -70,10 +70,14 @@ function CopyId({ id }: { id: string }) {
       title={done ? "Copied" : "Copy the transaction id"}
       aria-label="Copy the transaction id"
       onClick={() => {
-        void navigator.clipboard?.writeText(id).then(() => {
-          setDone(true);
-          setTimeout(() => setDone(false), 1200);
-        });
+        // A refused clipboard (no permission, an insecure origin) leaves the id on screen to select by hand.
+        navigator.clipboard?.writeText(id).then(
+          () => {
+            setDone(true);
+            setTimeout(() => setDone(false), 1200);
+          },
+          () => {},
+        );
       }}
     >
       <Icon name={done ? "check" : "copy"} size={14} />
@@ -392,7 +396,7 @@ export function Diff({ path, patch }: { path: string; patch: string }) {
   return (
     <figure className="txn-diff">
       <figcaption>
-        <PathName path={path} />
+        <PathName path={path} className="path-name" />
         <span className="diff-stat num">
           <span data-kind="add">+{stat.added}</span> <span data-kind="del">−{stat.removed}</span>
         </span>
@@ -411,16 +415,6 @@ export function Diff({ path, patch }: { path: string; patch: string }) {
         </div>
       </div>
     </figure>
-  );
-}
-
-function PathName({ path }: { path: string }) {
-  const cut = path.lastIndexOf("/") + 1;
-  return (
-    <code className="path-name" title={path}>
-      {cut > 0 && <span className="path-dir">{path.slice(0, cut)}</span>}
-      <span className="path-base">{path.slice(cut)}</span>
-    </code>
   );
 }
 
@@ -460,7 +454,7 @@ export function PathList({ title, icon, rows, none }: { title: string; icon: Ico
             <li key={r.path} className="txn-path" data-flag={r.flags[0]}>
               <div className="txn-path-line">
                 <Icon name="file" size={13} className="path-icon" />
-                <PathName path={r.path} />
+                <PathName path={r.path} className="path-name" />
                 {r.flags.map((f) => (
                   <Pill key={f} tone={FLAG_TONE[f]}>
                     {FLAG_TEXT[f]}

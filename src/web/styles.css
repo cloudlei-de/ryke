@@ -622,10 +622,10 @@ kbd {
 .tabs a:hover {
   color: var(--text);
 }
-.tabs a[aria-current="page"] {
+.tabs a[aria-current] {
   color: var(--text);
 }
-.tabs a[aria-current="page"]::after {
+.tabs a[aria-current]::after {
   content: "";
   position: absolute;
   left: 8px;

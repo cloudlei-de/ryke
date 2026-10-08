@@ -172,7 +172,7 @@ describe("the Line checks", () => {
       LINE_CHECKS.map((c) => [c.selector, c.min]),
       [
         [".trunk .block-box", 1],
-        [".timeline .m-stale", 2],
+        [".timeline .rows .m-stale", 2],
         ['.heat-list li[data-hot="true"]', 1],
         [".line-head .sim-tag", 1],
       ],
@@ -183,7 +183,7 @@ describe("the Line checks", () => {
     assert.deepEqual(
       RECALLED_CHECKS.map((c) => [c.selector, c.min]),
       [
-        [".timeline .strike", 1],
+        [".timeline .rows .strike", 1],
         [".trunk .tick.recall", 1],
       ],
     );

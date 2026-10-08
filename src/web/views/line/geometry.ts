@@ -4,9 +4,9 @@ import { HOT } from "../../../worker/ledger/heat";
 import type { AttemptView, LineState, Segment, Tick, TxnView } from "../../../shared/reducers";
 import type { Op, OpKind } from "../../../shared/types";
 import { modelLabel } from "../../agents";
-import { reasonLabel } from "../txn/format";
+import { duration, reasonLabel } from "../txn/format";
 
-export const ROW_H = 18;
+export const ROW_H = 16;
 export const ROW_MAX = 34;
 export const AXIS_H = 26;
 export const MIN_BAR_W = 3;
@@ -178,8 +178,8 @@ export function assignLanes(items: readonly { key: string; from: number; to: num
   return { lane, count: Math.max(1, ends.length) };
 }
 
-// 30 agents must fit a 1440x900 screen at the minimum height; with fewer agents the rows grow into the
-// free space (up to ROW_MAX) so the bars and the intents written on them are easier to read.
+// 30 agents must fit a 1440x900 screen at the minimum height (about 500 px of rows under the counters); with fewer
+// agents the rows grow into the free space (up to ROW_MAX) so the bars and the intents on them are easier to read.
 export function rowHeight(count: number, availablePx: number): number {
   if (count <= 0 || !(availablePx > 0)) return ROW_H;
   return Math.min(ROW_MAX, Math.max(ROW_H, Math.floor(availablePx / count)));
@@ -367,32 +367,30 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
   return blocks;
 }
 
-// A landing that made other transactions stale, drawn as a guide from its commit on the trunk down through the
-// rows it invalidated: read-set validation, visible. `x` is where the stale marks are (they all fall when the
-// culprit lands), `dotX` where its commit is drawn, which a crowded trunk can have pushed right; the guide bends
-// from one to the other. `bottom` is the index of the lowest row it reaches.
-export type Wave = { culprit: string; x: number; dotX: number; victims: number; bottom: number };
+// A landing that made other transactions stale, drawn as a guide from its commit on the trunk with a branch to
+// the stale notch of each attempt it caught: read-set validation, visible. A notch falls when its attempt learns it
+// is stale (at the landing if it was waiting, at its own submit if it was still working), so each branch runs from
+// the culprit's commit to wherever its notch fell. `x` is the commit's dot; `bottom` is the lowest row reached.
+export type Wave = { culprit: string; x: number; victims: { row: number; lane: number; lanes: number; x: number }[]; bottom: number };
 
 export function staleWaves(rows: readonly Row[], blocks: readonly TrunkBlock[]): Wave[] {
   const dots = new Map<string, number>();
   for (const b of blocks) for (const t of b.ticks) if (t.txn) dots.set(t.txn, t.x);
-  const found = new Map<string, { dotX: number; xs: number[]; bottom: number }>();
+  const found = new Map<string, Wave>();
   for (const row of rows) {
     for (const bar of row.bars) {
       if (bar.mark?.kind !== "stale") continue;
       for (const by of new Set(bar.stale.map((p) => p.by))) {
-        const dotX = by ? dots.get(by) : undefined;
-        if (!by || dotX === undefined) continue;
-        const w = found.get(by) ?? { dotX, xs: [], bottom: row.index };
-        w.xs.push(bar.mark.x);
+        const x = by ? dots.get(by) : undefined;
+        if (!by || x === undefined) continue;
+        const w = found.get(by) ?? { culprit: by, x, victims: [], bottom: row.index };
+        w.victims.push({ row: row.index, lane: bar.lane, lanes: bar.lanes, x: bar.mark.x });
         w.bottom = Math.max(w.bottom, row.index);
         found.set(by, w);
       }
     }
   }
-  return [...found]
-    .map(([culprit, w]) => ({ culprit, x: w.xs.reduce((a, b) => a + b, 0) / w.xs.length, dotX: w.dotX, victims: w.xs.length, bottom: w.bottom }))
-    .sort((a, b) => a.x - b.x);
+  return [...found.values()].sort((a, b) => a.x - b.x);
 }
 
 // A block counts as arriving for a moment after it lands; the CSS animation runs once, when the class first appears.
@@ -572,14 +570,6 @@ export function tickerLine(op: Op): { seq: string; kind: string; txn: string; ag
 
 export type Tip = { id: string; attempt: number; status: string; intent: string; rows: [string, string][]; staleBy: string | null };
 
-const two = (n: number) => String(n).padStart(2, "0");
-function took(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)} m ${two(s % 60)} s`;
-}
-
 const SEGMENT_NAME: Record<string, string> = { open: "working", submitted: "queued", ready: "queued", verifying: "verifying", needs_human: "with a human", lease_wait: "waiting for a lease" };
 
 // What the card on a hovered bar says: who, what, how long, where the time went and how it ended.
@@ -592,8 +582,8 @@ export function tipFor(txn: TxnView, a: AttemptView, now: number): Tip {
     spent.set(name, (spent.get(name) ?? 0) + Math.max(0, (seg.to ?? end) - seg.from));
   }
   const rows: [string, string][] = [["Agent", txn.model ? `${txn.agent} · ${modelLabel(txn.model)}` : txn.agent]];
-  rows.push(["Time", `${took(end - a.start)}${a.end === null ? " so far" : ""}`]);
-  const split = [...spent].filter(([, ms]) => ms >= 50).map(([name, ms]) => `${name} ${took(ms)}`);
+  rows.push(["Time", `${duration(end - a.start)}${a.end === null ? " so far" : ""}`]);
+  const split = [...spent].filter(([, ms]) => ms >= 50).map(([name, ms]) => `${name} ${duration(ms)}`);
   if (split.length > 1) rows.push(["Spent", split.join(" · ")]);
   if (a.outcome === "stale") {
     const detail = staleDetail(a.stale, a.reason);

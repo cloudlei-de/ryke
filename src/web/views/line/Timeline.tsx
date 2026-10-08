@@ -92,7 +92,7 @@ export function Legend() {
 function Trunk({ blocks, head, waves, width, labelW, x0, now }: { blocks: TrunkBlock[]; head: LineState["head"]; waves: Wave[]; width: number; labelW: number; x0: number; now: number }) {
   const culprits = new Map(waves.map((w) => [w.culprit, w]));
   return (
-    <svg className="trunk" width={width} height={TRUNK_H} role="img" aria-label={head ? `Trunk head ${shortSha(head.sha)}, seq ${head.seq}` : "Trunk, no commits yet"}>
+    <svg className="trunk" width={width} height={TRUNK_H} role="group" aria-label={head ? `Trunk head ${shortSha(head.sha)}, seq ${head.seq}` : "Trunk, no commits yet"}>
       <text className="trunk-name" x={labelW < 120 ? 8 : 16} y={25}>
         trunk
       </text>
@@ -115,7 +115,7 @@ function Trunk({ blocks, head, waves, width, labelW, x0, now }: { blocks: TrunkB
             const wave = t.txn ? culprits.get(t.txn) : undefined;
             const dot = (
               <>
-                <title>{wave ? `${t.title} · made ${wave.victims} stale` : t.title}</title>
+                <title>{wave ? `${t.title} · made ${wave.victims.length} stale` : t.title}</title>
                 {wave && <circle className="dot-ring" cx={t.x} cy={LINE_Y} r={7.5} />}
                 <circle className={t.txn ? "tick" : t.recall ? "tick recall" : "tick seed"} cx={t.x} cy={LINE_Y} r={4} />
                 <circle className="dot-hit" cx={t.x} cy={LINE_Y} r={7} />
@@ -132,9 +132,9 @@ function Trunk({ blocks, head, waves, width, labelW, x0, now }: { blocks: TrunkB
                 )}
                 {wave && (
                   <>
-                    <path className="wave" d={`M${t.x} ${LINE_Y + 8}L${t.x} ${LINE_Y + 12}L${wave.x} ${TRUNK_H}`} fill="none" />
+                    <line className="wave" x1={t.x} x2={t.x} y1={LINE_Y + 8} y2={TRUNK_H} />
                     <text className="wave-label" x={t.x + 6} y={LINE_Y + 19}>
-                      {wave.victims} stale
+                      {wave.victims.length} stale
                     </text>
                   </>
                 )}
@@ -319,7 +319,14 @@ export function Lanes(props: {
             <line key={k.t} className="grid" x1={k.x} x2={k.x} y1={0} y2={total} />
           ))}
           {waves.map((w) => (
-            <line key={w.culprit} className="wave" x1={w.x} x2={w.x} y1={0} y2={(w.bottom + 0.5) * rowH} />
+            <g key={w.culprit} className="wave-group">
+              <line className="wave" x1={w.x} x2={w.x} y1={0} y2={w.bottom * rowH + laneBox(0, 1, rowH).y - 2} />
+              {/* A branch along the top edge of each caught bar, from the guide to where its notch fell. */}
+              {w.victims.map((v, i) => {
+                const y = v.row * rowH + laneBox(v.lane, v.lanes, rowH).y - 2;
+                return <path key={i} className="wave" d={`M${w.x} ${y}H${v.x}`} />;
+              })}
+            </g>
           ))}
           {rows.map((row) => {
             const status = agentStatus(state, row.agent);

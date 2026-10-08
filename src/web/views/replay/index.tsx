@@ -114,7 +114,7 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
   const cache = useRef(newFoldCache());
   // A shallow copy gives the Line a new identity per position even when the fold only advanced the cached
   // state in place, so anything it memoises on `state` recomputes. The Line gets the whole log, not the part
-  // played so far: it only uses it to fix the time window once, and the folded state already hides the future.
+  // played so far: it fixes the time window from it once, and its feed and raw ops stop at the folded state's seq.
   const state = useMemo(() => ({ ...foldTo(cache.current, ops, p.idx) }), [ops, p.idx]);
   const marks = useMemo(() => markers(ops), [ops]);
 

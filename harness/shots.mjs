@@ -109,13 +109,13 @@ export function captureHeight(view, size, extra) {
 export const TAG_CHECK = { selector: ".line-head .sim-tag", min: 1, what: "the scripted-agents tag in the Line header" };
 export const LINE_CHECKS = [
   { selector: ".trunk .block-box", min: 1, what: "a train drawn as a block on the trunk" },
-  { selector: ".timeline .m-stale", min: 2, what: "stale notches on the agents' rows" },
+  { selector: ".timeline .rows .m-stale", min: 2, what: "stale notches on the agents' rows" },
   { selector: '.heat-list li[data-hot="true"]', min: 1, what: "a hot heat row" },
   TAG_CHECK,
 ];
 // After the recall the sloppy model's work is struck through and the revert commit sits on the trunk.
 export const RECALLED_CHECKS = [
-  { selector: ".timeline .strike", min: 1, what: "a struck-through recalled bar" },
+  { selector: ".timeline .rows .strike", min: 1, what: "a struck-through recalled bar" },
   { selector: ".trunk .tick.recall", min: 1, what: "the recall's revert commit on the trunk" },
 ];
 

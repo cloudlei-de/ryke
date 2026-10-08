@@ -47,7 +47,7 @@ and begin screening is off, so duplicates are not flagged at begin.
 
 The **Line** (`#/`) puts every agent's transactions on one time axis under trunk: grey while the agent
 works, striped while it waits for a train, blue under test, green when it lands. A red notch is a read
-that went stale, and a guide runs from the landing that caused it down through every change it caught.
+that went stale; a guide drops from the landing that caused it, with a branch to every change it caught.
 Counters, the hot files and a feed of what just happened sit beside it; hover a bar for its story, click
 it for the **Transaction** (`#/t/:id`): each attempt, the read and write sets with the trunk delta of a
 stale path, the judge's verdict on each acceptance criterion, the tests and the verify screenshot.

@@ -369,22 +369,23 @@ describe("laneBox", () => {
     [0, 2, { y: 2, h: 6.5 }],
     [1, 2, { y: 9.5, h: 6.5 }],
     [2, 3, { y: 12, h: 4 }],
-  ])("lane %d of %d", (lane, lanes, box) => expect(laneBox(lane, lanes, ROW_H)).toEqual(box));
+  ])("lane %d of %d in an 18 px row", (lane, lanes, box) => expect(laneBox(lane, lanes, 18)).toEqual(box));
 });
 
 describe("rowHeight and barHeight", () => {
   it.each([
-    ["thirty agents in 560 px stay at the minimum", 30, 560, 18],
-    ["thirty agents in 540 px fit exactly", 30, 540, 18],
-    ["more agents than fit never go below the minimum (the panel scrolls)", 45, 560, 18],
+    ["thirty agents in 560 px get 18 px rows", 30, 560, 18],
+    ["thirty agents in 480 px fit exactly at the minimum", 30, 480, ROW_H],
+    ["more agents than fit never go below the minimum (the panel scrolls)", 45, 560, ROW_H],
     ["twelve agents grow into the space, up to the cap", 12, 560, ROW_MAX],
     ["sixteen agents take what is left", 16, 500, 31],
+    ["thirty agents fit the 500 px a 1440x900 Line has for rows", 30, 497, 16],
     ["twenty agents take what is left", 20, 560, 28],
     ["a single agent is capped", 1, 560, ROW_MAX],
-    ["no agents", 0, 560, 18],
-    ["not measured yet", 12, 0, 18],
-    ["negative space", 12, -50, 18],
-    ["NaN space", 12, NaN, 18],
+    ["no agents", 0, 560, ROW_H],
+    ["not measured yet", 12, 0, ROW_H],
+    ["negative space", 12, -50, ROW_H],
+    ["NaN space", 12, NaN, ROW_H],
   ])("%s", (_n, count, avail, h) => expect(rowHeight(count, avail)).toBe(h));
 
   it.each([
@@ -691,23 +692,34 @@ describe("staleWaves", () => {
   const trunk = (txn: string, at: number, seq: number) => op("trunk.advanced", at, { seq, sha: `${seq}`.padEnd(40, "0"), txns: [{ txn, sha: `${seq}`.padEnd(40, "0"), seq }], train: null });
   const waves = (s: LineState) => staleWaves(buildRows(s, scale, 1000), layoutTrunk(s.ticks, scale));
 
-  it("draws one wave per landing that made others stale, from its commit to the lowest row it reached", () => {
+  it("drops a guide from the culprit's commit with a branch to each notch it caused, wherever the notch fell", () => {
     const s = fold([
       open("c", "agent-0", 10),
       open("v1", "agent-1", 20),
       open("v2", "agent-2", 30),
       open("v3", "agent-3", 40),
       trunk("c", 300, 1),
-      stale("v1", "agent-1", 302, "c"),
-      stale("v3", "agent-3", 306, "c"),
+      // v1 was waiting for a train and went stale at the landing; v3 was still working and found out at its submit
+      stale("v1", "agent-1", 300, "c"),
+      stale("v3", "agent-3", 460, "c"),
     ]);
-    expect(waves(s)).toEqual([{ culprit: "c", x: 304, dotX: 300, victims: 2, bottom: 3 }]);
+    expect(waves(s)).toEqual([
+      {
+        culprit: "c",
+        x: 300,
+        bottom: 3,
+        victims: [
+          { row: 1, lane: 0, lanes: 1, x: 300 },
+          { row: 3, lane: 0, lanes: 1, x: 460 },
+        ],
+      },
+    ]);
   });
 
-  it("bends from a commit that a crowded trunk pushed right to where the stale marks are", () => {
+  it("starts at the commit's dot even when a crowded trunk pushed it right of its time", () => {
     const s = fold([open("v1", "agent-1", 10), trunk("a", 300, 1), trunk("c", 300, 2), stale("v1", "agent-1", 301, "c")]);
     const [w] = waves(s);
-    expect(w).toMatchObject({ culprit: "c", x: 301, dotX: 300 + BLOCK_GAP });
+    expect(w).toMatchObject({ culprit: "c", x: 300 + BLOCK_GAP, victims: [{ row: 0, x: 301 }] });
   });
 
   it("counts a stale attempt once even when several of its paths name the same culprit", () => {
@@ -716,7 +728,20 @@ describe("staleWaves", () => {
       trunk("c", 300, 1),
       move("txn.stale", "v1", "agent-1", 302, { reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "c" }, { path: "b.ts", seq: 1, by: "c" }] }),
     ]);
-    expect(waves(s).map((w) => w.victims)).toEqual([1]);
+    expect(waves(s).map((w) => w.victims.length)).toEqual([1]);
+  });
+
+  it("gives an attempt made stale by two landings a branch from each", () => {
+    const s = fold([
+      open("v1", "agent-1", 10),
+      trunk("c1", 200, 1),
+      trunk("c2", 250, 2),
+      move("txn.stale", "v1", "agent-1", 300, { reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "c1" }, { path: "b.ts", seq: 2, by: "c2" }] }),
+    ]);
+    expect(waves(s).map((w) => [w.culprit, w.victims.length])).toEqual([
+      ["c1", 1],
+      ["c2", 1],
+    ]);
   });
 
   it("draws nothing for a culprit that is not on the trunk in view, or a stale read with no known cause", () => {
@@ -757,8 +782,8 @@ describe("tipFor", () => {
       staleBy: null,
       rows: [
         ["Agent", "agent-01 · scripted-v1 (scripted)"],
-        ["Time", "0.4 s"],
-        ["Spent", "working 0.1 s · queued 0.1 s · verifying 0.2 s"],
+        ["Time", "400 ms"],
+        ["Spent", "working 100 ms · queued 100 ms · verifying 200 ms"],
       ],
     });
   });
@@ -771,6 +796,8 @@ describe("tipFor", () => {
     expect(first.staleBy).toBe("t_9");
     expect(first.rows).toContainEqual(["Stale", "src/format.ts ← t_9"]);
     expect(tipFor(t, t.attempts[1]!, 92_100).rows).toContainEqual(["Time", "1 m 30 s so far"]);
+    // just under a minute carries into minutes instead of reading "60.0 s"
+    expect(tipFor(t, t.attempts[1]!, 2100 + 59_950).rows).toContainEqual(["Time", "1 m 00 s so far"]);
   });
 
   it("shows the reason of a failure, the warnings and a recall", () => {
@@ -1035,7 +1062,7 @@ describe("the recorded e2e-land scenario", () => {
   it("draws the stale read as a wave from the commit that caused it", () => {
     const rows = buildRows(state, sc, state.now);
     const waves = staleWaves(rows, layoutTrunk(state.ticks, sc));
-    expect(waves.map((w) => [w.culprit, w.victims])).toEqual([["t_muyvqoug28lz", 1]]);
+    expect(waves.map((w) => [w.culprit, w.victims.length])).toEqual([["t_muyvqoug28lz", 1]]);
   });
 
   it("draws the two trains as blocks of two and three ticks after the seed", () => {

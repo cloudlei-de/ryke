@@ -45,7 +45,7 @@ function App() {
   // A transaction is opened from the Line, so the Line tab stays current under it.
   const current = route.name === "txn" ? "line" : route.name;
   const tab = (href: string, name: Route["name"], label: string, icon: IconName) => (
-    <a href={href} aria-current={current === name ? "page" : undefined}>
+    <a href={href} aria-current={current === name ? (route.name === "txn" ? "location" : "page") : undefined}>
       <Icon name={icon} size={15} className="tab-icon" />
       {label}
     </a>

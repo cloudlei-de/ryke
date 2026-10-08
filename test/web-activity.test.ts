@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { fold } from "../src/shared/reducers";
 import { OP_KINDS, type Op, type OpKind } from "../src/shared/types";
-import { describeOp, feed, plain, rawOps, type FeedItem } from "../src/web/views/line/activity";
+import { describeOp, endIndex, feed, plain, rawOps, type FeedItem } from "../src/web/views/line/activity";
 import e2eLand from "./fixtures/ops/e2e-land.json";
 
 let seq = 0;
@@ -135,4 +135,17 @@ describe("plain", () => {
   it("joins words, intents and paths, and skips a missing part", () => {
     expect(plain(["a ", { txn: "t_1", label: "Intent" }, " in ", { code: "x.ts" }, null])).toBe("a Intent in x.ts");
   });
+});
+
+describe("endIndex", () => {
+  const log = [1, 2, 5, 9].map((n) => ({ seq: n }) as Op);
+  it.each([
+    [0, 0],
+    [1, 1],
+    [4, 2],
+    [5, 3],
+    [9, 4],
+    [100, 4],
+  ])("ops at or before seq %d end at index %d", (upTo, i) => expect(endIndex(log, upTo)).toBe(i));
+  it("is 0 for an empty log", () => expect(endIndex([], 5)).toBe(0));
 });

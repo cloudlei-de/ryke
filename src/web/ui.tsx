@@ -98,6 +98,17 @@ export function stateIcon(state: string): IconName {
   return STATE_ICON[state] ?? "pulse";
 }
 
+// A path with its directory dimmed, so the file name is what the eye finds in a list.
+export function PathName({ path, className }: { path: string; className: string }) {
+  const cut = path.lastIndexOf("/") + 1;
+  return (
+    <code className={className} title={path}>
+      {cut > 0 && <span className="path-dir">{path.slice(0, cut)}</span>}
+      <span className="path-base">{path.slice(cut)}</span>
+    </code>
+  );
+}
+
 // "needs human" reads "Needs human" in a pill: sentence case, not title case.
 export const sentence = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
 

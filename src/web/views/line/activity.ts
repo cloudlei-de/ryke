@@ -115,14 +115,25 @@ export function describeOp(op: Op, state: Pick<LineState, "txns" | "trains">): F
   }
 }
 
+// The index just past the last op at or before `upTo`. The log is in seq order, so the replay finds its position
+// in log time instead of walking every op after the playhead on each frame.
+export function endIndex(ops: readonly Op[], upTo: number): number {
+  let lo = 0;
+  let hi = ops.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ops[mid]!.seq <= upTo) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 // Newest first, up to `max` items, from the ops at or before `upTo` (the replay's position; live, the last op).
-// Walks back from the end, so a long log costs only as much as the items it shows.
+// Walks back from that position, so a long log costs only the ops between it and the oldest item shown.
 export function feed(ops: readonly Op[], upTo: number, state: Pick<LineState, "txns" | "trains">, max = 80): FeedItem[] {
   const out: FeedItem[] = [];
-  for (let i = ops.length - 1; i >= 0 && out.length < max; i--) {
-    const op = ops[i]!;
-    if (op.seq > upTo) continue;
-    const it = describeOp(op, state);
+  for (let i = endIndex(ops, upTo) - 1; i >= 0 && out.length < max; i--) {
+    const it = describeOp(ops[i]!, state);
     if (it) out.push(it);
   }
   return out;
@@ -130,9 +141,8 @@ export function feed(ops: readonly Op[], upTo: number, state: Pick<LineState, "t
 
 // The same window of the log, every op, for the raw view.
 export function rawOps(ops: readonly Op[], upTo: number, max = 80): Op[] {
-  const out: Op[] = [];
-  for (let i = ops.length - 1; i >= 0 && out.length < max; i--) if (ops[i]!.seq <= upTo) out.push(ops[i]!);
-  return out;
+  const end = endIndex(ops, upTo);
+  return ops.slice(Math.max(0, end - max), end).reverse();
 }
 
 // The words of a sentence without its markup: what a screen reader or a title attribute gets.
