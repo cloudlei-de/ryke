@@ -1,22 +1,21 @@
 # Progress
 
-Current: 2026-10-08 05:45 CEST. M0–M6 and M8 built, M7 bench implementer finishing, e2e-script implementer
-running, M9 config written. No milestone is marked accepted until a verifier has re-run its Accept commands.
-Pushed through 31a4b23 (33fea0a interface fixes, f68f88f vite/prod build, edb775b agent tokens, d34efec
-recall dialog + shots, 31a4b23 claude mode).
+Current: 2026-10-08 06:50 CEST (04:50 UTC). Everything is built; review round 2 (5 reviewers) is being
+fixed. Pushed through cccc842; the combined gate (`npm run check && npm test`) is running on the rest.
+No milestone is marked accepted until a verifier re-runs its Accept commands.
 
-| Milestone | State | Evidence so far |
+| Milestone | State | Evidence so far (implementer or lead runs; verifiers still to come) |
 |---|---|---|
-| M0 Foundations | built, needs verifier | npm test green (vitest + node:test); store-contract (local) 9/9 |
-| M1 Ledger core | built, needs curl walkthrough + verifier | ledger, api, mcp suites green |
-| M2 Landing | built, needs verifier | `npm run e2e:land` PASS (train of 2, stale with delta, bisection 3 probes isolates "broken by design", trunk 89 tests green) |
-| M3 Demo app + scripted swarm | built, needs verifier | swarm 12 agents: 37 landed, 9 T-precision stale aborts all landed on retry, G5 protected, trunk 707 tests green, previews 200; G3 reworded (DECISIONS) |
-| M4 Dashboard | views + recall dialog built; `npm run shots` queued | web-recall 123, shots helpers 40 |
-| M5 Jev + contention | calibration done; contention numbers todo | docs/jev-calibration.md 94 % overall, 89 % holdout; leases held until landing + refresh (0d2a9cd) |
-| M6 Recall | built; e2e:recall PASS 05:40, needs verifier | `RYKE_PORT_OFFSET=85 npm run e2e:recall` (clean worktree of 62a095b): swarm 4m45s; recall targets the 2 G6 txns, 4 dependents planned, cascade 1 (kelvin-remove), 3 stay landed revalidated by the recall verify; cascaded intent re-queued and landed on attempt 1; trunk ccfec681 seq 39 tests green; PASS |
-| M7 Bench | harness in progress | measured run waits for a quiet VM |
-| M8 Claude agent mode | built (31a4b23), e2e:claude being written | claude-mode suite 204 incl. a real-stack e2e (stale retry with delta, failed retry with test names, protected reject, trunk green); agent jobs get a txn-scoped token (edb775b); Docker build blocked by VM proxy TLS (BLOCKERS) |
-| M9 Production + docs | wrangler production env, README, how-it-works, deploy.md written; dry run todo | |
+| M0 Foundations | built | npm test green at cccc842's gate: vitest 27 files 2647 tests; node suites green |
+| M1 Ledger core | built | `npm run e2e:api` PASS: create → begin → clone/commit/push → reads `{"recorded":1}` → submit `ready` → wait `landed` seq 1; 401 without/with a wrong token; 404 unknown txn |
+| M2 Landing | built | `npm run e2e:land` PASS (train of 2, stale with delta, bisection 3 probes isolates "broken by design", trunk 89 tests) |
+| M3 Demo + scripted swarm | built | `npm run e2e:swarm` (Jev live) PASS: 34 landed (threshold 34, zero margin), G3 judged (dup-speed and dup-kmh rejected duplicate_of, dup-velocity warned), G5 protected, t-precision 9 stale aborts all landed after retry, trunk 672 tests, preview 200 with 25 categories |
+| M4 Dashboard | built + review fixes | `npm run shots` PASS earlier (40 files, 0 console errors, 502 s); rerun needed after the UI fixes and the bench |
+| M5 Jev + contention | built | jev-calibration.md 94 % overall (holdout gain within noise); `npm run e2e:contention` PASS but weak: hot-file stale aborts off 33 vs on 30, 0 lease waits (see Known issues) |
+| M6 Recall | built | `npm run e2e:recall` PASS (2 G6 targets, 1 cascade re-queued and landed, trunk green) |
+| M7 Bench | harness built | measured run (lock, queue, ryke at 10/50/100/200) and the ryke vs ryke-nolease ablation still to run alone |
+| M8 Claude mode | built + review fixes | `npm run e2e:claude` PASS (7 landed incl. retries, tamper rejected, trunk 207 tests); claude-mode suite 283 |
+| M9 Production + docs | built | `npm run e2e:deploy` PASS (config checks; image build blocked by the VM proxy, BLOCKERS) |
 
 ## How things fit (for after compaction)
 - Worker: `src/worker/index.ts` → api.ts (Hono, /api), mcp.ts (/mcp), /internal/events. service.ts shared by both.
@@ -31,12 +30,23 @@ recall dialog + shots, 31a4b23 claude mode).
 - dev/stack.mjs = startStack({offset}) used by dev/all.mjs and e2e scripts.
 
 ## Next
-1. e2e:recall result; merge bench, claude mode, interface fixes, recall dialog + shots as each reports.
-2. M1 curl walkthrough; contention on/off numbers (M5); measured bench alone on a quiet VM (M7).
-3. Export Runner + Outbound (done, uncommitted) → `npm run deploy:dry` (M9).
-4. Verifiers per milestone (offsets 0/10/20/30/40), final reviewer round, fixes; then the PR.
+1. Combined gate → commit the batches (auth/MCP, UI fixes, gateway scoping + access lists, claude-mode
+   fixes, e2e scripts, bench ablation, docs).
+2. Remaining ledger review items: trunk/store head reconcile (recall push loss, CAS loop), prepare fetch
+   error ≠ text_conflict, revert.mjs union list from the Ledger, recall error-path tests, ingest name
+   checks, recall scratch ref cleanup.
+3. Measured bench alone, then the ryke/ryke-nolease ablation; README bench table; shots rerun; commit.
+4. Verifiers per milestone (≤ 2 heavy at once, offsets 0/10/20/30/40); fix; PROGRESS; PR.
 
-## Known issues (review round 1, 2026-10-08 ~07:30) — fixing now, failing tests first
+## Known issues
+- M5 contention evidence is weak: the scripted catalogue never has two concurrent writers of a hot file,
+  so leases never make anyone wait (two samples: off/on hot-file stale aborts 22/16 and 33/30, baseline
+  noise larger than the gap). The bench ablation (`ryke` vs `ryke-nolease`, synthetic agents that edit
+  hot files) is the measurement that can show the lease effect.
+- e2e:swarm has zero margin (exactly 34 landed in five runs): live Jev parks sloppy-a (and sometimes
+  t-search/t-dark) in needs_human; cat-typography sometimes hits max_attempts.
+
+## Review round 1 (2026-10-08 early morning), all fixed with failing tests first
 - [x] A approval survives retry → gate skipped (both reviews)
 - [x] B recall plans before waiting for in-flight train; C recall lock persisted in meta (restart wedges lander)
 - [x] D agent can create ryke.json (V1 exempts created) when seed had none
@@ -59,3 +69,8 @@ recall dialog + shots, 31a4b23 claude mode).
 - 05:40 e2e:recall PASS from a detached worktree (see M6 row). The run before it, in the main tree, was
   wrecked by an edit to src/worker/index.ts: vite reloaded the Worker under the swarm (11 agent_error
   aborts, a train wedged in verifying). Since then stacks from dev/stack.mjs run without a file watcher.
+- 06:00 review round 2 (ledger/landing, interfaces/security, claude mode, UI, claims/docs/tests). Blockers:
+  verify jobs could push to trunk through an unrestricted gateway (container mode); npm test red since the
+  G3 rewording (harness/jev-cases.json); the fresh-clone quickstart sent everything to needs_human
+  (recorded Jev); the dashboard froze after `--fresh`. All fixed or being committed; see DECISIONS.
+- 06:30 cccc842 gated in a clean worktree: vitest 2647/2647, swarm suite 36/36, other node suites green.
