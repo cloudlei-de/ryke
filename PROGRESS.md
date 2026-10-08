@@ -1,8 +1,7 @@
 # Progress
 
-Current: 2026-10-08 10:06 CEST (08:06 UTC). Definition of done (§14) met: all milestones accepted,
-quickstart verified from a fresh clone, bench and screenshots committed, PR open:
-https://github.com/cloudlei-de/ryke/pull/1
+Current: 2026-10-08 13:01 CEST (11:01 UTC). PR cloudlei-de/ryke#1 open. Since: C1 speculative pipelining
+built (0a75cd1), e2e:contention made honest (8e3bfdd), main bench and ablations re-run with pipelining on.
 
 | Milestone | State | Verifier evidence (commit) |
 |---|---|---|
@@ -11,9 +10,9 @@ https://github.com/cloudlei-de/ryke/pull/1
 | M2 Landing | ACCEPTED | `npm run e2e:land` (35f5d87): train of 2 lands at seq 1–2; third stale on src/format.ts with the digits = 2 → 3 delta; train of 4 bisected in 3 probes isolating "broken by design", 3 landed; trunk 89 tests green. Runner DO fake-container suite 516 tests. Real container build: BLOCKERS (proxy TLS, API token) |
 | M3 Demo + scripted swarm | ACCEPTED | `npm run e2e:swarm` (016c31e, lead run alone): 36 landed (all landable; not landed: dup-speed/dup-kmh G3, kelvin-first, tamper-routes G5 protected), 0 max_attempts, 9 t-precision stale aborts all landed after retry, trunk 723 tests green, preview 26 categories. History: f3eb9c3 36 (verifier), then 34, 34; b76a574 33 (3 max_attempts: retries re-ran v1, fixed in 89c8702); 89c8702 34 (t-share parked by the gate, fixed in 016c31e) |
 | M4 Dashboard | ACCEPTED | `npm run shots` (35f5d87): 40 files, 0 console/page errors; Line shows trains (×2 ×2 ×8 …), stale notches, heat (format.ts 8.5 hot); recall dialog shows 2 struck targets and 4 dependents |
-| M5 Jev + contention | ACCEPTED (contention evidence from the bench ablation) | judge+heat 207, jev 137 tests; jev-calibration.md 94 % overall (holdout within noise); e2e:contention PASS (hot-file stale aborts 24 on vs 28 off, but 0 lease waits: weak); bench ablation: leases on vs off 56 vs 46 and 64 vs 31 landed/min, stale aborts 106 vs 245 and 246 vs 502 |
+| M5 Jev + contention | ACCEPTED (contention evidence from the bench) | judge+heat 207, jev 137 tests; jev-calibration.md 94 % overall (holdout within noise); e2e:contention redesigned at 8e3bfdd (scripted leg asserts the hot-file difference only when leases made someone wait; bench leg ryke vs ryke-nolease) — re-run pending; the old verdict failed at e080cb1 on noise (24 vs 25, 0 lease waits); bench ablation at 8e3bfdd: leases on vs off 67 vs 42.5 and 73 vs 38.5 landed/min, stale aborts 118 vs 260 and 317 vs 462 |
 | M6 Recall | ACCEPTED | `npm run e2e:recall` (35f5d87): both G6 targets recalled, cascade 1 re-queued and landed at seq 40, 3 dependents revalidated, trunk green |
-| M7 Bench | ACCEPTED (lead check of committed results) | bench/results/latest.md (485c763): ryke 58/68/38.5 vs queue 24/19/24.5 vs lock 5.5/5.5/6.5 at 50/100/200; queue wins at 10; 0 breakages in all 12 cells |
+| M7 Bench | ACCEPTED (lead check of committed results) | bench/results/latest.md at 1e10234 (code of 8e3bfdd, pipelining on): ryke 24.5/61.5/75.5/43.5 vs queue 23/23/18.5/22 vs lock 6.5/5.5/5.5/6 at 10/50/100/200, 0 breakages in 12 cells; C1 ablation: pipelining on vs off 67 vs 58 (50), 73 vs 55.5 (100), at 200 28.5/44.5/53 vs 36/36.5/37.5 over three runs |
 | M8 Claude mode | ACCEPTED | `npm run e2e:claude` (35f5d87): 7 landed, tamper rejected protected, 5 categories landed on retry, trunk 207 tests; BLOCKERS has the real smoke command |
 | M9 Production + docs | ACCEPTED, PR open (cloudlei-de/ryke#1) | e2e:deploy PASS with `--containers-rollout=none` (image build blocked, BLOCKERS); wrangler production env complete; how-it-works 1500 prose words with §4.3 example and one diagram; deploy.md token list identical to PLAN; README sections present; §14 quickstart from a fresh clone at 016c31e (verifier): README steps as written, clone to swarm exit 3.6 min, 36 landed, all six M3 criteria PASS, dashboard 200 |
 
@@ -33,11 +32,10 @@ https://github.com/cloudlei-de/ryke/pull/1
 1. Only fixes for review findings on cloudlei-de/ryke#1 until the code freeze (2026-10-12 23:59 CEST).
 
 ## Known issues
-- The scripted-swarm contention comparison (e2e:contention) is weak evidence: the catalogue never has two
-  concurrent writers of a hot file, so leases never make anyone wait. The bench ablation is the
-  measurement of the lease effect (see M5 row).
-- At 200 bench agents Ryke's throughput falls to 38.5/min: 464 of 466 stale aborts hit changes already
-  ready, waiting for the one train at a time (README says so).
+- The scripted swarm cannot show what leases buy (no two concurrent writers of a hot file in the
+  catalogue); e2e:contention now says so and adds a bench leg where agents contend.
+- At 200 bench agents Ryke's throughput falls from 75.5 to 43.5/min: 383 of 390 stale aborts hit changes
+  already ready. Pipelining's gain at 200 swings with bisections (28.5 to 53 over three runs).
 - The scripted swarm's landed count depends on live Jev and on timing: 33–36 across runs before
   89c8702/016c31e. The causes found (sloppy-a, t-search, t-dark, t-share test names the gate could not
   read; retries re-running v1) are fixed; one category can still run out of attempts when three

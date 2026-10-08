@@ -68,20 +68,27 @@ Landed changes per minute, 120 s per cell on one 4-vCPU VM, zero trunk breakages
 
 | agents | lock (global mutex) | queue (merge queue) | ryke |
 | ------ | ------------------- | ------------------- | ---- |
-| 10     | 7                   | 25.5                | 22   |
-| 50     | 5.5                 | 24                  | 58   |
-| 100    | 5.5                 | 19                  | 68   |
-| 200    | 6.5                 | 24.5                | 38.5 |
+| 10     | 6.5                 | 23                  | 24.5 |
+| 50     | 5.5                 | 23                  | 61.5 |
+| 100    | 5.5                 | 18.5                | 75.5 |
+| 200    | 6                   | 22                  | 43.5 |
 
 The bench agents are synthetic: real git, real merges, real tests, scripted edits, about 10 % of
-read-overlapping pairs semantically incompatible. At 10 agents the merge queue is faster. At 200,
-Ryke's throughput falls: one train lands at a time, and 464 of its 466 stale aborts hit changes that
-were already waiting for a train when trunk moved under them. Full numbers, caveats and the chart:
+read-overlapping pairs semantically incompatible. At 10 agents Ryke and the merge queue are level.
+At 200, Ryke's throughput falls from its peak: 383 of its 390 stale aborts hit changes that were
+already waiting for a train when trunk moved under them. Full numbers, caveats and the chart:
 [bench/results/latest.md](bench/results/latest.md); the dashboard's `#/bench` view renders the same JSON.
 
-What the hot-file leases buy, from the same bench with Ryke's leases switched off
-([bench/results/ablation/latest.md](bench/results/ablation/latest.md)): at 50 agents 56 against 46
-landed per minute and 106 against 245 stale aborts; at 100 agents 64 against 31 and 246 against 502.
+Two parts of Ryke switched off one at a time, on the same bench
+([bench/results/ablation/latest.md](bench/results/ablation/latest.md)):
+
+- **Hot-file leases.** Without them Ryke lands 42.5 against 67 per minute at 50 agents, with 260
+  against 118 stale aborts; at 100 agents 38.5 against 73, and 462 against 317.
+- **Speculative pipelining** (the next train verifies on the candidate of the train landing). Without
+  it Ryke lands 58 against 67 per minute at 50 agents and 55.5 against 73 at 100. At 200 agents three
+  runs gave 28.5, 44.5 and 53 with it, against 36, 36.5 and 37.5 without
+  ([repeats](bench/results/ablation/repeats)). It wins on average there too, but the result swings
+  with whether a train has to bisect, which throws away the train verifying behind it.
 
 ## Commands
 

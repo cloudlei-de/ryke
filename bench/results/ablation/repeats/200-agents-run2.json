@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-10-08T10:23:31.575Z",
+  "durationSeconds": 120,
+  "synthetic": true,
+  "note": "Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1 (median think 6 s), seed 7, 4-vCPU VM, Jev off (the tests are the only gate for every policy).",
+  "cells": [
+    {
+      "policy": "ryke",
+      "agents": 200,
+      "landed": 89,
+      "landedPerMinute": 44.5,
+      "p50": 72.87,
+      "p95": 113.38,
+      "aborts": {
+        "stale_read": 328,
+        "failed_verify": 3,
+        "max_attempts": 40
+      },
+      "verifyRunsPerLanded": 0.31,
+      "wastedAgentSeconds": 1834.6,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nopipe",
+      "agents": 200,
+      "landed": 73,
+      "landedPerMinute": 36.5,
+      "p50": 74.02,
+      "p95": 102.45,
+      "aborts": {
+        "stale_read": 325,
+        "failed_verify": 2,
+        "max_attempts": 41
+      },
+      "verifyRunsPerLanded": 0.26,
+      "wastedAgentSeconds": 1777.4,
+      "trunkBreakages": 0
+    }
+  ]
+}

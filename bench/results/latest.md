@@ -2,42 +2,42 @@
 
 > Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1 (median think 6 s), seed 7, 4-vCPU VM, Jev off (the tests are the only gate for every policy).
 
-Generated 2026-10-08T05:18:16.372Z. Every cell ran for 120 s of wall time on a fresh `convert` trunk; only changes that landed inside that window count.
+Generated 2026-10-08T11:00:03.044Z. Every cell ran for 120 s of wall time on a fresh `convert` trunk; only changes that landed inside that window count.
 
 ## Throughput
 
 ```
-landed per minute (one # is 1.42)
+landed per minute (one # is 1.57)
 
 10 agents
-  lock  |#####                                           | 7
-  queue |##################                              | 25.5
-  ryke  |################                                | 22
+  lock  |####                                            | 6.5
+  queue |###############                                 | 23
+  ryke  |################                                | 24.5
 
 50 agents
-  lock  |####                                            | 5.5
-  queue |#################                               | 24
-  ryke  |#########################################       | 58
+  lock  |###                                             | 5.5
+  queue |###############                                 | 23
+  ryke  |#######################################         | 61.5
 
 100 agents
-  lock  |####                                            | 5.5
-  queue |#############                                   | 19
-  ryke  |################################################| 68
+  lock  |###                                             | 5.5
+  queue |############                                    | 18.5
+  ryke  |################################################| 75.5
 
 200 agents
-  lock  |#####                                           | 6.5
-  queue |#################                               | 24.5
-  ryke  |###########################                     | 38.5
+  lock  |####                                            | 6
+  queue |##############                                  | 22
+  ryke  |############################                    | 43.5
 ```
 
 ## Does Ryke win?
 
 | agents | ranking by landed/min             | winner |
 | ------ | --------------------------------- | ------ |
-| 10     | queue 25.5 > ryke 22 > lock 7     | queue  |
-| 50     | ryke 58 > queue 24 > lock 5.5     | ryke   |
-| 100    | ryke 68 > queue 19 > lock 5.5     | ryke   |
-| 200    | ryke 38.5 > queue 24.5 > lock 6.5 | ryke   |
+| 10     | ryke 24.5 > queue 23 > lock 6.5   | ryke   |
+| 50     | ryke 61.5 > queue 23 > lock 5.5   | ryke   |
+| 100    | ryke 75.5 > queue 18.5 > lock 5.5 | ryke   |
+| 200    | ryke 43.5 > queue 22 > lock 6     | ryke   |
 
 Ryke has the highest landed/min at every N >= 50 in this run.
 
@@ -45,44 +45,44 @@ Ryke has the highest landed/min at every N >= 50 in this run.
 
 | policy | agents | landed | landed/min | p50 s | p95 s  | verify runs/landed | wasted agent-s | trunk breakages | aborts                                             |
 | ------ | ------ | ------ | ---------- | ----- | ------ | ------------------ | -------------- | --------------- | -------------------------------------------------- |
-| lock   | 10     | 14     | 7          | 61.19 | 87.32  | 1                  | 0              | 0               | none                                               |
-| queue  | 10     | 51     | 25.5       | 14.52 | 27.59  | 1.2                | 147.1          | 0               | failed_verify 10, text_conflict 23, max_attempts 5 |
-| ryke   | 10     | 44     | 22         | 12.63 | 23.58  | 0.91               | 146.7          | 0               | stale_read 23, failed_verify 5, max_attempts 4     |
-| lock   | 50     | 11     | 5.5        | 70.61 | 108.19 | 1                  | 0              | 0               | none                                               |
-| queue  | 50     | 48     | 24         | 62.84 | 105.14 | 1.35               | 299.7          | 0               | failed_verify 17, text_conflict 31                 |
-| ryke   | 50     | 116    | 58         | 18.38 | 41.33  | 0.26               | 720.7          | 0               | stale_read 129, failed_verify 3, max_attempts 16   |
-| lock   | 100    | 11     | 5.5        | 59.39 | 110.21 | 1                  | 0              | 0               | none                                               |
-| queue  | 100    | 38     | 19         | 66.08 | 104.7  | 1.74               | 399.8          | 0               | failed_verify 28, text_conflict 34                 |
-| ryke   | 100    | 136    | 68         | 31.42 | 49.67  | 0.15               | 1514.1         | 0               | stale_read 274, max_attempts 39                    |
-| lock   | 200    | 13     | 6.5        | 67.11 | 113.77 | 1                  | 0              | 0               | none                                               |
-| queue  | 200    | 49     | 24.5       | 68.27 | 112.8  | 1.1                | 160.6          | 0               | text_conflict 27, failed_verify 5                  |
-| ryke   | 200    | 77     | 38.5       | 57.38 | 98.07  | 0.16               | 2437.3         | 0               | stale_read 465, max_attempts 85                    |
+| lock   | 10     | 13     | 6.5        | 60.56 | 88.98  | 1                  | 0              | 0               | none                                               |
+| queue  | 10     | 46     | 23         | 15.64 | 28.66  | 1.3                | 156.5          | 0               | failed_verify 14, text_conflict 20, max_attempts 7 |
+| ryke   | 10     | 49     | 24.5       | 13.64 | 43.24  | 0.94               | 168.3          | 0               | stale_read 24, failed_verify 3, max_attempts 1     |
+| lock   | 50     | 11     | 5.5        | 70.99 | 108.55 | 1                  | 0              | 0               | none                                               |
+| queue  | 50     | 46     | 23         | 63.91 | 103.51 | 1.39               | 313.9          | 0               | failed_verify 18, text_conflict 32                 |
+| ryke   | 50     | 123    | 61.5       | 17.98 | 35.26  | 0.37               | 691.3          | 0               | stale_read 119, failed_verify 3, max_attempts 14   |
+| lock   | 100    | 11     | 5.5        | 60.3  | 111.86 | 1                  | 0              | 0               | none                                               |
+| queue  | 100    | 37     | 18.5       | 63.53 | 103.97 | 1.76               | 381.6          | 0               | text_conflict 33, failed_verify 28                 |
+| ryke   | 100    | 151    | 75.5       | 29.75 | 59.02  | 0.2                | 1393.1         | 0               | stale_read 250, failed_verify 3, max_attempts 34   |
+| lock   | 200    | 12     | 6          | 61.54 | 106.56 | 1                  | 0              | 0               | none                                               |
+| queue  | 200    | 44     | 22         | 66.89 | 112.5  | 1.05               | 168.5          | 0               | text_conflict 31, failed_verify 2                  |
+| ryke   | 200    | 87     | 43.5       | 57.9  | 106.87 | 0.21               | 2072.6         | 0               | stale_read 390, failed_verify 1, max_attempts 67   |
 
 ## Cell details
 
 | policy | agents | incompatible pairs | attempts/landed | changes started | landed in grace | unfinished | refreshes | lease waits | agent errors | mean verify s | loop lag p99/max ms | load avg |
 | ------ | ------ | ------------------ | --------------- | --------------- | --------------- | ---------- | --------- | ----------- | ------------ | ------------- | ------------------- | -------- |
-| lock   | 10     | 9.09 % of 99       | 1               | 15              | 1               | 0          | 0         | 0           | 0            | 0.3           | 21.1/27.7           | 0.63     |
-| queue  | 10     | 10.61 % of 1903    | 1.65            | 66              | 7               | 1          | 0         | 0           | 0            | 0.53          | 23.1/38.6           | 2.94     |
-| ryke   | 10     | 10.94 % of 1508    | 1.64            | 58              | 5               | 4          | 47        | 9           | 0            | -             | 23.7/63.4           | 2.45     |
-| lock   | 50     | 4.55 % of 66       | 1               | 12              | 1               | 0          | 0         | 0           | 0            | 0.31          | 21/28.2             | 0.63     |
-| queue  | 50     | 9.9 % of 4524      | 2               | 98              | 9               | 35         | 0         | 0           | 0            | 0.38          | 23.4/42.4           | 2.53     |
-| ryke   | 50     | 10.18 % of 14637   | 2.14            | 182             | 15              | 33         | 130       | 34          | 0            | -             | 37/197.3            | 4.24     |
-| lock   | 100    | 5.45 % of 55       | 1               | 12              | 1               | 0          | 0         | 0           | 0            | 0.3           | 21.2/26.7           | 0.97     |
-| queue  | 100    | 8.67 % of 8861     | 2.63            | 138             | 7               | 93         | 0         | 0           | 0            | 0.4           | 26.1/113.2          | 2.72     |
-| ryke   | 100    | 8.74 % of 30993    | 3.01            | 275             | 24              | 73         | 145       | 49          | 0            | -             | 49.6/239.5          | 4.7      |
-| lock   | 200    | 3.61 % of 83       | 1               | 14              | 1               | 0          | 0         | 0           | 0            | 0.32          | 21.6/45.3           | 0.96     |
-| queue  | 200    | 12.62 % of 29375   | 1.65            | 249             | 9               | 191        | 0         | 0           | 0            | 0.4           | 42.6/237.5          | 2.67     |
-| ryke   | 200    | 11.38 % of 58521   | 7.04            | 362             | 8               | 186        | 132       | 59          | 0            | -             | 71.3/606.6          | 5.69     |
+| lock   | 10     | 10.47 % of 86      | 1               | 14              | 1               | 0          | 0         | 0           | 0            | 0.32          | 21.3/84.5           | 1.34     |
+| queue  | 10     | 9.28 % of 1724     | 1.74            | 63              | 8               | 1          | 0         | 0           | 0            | 0.51          | 23.2/87             | 2.29     |
+| ryke   | 10     | 11.72 % of 1604    | 1.55            | 60              | 3               | 7          | 57        | 9           | 0            | -             | 25.7/110.2          | 2.07     |
+| lock   | 50     | 4.55 % of 66       | 1               | 12              | 1               | 0          | 0         | 0           | 0            | 0.33          | 21.6/72.8           | 0.42     |
+| queue  | 50     | 9.99 % of 4295     | 2.09            | 96              | 6               | 42         | 0         | 0           | 0            | 0.41          | 23.6/67.4           | 3.54     |
+| ryke   | 50     | 9.53 % of 15232    | 1.99            | 187             | 18              | 32         | 156       | 26          | 0            | -             | 47.7/719.3          | 4.89     |
+| lock   | 100    | 5.45 % of 55       | 1               | 12              | 1               | 0          | 0         | 0           | 0            | 0.34          | 22.2/58.6           | 0.79     |
+| queue  | 100    | 9.24 % of 8764     | 2.65            | 137             | 8               | 92         | 0         | 0           | 0            | 0.43          | 28.5/150.5          | 3.25     |
+| ryke   | 100    | 7.65 % of 33315    | 2.68            | 285             | 26              | 68         | 103       | 43          | 0            | -             | 55.3/150.3          | 8.04     |
+| lock   | 200    | 4.17 % of 72       | 1               | 13              | 1               | 0          | 0         | 0           | 0            | 0.32          | 21.7/49.9           | 1.4      |
+| queue  | 200    | 12.94 % of 28489   | 1.75            | 244             | 9               | 191        | 0         | 0           | 0            | 0.43          | 42.1/90.1           | 2.82     |
+| ryke   | 200    | 12 % of 56281      | 5.49            | 354             | 32              | 167        | 146       | 56          | 0            | -             | 79.4/663.2          | 8.3      |
 
 ### Ryke internals
 
 | policy | agents | trains | mean size | max size | bisect probes | stale warnings | stale aborts (while ready) | text conflicts | train cycle p50/p95 s | lease wait s (gave up) | think lost to refresh s | stale aborts by path                                                                                      |
 | ------ | ------ | ------ | --------- | -------- | ------------- | -------------- | -------------------------- | -------------- | --------------------- | ---------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------- |
-| ryke   | 10     | 37     | 1.38      | 4        | 3             | 79             | 23 (21)                    | 0              | 2.42/3.23             | 392.2 (1)              | 121.5                   | src/format.ts 8, src/ui/layout.ts 5, src/bench/pin-b5x1b.ts 4, src/ui/html.ts 2                           |
-| ryke   | 50     | 31     | 3.97      | 8        | 0             | 339            | 129 (113)                  | 0              | 3.77/4.5              | 1941.8 (31)            | 398.3                   | src/format.ts 34, src/ui/layout.ts 23, src/bench/pin-seed-format.ts 17, src/ui/html.ts 10                 |
-| ryke   | 100    | 21     | 6.86      | 8        | 0             | 329            | 274 (270)                  | 0              | 5.39/7.64             | 3506.4 (67)            | 430.8                   | src/ui/layout.ts 76, src/format.ts 71, src/bench/pin-seed-format.ts 48, src/bench/pin-seed-layout.ts 26   |
-| ryke   | 200    | 13     | 6.54      | 8        | 0             | 370            | 466 (464)                  | 0              | 6.23/20.87            | 4704.1 (87)            | 396                     | src/format.ts 228, src/ui/layout.ts 104, src/bench/pin-seed-format.ts 64, src/bench/pin-seed-layout.ts 55 |
+| ryke   | 10     | 45     | 1.16      | 2        | 0             | 96             | 24 (22)                    | 0              | 2.77/3.33             | 316.7 (1)              | 125.9                   | src/format.ts 12, src/bench/pin-b5x1b.ts 4, src/ui/layout.ts 4, src/units/mass.ts 2                       |
+| ryke   | 50     | 45     | 3.11      | 8        | 2             | 340            | 119 (107)                  | 0              | 4.07/4.96             | 1818.2 (42)            | 384                     | src/format.ts 34, src/bench/pin-seed-format.ts 12, src/bench/pin-seed-layout.ts 11, src/ui/layout.ts 10   |
+| ryke   | 100    | 28     | 5.96      | 8        | 4             | 307            | 250 (239)                  | 0              | 7.17/9.49             | 2977 (37)              | 286.5                   | src/ui/layout.ts 58, src/bench/pin-seed-format.ts 45, src/format.ts 32, src/bench/pin-seed-layout.ts 24   |
+| ryke   | 200    | 17     | 6.59      | 8        | 3             | 348            | 390 (383)                  | 0              | 9.47/21.99            | 4470.9 (88)            | 376.2                   | src/ui/layout.ts 154, src/format.ts 145, src/bench/pin-seed-layout.ts 75, src/bench/pin-seed-format.ts 57 |
 
 ## How to read this
 
@@ -99,4 +99,6 @@ Ryke has the highest landed/min at every N >= 50 in this run.
 - `src/registry.ts` carries no numeric constant (the protected units test and `src/index.ts` read every export of it as a category), so only `src/format.ts` and `src/ui/layout.ts` can be semantically incompatible. The registry is still the third hottest file by reads and writes; on Ryke it is a union path and never aborts anything.
 - The lock and queue policies run the same lander jobs as Ryke (`land.sh prepare`, `verify.sh`, `land.sh push`) with a train of one; they enforce no read tracking and no protected paths. Both baselines retry up to the same three attempts as Ryke.
 - Agents, store, runner and worker share one machine, so absolute numbers depend on its load; compare policies within one run, not across runs.
+- ryke x 100: load average 8.04 on 4 vCPUs at the end of the cell; the machine was oversubscribed.
+- ryke x 200: load average 8.3 on 4 vCPUs at the end of the cell; the machine was oversubscribed.
 
