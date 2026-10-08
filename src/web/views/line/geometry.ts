@@ -473,6 +473,7 @@ export function kindSignal(kind: OpKind): Signal | null {
     case "txn.failed":
     case "txn.rejected":
     case "txn.aborted":
+    case "trunk.diverged":
       return "stop";
     case "txn.needs_human":
     case "stale.warning":
@@ -525,6 +526,8 @@ export function shortData(op: Op): string {
       return str(d.reason);
     case "trunk.advanced":
       return `seq ${str(d.seq)} ${shortSha(str(d.sha))}${d.train ? ` ${str(d.train)}` : ""}${d.recall ? ` recall ${str(d.recall)}` : ""}`;
+    case "trunk.diverged":
+      return `store ${shortSha(str(d.store))} ≠ ledger ${shortSha(str(d.ledger))}`;
     case "train.formed": {
       const n = strs(d.txns).length;
       return `${str(d.train)} · ${n} txn${n === 1 ? "" : "s"}`;

@@ -16,7 +16,7 @@ import {
 } from "../../shared/types";
 import { StoreError, storeFor, type RepoStore } from "../store/store";
 import { bump, decayed, HEAT_EMIT_MS, isHot, leaseDecision, shouldEmit } from "./heat";
-import { access, runnerFor, runToCompletion } from "../runner/runner";
+import { access, RunnerError, runnerFor, runToCompletion } from "../runner/runner";
 import { authRemote } from "../service";
 import { planRecall, RecallError, type LandedTxn, type RecallPlan, type RecallSelector } from "./recall";
 import { migrate } from "./schema";
@@ -165,6 +165,7 @@ const STUCK_TRAIN_MS = 120_000;
 const GIVE_UP_TRAIN_MS = 30 * 60_000;
 // A train in any other state has ended; `committed` means trunk moved and only trainDone is left.
 const LIVE_TRAIN = ["running", "bisecting", "judging", "committed"];
+const MAX_CAS_REJECTIONS = 3;
 const MAX_LAND_ERRORS = 3;
 
 // 0.5 s, 1 s, 2 s … capped at 30 s between attempts to start a Land workflow.
@@ -238,6 +239,8 @@ export class Ledger extends DurableObject<Env> {
         const status = { NOT_FOUND: 404, ALREADY_EXISTS: 409, INVALID: 422, UNAVAILABLE: 503 }[e.code];
         return { ok: false, status, error: `store: ${e.message}` };
       }
+      // An unreachable runner is an outage to retry, like an unavailable store.
+      if (e instanceof RunnerError) return { ok: false, status: 503, error: `runner: ${e.message}` };
       throw e;
     }
   }
@@ -1074,6 +1077,7 @@ export class Ledger extends DurableObject<Env> {
 
   private async startTrain(manual: boolean): Promise<TrainParams | null> {
     if (this.meta("train") || this.recalling) return null;
+    if (await this.trunkDiverged()) return null;
     const policy = this.policy();
     const ready = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE state = 'ready' ORDER BY submitted_at, id").toArray();
     if (ready.length === 0) return null;
@@ -1163,6 +1167,24 @@ export class Ledger extends DurableObject<Env> {
     this.endTrain(trainId, "error", JSON.parse(t.txns) as string[], { error: `land workflow ${status}` });
   }
 
+  // Trains keep being rejected when trunk moved outside the Ledger (a push whose answer was lost and
+  // could not be reconciled). Forming more would loop prepare and verify forever, so after a few
+  // rejections the store is asked, and a trunk the Ledger does not know stops the lander with an op.
+  private async trunkDiverged(): Promise<boolean> {
+    if (Number(this.meta("cas_rejections") ?? 0) < MAX_CAS_REJECTIONS) return false;
+    const store = await this.store.info(this.repo()).then((i) => i.head, () => null);
+    const ledger = this.head().sha;
+    if (store === null || store === ledger) {
+      this.setMeta("cas_rejections", null);
+      return false;
+    }
+    if (this.meta("diverged") !== store) {
+      this.setMeta("diverged", store);
+      this.op("trunk.diverged", null, { store, ledger });
+    }
+    return true;
+  }
+
   // Requeues whatever the train still holds and frees the lander for the next train.
   private endTrain(trainId: string, outcome: string, members: string[], extra: Record<string, unknown> = {}, nextInMs = SCHEDULE_MS): void {
     for (const id of members) {
@@ -1174,6 +1196,8 @@ export class Ledger extends DurableObject<Env> {
       else this.transition(r, "ready", { set: { train: null }, detail: { landErrors: errors }, data: { train: trainId, requeued: true } });
     }
     this.sql.exec("UPDATE train SET state = ?, updated_at = ?, detail = ? WHERE id = ?", outcome, this.now(), JSON.stringify(extra), trainId);
+    if (outcome === "cas_rejected") this.setMeta("cas_rejections", String(Number(this.meta("cas_rejections") ?? 0) + 1));
+    else if (outcome === "landed") this.setMeta("cas_rejections", null);
     if (this.meta("train") === trainId) this.setMeta("train", null);
     this.op("train.done", null, { train: trainId, outcome, ...extra });
     this.scheduleSoon(nextInMs);
@@ -1413,12 +1437,15 @@ export class Ledger extends DurableObject<Env> {
     // Revert (write token, no repo code runs), then verify with a read-only token: agent-written tests
     // never run next to a credential that could push to trunk.
     const revert = async (order: string[]): Promise<RevertJob> => {
+      // Union membership is resolved here with the policy's own matcher and handed over as paths, so the
+      // revert job cannot read a glob differently (it once disagreed on `**`).
+      const unionPaths = [...new Set(landed.filter((l) => order.includes(l.id)).flatMap((l) => l.writes))].filter((p) => matchesAny(policy.union, p)).sort();
       const script = {
         recall: id,
         order,
         commits,
         seqs,
-        union: policy.union,
+        unionPaths,
         cascadeCandidates: plan.cascadeCandidates,
         targetOf: Object.fromEntries(order.map((t) => [t, plan.targets.includes(t) ? t : firstTarget(t)])),
       };
@@ -1439,29 +1466,50 @@ export class Ledger extends DurableObject<Env> {
       );
       return { ...prepared, pass: verified.pass, outcome: verified.pass ? "verified" : "verify_failed", tests: verified.tests };
     };
+    // The revert job leaves its result on a scratch ref; a push removes it, anything else must too.
+    const dropRef = () =>
+      token("write")
+        .then((trunk) => runToCompletion(runner, "land", { mode: "cleanup", trunk, refs: JSON.stringify([ref]) }, access.write(repo), 60_000))
+        .catch(() => undefined);
     let forced = false;
-    let result = await revert(plan.order);
-    // §8.4: if the reverted trunk fails its tests, the dependents that relied on the targets go too.
-    if (result.outcome === "verify_failed" && plan.dependents.length > 0) {
-      forced = true;
-      result = await revert([...plan.targets, ...plan.dependents].sort((a, b) => seqs[b]! - seqs[a]!));
-    }
-    if (result.outcome === "verified") {
-      const pushed = done<{ pushed: boolean }>(
-        await runToCompletion(
-          runner,
-          "land",
-          { mode: "push", trunk: await token("write"), candidate: result.head!, notes: "[]", cleanup: JSON.stringify([ref]) },
-          access.write(repo),
-          jobMs,
-          { cancelOnTimeout: false },
-        ),
-        "push",
-      );
-      result = { ...result, outcome: pushed.pushed ? "pushed" : "cas_rejected" };
+    let result: RevertJob;
+    try {
+      result = await revert(plan.order);
+      // §8.4: if the reverted trunk fails its tests, the dependents that relied on the targets go too.
+      if (result.outcome === "verify_failed" && plan.dependents.length > 0) {
+        forced = true;
+        result = await revert([...plan.targets, ...plan.dependents].sort((a, b) => seqs[b]! - seqs[a]!));
+      }
+      if (result.outcome === "verified") {
+        let pushed: boolean;
+        try {
+          pushed = done<{ pushed: boolean }>(
+            await runToCompletion(
+              runner,
+              "land",
+              { mode: "push", trunk: await token("write"), candidate: result.head!, notes: "[]", cleanup: JSON.stringify([ref]) },
+              access.write(repo),
+              jobMs,
+              { cancelOnTimeout: false },
+            ),
+            "push",
+          ).pushed;
+        } catch (e) {
+          // The push may have landed although its answer was lost; trunk itself says which. Without this
+          // the trunk index would stay behind the store and every later train would be rejected.
+          const head = await this.store.info(repo).then((i) => i.head, () => null);
+          if (head !== result.head) throw e;
+          pushed = true;
+        }
+        result = { ...result, outcome: pushed ? "pushed" : "cas_rejected" };
+      }
+    } catch (e) {
+      await dropRef();
+      throw e;
     }
     const summary = { targets: plan.targets, dependents: plan.dependents, order: plan.order };
     if (result.outcome !== "pushed") {
+      await dropRef();
       this.op("recall.done", null, { recall: id, outcome: result.outcome, conflict: result.conflict ?? null, failures: result.tests?.failures ?? [], forced });
       return { dryRun: false, recall: id, plan: summary, outcome: result.outcome, cascade: [], requeued: [], failures: result.tests?.failures ?? [] };
     }

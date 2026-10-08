@@ -18,6 +18,9 @@ type Fake = {
   cas?: boolean;
   gate?: Record<string, GateResult["decision"]>;
   failRebuild?: boolean;
+  // Forks whose fetch fails, for the first `unreachableFor` prepare calls (all of them if unset).
+  unreachable?: string[];
+  unreachableFor?: number;
   head?: string | null;
   calls: { prepare: string[][]; verify: string[]; push: string[]; gate: string[]; cleanup: string[][] };
   candidates?: Map<string, string[]>;
@@ -35,13 +38,17 @@ function fakeDeps(f: Fake): LandDeps {
     },
     async prepare(txns: TrainTxn[], ref: string): Promise<Prepared> {
       f.calls.prepare.push(txns.map((t) => t.id));
-      const applied = txns.filter((t) => !f.conflicts?.includes(t.id));
+      const down = (id: string) => f.unreachable?.includes(id) && f.calls.prepare.length <= (f.unreachableFor ?? Infinity);
+      const applied = txns.filter((t) => !f.conflicts?.includes(t.id) && !down(t.id));
       const candidate = sha(`c${f.calls.prepare.length}${ref.length}`);
       candidates.set(candidate, applied.map((t) => t.id));
       return {
         candidate,
         applied: applied.map((t, i) => ({ txn: t.id, commit: sha(`a${f.calls.prepare.length}b${i}`), paths: [`src/${t.id}.ts`], diffstat: "1 file changed", tamper: false, newTests: [] })),
-        conflicts: txns.filter((t) => f.conflicts?.includes(t.id)).map((t) => ({ txn: t.id, paths: ["src/registry.ts"] })),
+        conflicts: [
+          ...txns.filter((t) => f.conflicts?.includes(t.id)).map((t) => ({ txn: t.id, paths: ["src/registry.ts"] })),
+          ...txns.filter((t) => f.unreachable?.includes(t.id) && f.calls.prepare.length <= (f.unreachableFor ?? Infinity)).map((t) => ({ txn: t.id, paths: [], error: "fetch failed: unable to access" })),
+        ],
       };
     },
     async verify(candidate: string): Promise<Verified> {
@@ -108,6 +115,38 @@ describe("landTrain", () => {
     const d = ok(await t.L.detail(ids[0]!));
     expect(d.evidence).toEqual([{ attempt: 1, kind: "tests", summary: "10 passed, 0 failed in 5 ms", ref: null }]);
     expect(d.verdicts).toEqual([{ attempt: 1, question: "criterion_1", value: 0.9, confidence: null, detail: "fake" }]);
+  });
+
+  // Workflows retries a failed step; this one tries up to three times like the Land step config.
+  const retrying: StepLike = {
+    async do(_name, fn) {
+      for (let i = 1; ; i++) {
+        try {
+          return await fn();
+        } catch (e) {
+          if (i === 3) throw e;
+        }
+      }
+    },
+  };
+
+  it("retries prepare when a fork could not be fetched, and lands everyone once it can", async () => {
+    const { t, ids, params } = await train(3);
+    const f = fake({ unreachable: [ids[1]!], unreachableFor: 1 });
+    expect(await landTrain(env, params, retrying, () => fakeDeps(f))).toEqual({ outcome: "landed" });
+    expect(await states(t, ids)).toEqual(["landed", "landed", "landed"]);
+    expect(f.calls.prepare).toHaveLength(2);
+    expect(await opsOf(t, "txn.stale")).toEqual([]);
+  });
+
+  it("does not call a fork it cannot fetch a text conflict: the train errors and nobody goes stale", async () => {
+    const { t, ids, params } = await train(3);
+    const f = fake({ unreachable: [ids[1]!] });
+    const res = await landTrain(env, params, retrying, () => fakeDeps(f));
+    expect(res.outcome).toBe("error");
+    expect(await states(t, ids)).toEqual(["ready", "ready", "ready"]);
+    expect(await opsOf(t, "txn.stale")).toEqual([]);
+    expect(f.calls.verify).toEqual([]);
   });
 
   it("sends a text conflict back as stale and lands the rest", async () => {

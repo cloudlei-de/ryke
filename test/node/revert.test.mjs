@@ -115,8 +115,16 @@ describe("revert.mjs against real git", () => {
 
   it("removes only the target's own lines from a union file", async () => {
     const { bare, shas } = await trunkWith([{ "reg.ts": "a\n" }, { "reg.ts": "a\nbad\n" }, { "reg.ts": "a\nbad\ngood\n" }]);
-    const r = await run(bare, { recall: "rc_t", order: ["T"], commits: { T: shas[1] }, cascadeCandidates: {}, seqs: {}, union: ["reg.ts"] });
+    const r = await run(bare, { recall: "rc_t", order: ["T"], commits: { T: shas[1] }, cascadeCandidates: {}, seqs: {}, unionPaths: ["reg.ts"] });
     assert.equal(r.outcome, "prepared");
     assert.equal(await g(bare, "show", `${r.head}:reg.ts`), "a\ngood");
+  });
+
+  it("treats only the paths the Ledger resolved as union, never a pattern of its own", async () => {
+    const { bare, shas } = await trunkWith([{ "reg.ts": "a\n" }, { "reg.ts": "a\nbad\n" }, { "reg.ts": "a\nbad\ngood\n" }]);
+    // A glob that would match is ignored: the job has no matcher, so it cannot disagree with policy.ts.
+    const r = await run(bare, { recall: "rc_t", order: ["T"], commits: { T: shas[1] }, cascadeCandidates: {}, seqs: {}, union: ["**"], unionPaths: [] });
+    assert.equal(r.outcome, "conflict");
+    assert.deepEqual(r.conflict, { txn: "T", paths: ["reg.ts"] });
   });
 });

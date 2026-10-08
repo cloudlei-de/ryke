@@ -1,7 +1,7 @@
 // Recall execution (PLAN.md §8) end to end inside the platform: the Ledger plans, revert.sh reverts
 // on a real trunk through the runner, conflicts cascade, cascaded intents come back as new work.
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AUTH, beginTxn, commitToFork, err, gitHelper, landAlone, newRepo, ok, opsOf, store, type TestRepo } from "./helpers";
 
 async function landChange(t: TestRepo, agent: string, model: string, reads: string[], files: Record<string, string | null>) {
@@ -121,6 +121,106 @@ describe("recall", () => {
     expect(ok(await t.L.status(target)).txn.state).toBe("recalled");
     expect(await store.readFile(t.name, res.head!, "src/registry.ts")).toBe("export { a } from './a.ts';\nexport { good } from './good.ts';\n");
     expect(await store.readFile(t.name, res.head!, "src/bad.ts")).toBeNull();
+  });
+
+  // `src/**/registry.ts` covers `src/registry.ts` under the policy's matcher; the revert job used to read
+  // `**` as at least one directory and then could not resolve the union conflict.
+  it("resolves union paths with the policy's matcher, ** included", async () => {
+    const t = await newRepo({ policy: JSON.stringify({ protected: ["test/**", "ryke.json"], union: ["src/**/registry.ts", "CHANGELOG.md"], verify: "true", trainMax: 4 }) });
+    const target = await landChange(t, "agent-13", "sloppy-v0", ["src/registry.ts"], {
+      "src/registry.ts": "export { a } from './a.ts';\nexport { bad } from './bad.ts';\n",
+      "src/bad.ts": "export const bad = 1;\n",
+    });
+    const later = await landChange(t, "agent-01", "m", ["src/registry.ts"], {
+      "src/registry.ts": "export { a } from './a.ts';\nexport { bad } from './bad.ts';\nexport { good } from './good.ts';\n",
+      "src/good.ts": "export const good = 1;\n",
+    });
+    const res = ok(await t.L.recall({ model: "sloppy-v0" }, false));
+    expect(res).toMatchObject({ outcome: "pass", cascade: [] });
+    expect(ok(await t.L.status(later)).txn.state).toBe("landed");
+    expect(ok(await t.L.status(target)).txn.state).toBe("recalled");
+    expect(await store.readFile(t.name, res.head!, "src/registry.ts")).toBe("export { a } from './a.ts';\nexport { good } from './good.ts';\n");
+  });
+
+  describe("when the push job's answer is lost", () => {
+    afterEach(() => vi.restoreAllMocks());
+    // The runner pushes for real, then the status poll for that push job fails: trunk moved, the job
+    // result never arrives.
+    function losePushAnswer() {
+      const original = globalThis.fetch;
+      const real = (r: { url: string }) => original(r as never);
+      const pushJobs = new Set<string>();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const req = new Request(input as RequestInfo, init);
+        const url = new URL(req.url);
+        if (req.method === "POST" && url.pathname === "/v1/jobs") {
+          const body = (await req.clone().json()) as { kind: string; args: Record<string, string> };
+          const res = await real(req);
+          if (body.kind === "land" && body.args.mode === "push") pushJobs.add(((await res.clone().json()) as { id: string }).id);
+          return res;
+        }
+        const id = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/)?.[1];
+        if (req.method === "GET" && id && pushJobs.has(id)) {
+          // Let the push finish first, so trunk has really moved.
+          for (let s = await (await real(req.clone())).json(); (s as { state: string }).state === "running"; s = await (await real(req.clone())).json()) await new Promise((r) => setTimeout(r, 100));
+          return new Response(JSON.stringify({ id, kind: "land", state: "failed", exitCode: 137 }), { headers: { "content-type": "application/json" } });
+        }
+        return real(req);
+      });
+      return pushJobs;
+    }
+
+    it("reports a compare-and-swap rejection, keeps trunk and the targets, and drops its scratch ref", async () => {
+      const t = await newRepo();
+      const target = await landChange(t, "agent-13", "sloppy-v0", [], { "src/z.ts": "z\n" });
+      const before = (await store.info(t.name)).head;
+      const original = globalThis.fetch;
+      const real = (r: { url: string }) => original(r as never);
+      const started: { kind: string; args: Record<string, string> }[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const req = new Request(input as RequestInfo, init);
+        if (req.method === "POST" && new URL(req.url).pathname === "/v1/jobs") {
+          const body = (await req.clone().json()) as { kind: string; args: Record<string, string> };
+          started.push(body);
+          // Someone else moved trunk first: the push job answers as git would, without pushing.
+          if (body.kind === "land" && body.args.mode === "push") {
+            return real(new Request(req.url, { method: "POST", headers: req.headers, body: JSON.stringify({ ...body, kind: "land", args: { ...body.args, mode: "cleanup", refs: "[]" } }) }));
+          }
+        }
+        return real(req);
+      });
+      const res = ok(await t.L.recall({ model: "sloppy-v0" }, false));
+      expect(res.outcome).not.toBe("pass");
+      expect(ok(await t.L.status(target)).txn.state).toBe("landed");
+      expect((await store.info(t.name)).head).toBe(before);
+      expect((await opsOf(t, "recall.done")).at(-1)!.data).toMatchObject({ outcome: res.outcome });
+      expect(started.some((j) => j.kind === "land" && j.args.mode === "cleanup" && j.args.refs?.includes("refs/ryke/recall/"))).toBe(true);
+    });
+
+    it("answers 503 and closes the recall when the runner cannot start its jobs", async () => {
+      const t = await newRepo();
+      const target = await landChange(t, "agent-13", "sloppy-v0", [], { "src/z.ts": "z\n" });
+      const original = globalThis.fetch;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const req = new Request(input as RequestInfo, init);
+        if (new URL(req.url).pathname.startsWith("/v1/jobs")) return new Response("runner down", { status: 503 });
+        return original(input as never, init);
+      });
+      expect(err(await t.L.recall({ model: "sloppy-v0" }, false))).toBe(503);
+      expect((await opsOf(t, "recall.done")).at(-1)!.data).toMatchObject({ outcome: "error" });
+      expect(ok(await t.L.status(target)).txn.state).toBe("landed");
+    });
+
+    it("records the recall when trunk shows the push landed", async () => {
+      const t = await newRepo();
+      const target = await landChange(t, "agent-13", "sloppy-v0", [], { "src/z.ts": "z\n" });
+      const pushJobs = losePushAnswer();
+      const res = ok(await t.L.recall({ model: "sloppy-v0" }, false));
+      expect(pushJobs.size).toBe(1);
+      expect(res.outcome).toBe("pass");
+      expect(ok(await t.L.status(target)).txn.state).toBe("recalled");
+      expect(ok(await t.L.summary()).head).toBe((await store.info(t.name)).head);
+    });
   });
 
   it.each([

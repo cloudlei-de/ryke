@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PushEvent } from "../src/shared/types";
 import type { Context } from "hono";
 import { api, authorized, respond } from "../src/worker/api";
-import { agentToken, agentTokenTxn, ledger, sameText } from "../src/worker/service";
+import { agentToken, agentTokenTxn, ledger, registerRepo, sameText } from "../src/worker/service";
 import { apiBegin, AUTH, commitToFork, fixture, http, landOnTrunk, lazy, newRepo, ok, opsOf, store, unique, type Json, type TestRepo } from "./helpers";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -1845,6 +1845,8 @@ describe("POST /internal/events", () => {
     await store.fork(fixture.name, name);
     const head = (await store.info(name)).head!;
     ok(await ledger(env, name).init(name, head, null, { autoland: false }));
+    // What POST /api/repos does after init; ingest only routes events for registered repos.
+    await registerRepo(env, name);
     const b = await apiBegin(name);
     const sha = await commitToFork(b, { "src/x.ts": "x\n" });
     const r = await internal(pushEvent(`${name}--${b.txn}`, sha));

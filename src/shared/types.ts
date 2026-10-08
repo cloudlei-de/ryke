@@ -69,6 +69,7 @@ export const OP_KINDS = [
   "txn.rejected",
   "txn.recalled",
   "trunk.advanced",
+  "trunk.diverged",
   "train.formed",
   "train.bisect",
   "train.done",

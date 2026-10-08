@@ -863,6 +863,29 @@ describe("train scheduling failures and the watchdog", () => {
     expect((await opsOf(t, "txn.landed")).filter((o) => o.txn === x.b.txn)).toHaveLength(1);
   });
 
+  it("stops forming trains once repeated compare-and-swap rejections show trunk moved outside the Ledger", async () => {
+    const t = await newRepo();
+    const x = await readyTxn(t, { "src/n.ts": "n\n" });
+    const trunk = await store.info(t.name);
+    const rogue = await gitHelperCommitOn({ remote: trunk.remote, token: await store.token(t.name, "write", 600) }, trunk.head!, { "src/rogue.ts": "r\n" });
+    for (let i = 0; i < 3; i++) {
+      const train = ok(await t.L.formTrain()).train!;
+      ok(await t.L.trainDone(train, "cas_rejected"));
+      expect(ok(await t.L.status(x.b.txn)).txn.state).toBe("ready");
+    }
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+    expect((await opsOf(t, "trunk.diverged")).map((o) => o.data)).toEqual([{ store: rogue, ledger: t.head }]);
+  });
+
+  it("keeps forming trains after rejections when trunk is where the Ledger thinks it is", async () => {
+    const t = await newRepo();
+    await readyTxn(t, { "src/n.ts": "n\n" });
+    for (let i = 0; i < 3; i++) ok(await t.L.trainDone(ok(await t.L.formTrain()).train!, "cas_rejected"));
+    expect(ok(await t.L.formTrain()).train).not.toBeNull();
+    expect(await opsOf(t, "trunk.diverged")).toEqual([]);
+  });
+
   it("ignores a late callback from a workflow whose train already ended", async () => {
     const t = await newRepo();
     const x = await readyTxn(t, { "src/n.ts": "n\n" });

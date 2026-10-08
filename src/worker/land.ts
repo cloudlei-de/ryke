@@ -10,7 +10,7 @@ import { authRemote, ledger } from "./service";
 import { storeFor } from "./store/store";
 
 export type Applied = { txn: string; commit: string; paths: string[]; diffstat: string; tamper: boolean; newTests: string[] };
-export type Prepared = { candidate: string; applied: Applied[]; conflicts: { txn: string; paths: string[] }[] };
+export type Prepared = { candidate: string; applied: Applied[]; conflicts: { txn: string; paths: string[]; error?: string }[] };
 export type Verified = { pass: boolean; exitCode: number; durationMs: number; timedOut?: boolean; tests: TestSummary; screenshot?: string; log?: string };
 export type Note = { sha: string; note: Record<string, unknown> };
 
@@ -112,7 +112,14 @@ export async function landTrain(env: Env, p: TrainParams, step: StepLike, depsFo
     const build = async (ids: string[], label: string) => {
       const ref = `refs/ryke/candidates/${t}/${refs.length}`;
       refs.push(ref);
-      const prepared = await step.do(named(`prepare-${label}`), () => d.prepare(ids.map((id) => byId.get(id)!), ref));
+      const prepared = await step.do(named(`prepare-${label}`), async () => {
+        const res = await d.prepare(ids.map((id) => byId.get(id)!), ref);
+        // A fork that could not be fetched says nothing about its change: failing the step retries it,
+        // where reporting it as a conflict would send an innocent member back stale, or fail it in a probe.
+        const unreachable = res.conflicts.filter((c) => c.error?.startsWith("fetch failed"));
+        if (unreachable.length > 0) throw new Error(`prepare could not fetch ${unreachable.map((c) => c.txn).join(", ")}: ${unreachable[0]!.error}`);
+        return res;
+      });
       const verified = prepared.applied.length > 0 ? await step.do(named(`verify-${label}`), () => d.verify(prepared.candidate)) : null;
       return { prepared, verified };
     };

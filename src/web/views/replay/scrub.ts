@@ -208,6 +208,7 @@ const SIGNALS: Record<OpKind, Signal | null> = {
   "txn.rejected": "stop",
   "txn.recalled": "recall",
   "trunk.advanced": null,
+  "trunk.diverged": "stop",
   "train.formed": "run",
   "train.bisect": "run",
   "train.done": null,

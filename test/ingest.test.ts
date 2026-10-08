@@ -1,8 +1,8 @@
 // The ryke-ingest workflow (PLAN.md §5.5): the production path for push events, run here for real.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { isPushEvent } from "../src/worker/ingest";
-import { beginTxn, commitToFork, newRepo, ok } from "./helpers";
+import { ingestPush, isPushEvent } from "../src/worker/ingest";
+import { beginTxn, commitToFork, newRepo, ok, unique } from "./helpers";
 
 const event = (repoName: string, after: string, ref = "refs/heads/main") => ({
   type: "cf.artifacts.repo.pushed" as const,
@@ -44,6 +44,14 @@ describe("Ingest workflow", () => {
     expect(s.status).toBe("complete");
     expect(s.output).toEqual({ txn: b.txn });
     expect(ok(await t.L.status(b.txn)).txn.head).toBe(sha);
+  });
+
+  it.each(["__index--t_x", "Bad--t_x", "a.b--t_x", "", "--t_x"])("ignores the malformed repo name in %j without asking any Ledger", async (name) => {
+    expect(await ingestPush(env, event(name, "a".repeat(40)) as never)).toEqual({ txn: null });
+  });
+
+  it("ignores a push to a repo nobody created", async () => {
+    expect(await ingestPush(env, event(`${unique("never")}--t_x`, "a".repeat(40)) as never)).toEqual({ txn: null });
   });
 
   it("ignores anything that is not a push event", async () => {

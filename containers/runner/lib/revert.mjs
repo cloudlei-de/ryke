@@ -26,12 +26,6 @@ export function withoutAddedLines(current, added) {
   return lines.join("\n");
 }
 
-function isUnion(patterns, path) {
-  return patterns.some((p) => {
-    const re = new RegExp(`^${p.split("**").map((part) => part.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")}$`);
-    return re.test(path);
-  });
-}
 
 async function revertUnion(dir, sha, paths) {
   for (const path of paths) {
@@ -50,8 +44,9 @@ async function revertOne(dir, plan, id, target, reverted, cascade, depth = 0) {
   const res = await git(dir, ["revert", "--no-commit", sha], { allowFail: true });
   if (res.code !== 0) {
     const paths = (await git(dir, ["diff", "--name-only", "--diff-filter=U"])).stdout.trim().split("\n").filter(Boolean);
-    const union = plan.union ?? [];
-    if (paths.length > 0 && paths.every((p) => isUnion(union, p))) {
+    // The Ledger resolved which paths are union paths with the policy's matcher (ledger.ts executeRecall).
+    const union = new Set(plan.unionPaths ?? []);
+    if (paths.length > 0 && paths.every((p) => union.has(p))) {
       await revertUnion(dir, sha, paths);
     } else {
       await git(dir, ["revert", "--abort"], { allowFail: true });
