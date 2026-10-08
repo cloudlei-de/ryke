@@ -1,0 +1,68 @@
+{
+  "state": {
+    "intent": "Add the \"Time\" converter category with 7 units: s, ms, min, h, d, wk, yr",
+    "test_summary": "68 passed, 0 failed",
+    "new_tests": [
+      "time: ${c.v} ${c.from} is ${c.result} ${c.to}",
+      "time: ${c.v} ${c.from} to ${c.to} displays as ${c.display}",
+      "time has a converter page"
+    ],
+    "diff_stat": " CHANGELOG.md      |  1 +\n src/registry.ts   |  1 +\n src/units/time.ts | 16 ++++++++++++++++\n test/time.test.ts | 34 ++++++++++++++++++++++++++++++++++\n 4 files changed, 52 insertions(+)",
+    "screenshot_description": "(agent-provided) Home page tile grid now includes a \"Time\" tile; its converter page lists 1 second in 6 other units.",
+    "criterion_1": "The \"Time\" category is listed on the home page and /c/time renders its converter page.",
+    "criterion_2": "/api/convert converts 90 min to h correctly (about 1.5) and returns the formatted value in display.",
+    "criterion_3": "test/time.test.ts covers the conversions and their displayed values and passes."
+  },
+  "questions": {
+    "criterion_1": {
+      "type": "noul",
+      "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+      "criteria": {
+        "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+        "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+      }
+    },
+    "criterion_2": {
+      "type": "noul",
+      "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_2` is met?",
+      "criteria": {
+        "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+        "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+      }
+    },
+    "criterion_3": {
+      "type": "noul",
+      "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_3` is met?",
+      "criteria": {
+        "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+        "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+      }
+    },
+    "scope_creep": {
+      "type": "noul",
+      "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+      "criteria": {
+        "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+        "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+      }
+    }
+  },
+  "answers": {
+    "criterion_1": {
+      "type": "noul",
+      "noul": 0.95
+    },
+    "criterion_2": {
+      "type": "noul",
+      "noul": 0.76
+    },
+    "criterion_3": {
+      "type": "noul",
+      "noul": 0.93
+    },
+    "scope_creep": {
+      "type": "noul",
+      "noul": 0.12
+    }
+  }
+}

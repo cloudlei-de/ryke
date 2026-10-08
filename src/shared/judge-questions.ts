@@ -40,13 +40,16 @@ export const SCOPE_CRITERIA = {
   false: "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry",
 };
 
+// "Ignoring every other existing intent" matters once two similar intents are in flight: asked
+// together, Jev split the duplicate probability between them (0.85 alone, 0.32 and 0.25 as a pair),
+// so a real duplicate fell below the warning threshold.
 export function screenQuestions(intent: string, candidates: { intent: string }[]) {
   const state: Record<string, string> = { new_intent: intent };
   const questions: Questions = {};
   candidates.forEach((c, i) => {
     const k = `existing_${i + 1}`;
     state[k] = c.intent;
-    questions[`dup_${i + 1}`] = noul(`Would completing \`new_intent\` produce essentially the same change to the codebase as completing \`${k}\`?`, DUPLICATE_CRITERIA);
+    questions[`dup_${i + 1}`] = noul(`Comparing only \`new_intent\` and \`${k}\` and ignoring every other existing intent, would completing \`new_intent\` produce essentially the same change to the codebase as completing \`${k}\`?`, DUPLICATE_CRITERIA);
     questions[`conflict_${i + 1}_ab`] = score(`How do \`new_intent\` and \`${k}\` interact if two agents implement them at the same time on the same codebase?`, CONFLICT_LEVELS);
     questions[`conflict_${i + 1}_ba`] = score(`How do \`${k}\` and \`new_intent\` interact if two agents implement them at the same time on the same codebase?`, CONFLICT_LEVELS);
   });

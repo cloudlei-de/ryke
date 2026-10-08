@@ -1,0 +1,50 @@
+{
+  "state": {
+    "new_intent": "Add a Power converter with watts, kilowatts, megawatts, horsepower and metric horsepower",
+    "existing_1": "Add the \"Power\" converter category with 7 units: W, kW, MW, hp, PS, BTU/h, kcal/h"
+  },
+  "questions": {
+    "dup_1": {
+      "type": "noul",
+      "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+      "criteria": {
+        "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+        "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+      }
+    },
+    "conflict_1_ab": {
+      "type": "score",
+      "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+      "criteria": [
+        "Independent: they add or change separate things, neither needs the other, and either can land first",
+        "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+        "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+      ]
+    },
+    "conflict_1_ba": {
+      "type": "score",
+      "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+      "criteria": [
+        "Independent: they add or change separate things, neither needs the other, and either can land first",
+        "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+        "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+      ]
+    }
+  },
+  "answers": {
+    "dup_1": {
+      "type": "noul",
+      "noul": 0.43
+    },
+    "conflict_1_ab": {
+      "type": "score",
+      "score": 1.04,
+      "confidence": 0.9
+    },
+    "conflict_1_ba": {
+      "type": "score",
+      "score": 1.04,
+      "confidence": 0.91
+    }
+  }
+}

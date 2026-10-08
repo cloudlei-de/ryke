@@ -1,0 +1,41 @@
+{
+  "state": {
+    "intent": "Add the \"Area\" converter category with 9 units: m², km², ha, cm², ft², in², yd², ac, mi²",
+    "test_summary": "83 passed, 0 failed",
+    "new_tests": [
+      "volume: ${c.v} ${c.from} is ${c.result} ${c.to}",
+      "volume: ${c.v} ${c.from} to ${c.to} displays as ${c.display}",
+      "volume has a converter page"
+    ],
+    "diff_stat": " CHANGELOG.md        |  1 +\n src/registry.ts     |  1 +\n src/units/volume.ts | 19 +++++++++++++++++++\n test/volume.test.ts | 34 ++++++++++++++++++++++++++++++++++\n 4 files changed, 55 insertions(+)",
+    "criterion_1": "The \"Area\" category is listed on the home page and /c/area renders its converter page."
+  },
+  "questions": {
+    "criterion_1": {
+      "type": "noul",
+      "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+      "criteria": {
+        "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+        "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+      }
+    },
+    "scope_creep": {
+      "type": "noul",
+      "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+      "criteria": {
+        "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+        "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+      }
+    }
+  },
+  "answers": {
+    "criterion_1": {
+      "type": "noul",
+      "noul": 0.06
+    },
+    "scope_creep": {
+      "type": "noul",
+      "noul": 0.93
+    }
+  }
+}

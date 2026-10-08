@@ -21,7 +21,9 @@ export type { GateInput, GateResult, Verdict } from "../shared/judge-questions";
 export type Asked = { answers: Record<string, Answer>; source: "live" | "recorded" | "neutral" | "off" };
 
 type Fixture = { state: unknown; questions: Questions; answers: Record<string, Answer> };
-const FIXTURES = Object.values(import.meta.glob<Fixture>("../../test/fixtures/jev/*.json", { eager: true, import: "default" }));
+const FIXTURES = Object.values(
+  import.meta.glob<Fixture>(["../../test/fixtures/jev/*.json", "!../../test/fixtures/jev/requests.json"], { eager: true, import: "default" }),
+);
 
 export function stable(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
