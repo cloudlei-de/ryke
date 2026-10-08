@@ -261,6 +261,22 @@ describe("which patch to try", () => {
   for (const [name, t, tried, expected] of table) {
     it(name, () => assert.deepEqual(nextVariant(t, tried), expected));
   }
+
+  // A retry re-applies the patch it submitted last (PLAN.md section 10.4), not v1 again: under load each
+  // doomed v1 test run cost about 20 s, long enough for the next hot-file landing to stale the change.
+  const retries = [
+    ["a retry after v2 starts with v2", withV2, ["v2"], [], { variant: "v2" }],
+    ["v2 still works", withV2, ["v2"], [v("v2", true, true)], { done: true, variant: "v2" }],
+    ["v2 no longer fits (a recall took its base away): back to v1", withV2, ["v2"], [v("v2", true, false)], { variant: "v1" }],
+    ["neither fits any more", withV2, ["v2"], [v("v2", false, false), v("v1", false, false)], { abort: "patch_does_not_apply" }],
+    ["v2 fails, v1 does not apply", withV2, ["v2"], [v("v2", true, false), v("v1", false, false)], { abort: "local_tests_fail" }],
+    ["a retry after v1 starts with v1", withV2, ["v1"], [], { variant: "v1" }],
+    ["the last submission decides", withV2, ["v1", "v2"], [], { variant: "v2" }],
+    ["a task without v2 stays on v1", without, ["v1"], [v("v1", true, false)], { abort: "local_tests_fail" }],
+  ];
+  for (const [name, t, submitted, tried, expected] of retries) {
+    it(name, () => assert.deepEqual(nextVariant(t, tried, submitted), expected));
+  }
 });
 
 describe("lease patience (PLAN.md section 7.2)", () => {

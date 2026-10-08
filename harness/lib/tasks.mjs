@@ -172,11 +172,14 @@ export function thinkMs(rng, task, { speed = 1, retry = false } = {}) {
 // { variant: "v1" | "v2", applied: boolean, passed: boolean }.
 // ---------------------------------------------------------------------------------------------
 
-export function nextVariant(task, tried) {
+// `submitted` lists the variants earlier attempts of this transaction submitted: a retry starts from the
+// last one, because the trunk that made it necessary is still there.
+export function nextVariant(task, tried, submitted = []) {
   const last = tried.at(-1);
-  if (!last) return { variant: "v1" };
-  if (last.applied && last.passed) return { done: true, variant: last.variant };
-  if (last.variant === "v1" && task.v2) return { variant: "v2" };
+  if (last?.applied && last.passed) return { done: true, variant: last.variant };
+  const order = !task.v2 ? ["v1"] : submitted.at(-1) === "v2" ? ["v2", "v1"] : ["v1", "v2"];
+  const next = order[tried.length];
+  if (next) return { variant: next };
   // A patch that applied but failed its tests got further than one that did not apply; report that.
   return { abort: tried.some((t) => t.applied) ? "local_tests_fail" : "patch_does_not_apply" };
 }

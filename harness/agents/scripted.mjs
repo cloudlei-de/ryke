@@ -145,7 +145,7 @@ export async function runTask(ctx) {
       await sleep(ms);
 
       const tried = [];
-      for (let step = nextVariant(task, tried); !step.done; step = nextVariant(task, tried)) {
+      for (let step = nextVariant(task, tried, result.variants); !step.done; step = nextVariant(task, tried, result.variants)) {
         if (step.abort) {
           say(`abort: ${step.abort}`);
           await api.abort(b.txn, step.abort);
