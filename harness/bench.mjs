@@ -10,7 +10,7 @@ import { parseArgs } from "node:util";
 import { startStack } from "../dev/stack.mjs";
 import { POLICIES } from "../src/shared/bench.ts";
 import { runCell } from "./bench/cell.mjs";
-import { buildResults } from "./bench/metrics.mjs";
+import { ABLATION_POLICIES, BENCH_POLICIES, buildResults } from "./bench/metrics.mjs";
 import { renderMarkdown, table } from "./bench/render.mjs";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
@@ -18,6 +18,9 @@ const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const USAGE = `usage: bench.mjs [--agents 10,50,100,200] [--policy lock,queue,ryke] [--duration 300]
                 [--time-factor 1] [--seed 7] [--offset 70] [--grace 20] [--out bench/results]
                 [--caveat "text" ...] [--detail file.json]
+  --policy       any of lock, queue, ryke, ryke-nolease (Ryke with write leases off, for the lease comparison).
+                 A run that includes ryke-nolease writes to bench/results/ablation by default, because the
+                 dashboard's results format does not know that name
   --duration     seconds of wall time per cell; only changes landed inside it count
   --time-factor  multiplies every think time (median 6 s), the same for every policy
   --offset       port offset of the private stack (store 8788, runner 8789, worker 5173 + offset)
@@ -49,7 +52,7 @@ export function parseBenchArgs(argv) {
         seed: { type: "string", default: "7" },
         offset: { type: "string", default: "70" },
         grace: { type: "string", default: "20" },
-        out: { type: "string", default: join(ROOT, "bench/results") },
+        out: { type: "string" },
         caveat: { type: "string", multiple: true, default: [] },
         detail: { type: "string" },
         help: { type: "boolean", short: "h", default: false },
@@ -63,15 +66,18 @@ export function parseBenchArgs(argv) {
     if (!Number.isFinite(n) || !ok(n)) throw new UsageError(`--${name} must be ${hint}, got ${v}`);
     return n;
   };
+  const policies = list(values.policy, "policy", (s) => BENCH_POLICIES.includes(s));
+  // The dashboard file must only ever hold policies the dashboard knows, so a run with an ablation goes elsewhere.
+  const out = values.out ?? join(ROOT, "bench/results", policies.some((p) => ABLATION_POLICIES.includes(p)) ? "ablation" : "");
   return {
     agents: list(values.agents, "agents", (s) => /^\d+$/.test(s) && Number(s) >= 1 && Number(s) <= 1000).map(Number),
-    policies: list(values.policy, "policy", (s) => POLICIES.includes(s)),
+    policies,
     durationS: num("duration", values.duration, (n) => n >= 5, "a number of seconds of at least 5"),
     factor: num("time-factor", values["time-factor"], (n) => n > 0, "greater than 0"),
     seed: num("seed", values.seed, Number.isInteger, "an integer"),
     offset: num("offset", values.offset, (n) => Number.isInteger(n) && n >= 0, "a non-negative integer"),
     graceS: num("grace", values.grace, (n) => n >= 0, "0 or more seconds"),
-    out: resolve(values.out),
+    out: resolve(out),
     caveats: values.caveat,
     detail: values.detail ? resolve(values.detail) : null,
     help: values.help,
@@ -103,6 +109,9 @@ const STATIC_CAVEATS = [
 // Facts about a run that a reader needs before trusting its numbers.
 export function caveatsFor(details, extra = []) {
   const out = [...STATIC_CAVEATS, ...extra];
+  if (details.some((d) => ABLATION_POLICIES.includes(d.policy))) {
+    out.push("`ryke-nolease` is Ryke with write leases off: identical agents and refresh on a stale warning, but they never call intend-write. The dashboard's results format only knows lock, queue and ryke, so this run is not written to bench/results/latest.json.");
+  }
   const cpus = availableParallelism();
   for (const d of details) {
     const where = `${d.policy} x ${d.agents}`;

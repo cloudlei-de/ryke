@@ -187,3 +187,10 @@ export function rykePolicy({ api, repo, clock, stats, now = Date.now }) {
     },
   };
 }
+
+// Ryke with the lease tool taken away: the same agents, the same refresh on a stale warning, but they never
+// call intend-write, so nobody ever waits for a hot file. The difference to `ryke` is what leases buy.
+export function rykeNoLeasePolicy(opts) {
+  const { admit: _leases, ...rest } = rykePolicy(opts);
+  return { ...rest, name: "ryke-nolease" };
+}

@@ -12,10 +12,10 @@ import { promisify } from "node:util";
 import { MAX_REFRESHES, runAgent } from "../../harness/agents/synthetic.mjs";
 import { caveatsFor, main as benchMain, noteFor, parseBenchArgs, runBench, startBenchStack, UsageError, writeResults } from "../../harness/bench.mjs";
 import { runCell, runVerifyCommand } from "../../harness/bench/cell.mjs";
-import { buildResults, percentile, rykeOpStats, rykeVerifyRuns, summarizeCell } from "../../harness/bench/metrics.mjs";
+import { ABLATION_POLICIES, BENCH_POLICIES, buildResults, isRyke, percentile, rykeOpStats, rykeVerifyRuns, summarizeCell } from "../../harness/bench/metrics.mjs";
 import { authRemote, checkTrunk, controlPlane, FifoQueue, landOne, Mutex, pickCommits, sleep } from "../../harness/bench/plumbing.mjs";
-import { lockPolicy, queuePolicy, Rejected, rykePolicy } from "../../harness/bench/policies.mjs";
-import { chart, renderMarkdown, table, verdict } from "../../harness/bench/render.mjs";
+import { lockPolicy, queuePolicy, Rejected, rykeNoLeasePolicy, rykePolicy } from "../../harness/bench/policies.mjs";
+import { chart, leaseComparison, renderMarkdown, table, verdict } from "../../harness/bench/render.mjs";
 import { inferCause, outcomeFromState, waitWhileSettling } from "../../harness/bench/settle.mjs";
 import {
   BENCH_CONSTS,
@@ -686,6 +686,23 @@ describe("the results JSON", () => {
     assert.throws(() => buildResults({ cells: [{ ...cell("ryke", 10), aborts: { x: "1" } }], durationSeconds: 1, note }), /bench\.ts/);
   });
 
+  it("accepts ablation cells as the Ryke variant they are, and still refuses a malformed one", () => {
+    const ablation = [cell("ryke", 50), cell("ryke-nolease", 50)];
+    const r = buildResults({ cells: ablation, durationSeconds: 120, note, generatedAt: "2026-10-12T10:00:00.000Z" });
+    assert.deepEqual(r.cells.map((c) => c.policy), ["ryke", "ryke-nolease"]);
+    assert.throws(() => buildResults({ cells: [{ ...cell("ryke-nolease", 50), landed: Number.NaN }], durationSeconds: 1, note }), /bench\.ts/);
+    assert.throws(() => buildResults({ cells: [{ ...cell("ryke-nolease", 50), aborts: [] }], durationSeconds: 1, note }), /bench\.ts/);
+    assert.throws(() => buildResults({ cells: [cell("ryke-nolease-x", 50)], durationSeconds: 1, note }), /bench\.ts/);
+  });
+
+  // Why a run with an ablation never goes to bench/results/latest.json: parseBench in src/shared/bench.ts
+  // rejects the whole file when one cell names a policy outside POLICIES. Update this when it learns the name.
+  it("the dashboard's parseBench refuses a file with a policy it does not know", () => {
+    const withAblation = { generatedAt: null, durationSeconds: 1, synthetic: true, note: "n", cells: [cell("ryke", 50), cell("ryke-nolease", 50)] };
+    assert.equal(parseBench(withAblation), null);
+    assert.ok(parseBench({ ...withAblation, cells: [cell("ryke", 50)] }));
+  });
+
   it("the note says what the agents are, and the time factor, seed, VM and Jev", () => {
     const n = noteFor({ factor: 0.5, seed: 11 });
     for (const part of ["Synthetic agents: real git, real merges, real tests, scripted edits", "Time factor 0.5", "median think 3 s", "seed 11", `${availableParallelism()}-vCPU VM`, "Jev off"]) assert.ok(n.includes(part), `${part} in ${n}`);
@@ -721,7 +738,7 @@ function detail(policy, agents, over = {}) {
     loopLagMs: { p50: 20, p99: 40, max: 90 },
     loadAverage1m: 1.5,
     ledger: null,
-    ryke: policy === "ryke" ? { trains: 5, meanTrainSize: 2.4, maxTrainSize: 5, bisectProbes: 0, staleWarnings: 3, staleAborts: 4, conflictAborts: 0, trainCycleSecondsP50: 3, trainCycleSecondsP95: 5, stalePaths: { "src/format.ts": 3, "src/ui/layout.ts": 1 } } : null,
+    ryke: policy.startsWith("ryke") ? { trains: 5, meanTrainSize: 2.4, maxTrainSize: 5, bisectProbes: 0, staleWarnings: 3, staleAborts: 4, conflictAborts: 0, trainCycleSecondsP50: 3, trainCycleSecondsP95: 5, stalePaths: { "src/format.ts": 3, "src/ui/layout.ts": 1 } } : null,
     ...over,
   };
 }
@@ -769,6 +786,70 @@ describe("the report", () => {
     assert.equal((md.match(/^\| (lock|queue|ryke) +\| \d+ +\| \d+ +\| [\d.]+ +\| 8 /gm) ?? []).length, 6);
   });
 
+  describe("with write leases off", () => {
+    const pair = (n, on, off) => [cell("ryke", n, on), cell("ryke-nolease", n, off)];
+    const aborted = (c, stale) => ({ ...c, aborts: { stale_read: stale, max_attempts: 1 } });
+
+    it("the chart labels the ablation without breaking the bars", () => {
+      const text = chart([...pair(50, 20, 10), cell("lock", 50, 5)], { width: 40 });
+      assert.match(text, /^ {2}ryke-nolease \|#{20} *\| 10$/m);
+      assert.match(text, /^ {2}ryke {9}\|#{40}\| 20$/m);
+      assert.match(text, /^ {2}lock {9}\|#{10} *\| 5$/m);
+    });
+
+    it("the ablation is never a competitor: it does not change the verdict", () => {
+      const v = verdict([cell("lock", 50, 3), cell("queue", 50, 4), cell("ryke", 50, 9)].filter((c) => POLICIES.includes(c.policy)));
+      assert.equal(v.rykeWinsEveryLarge, true);
+      const cells = [cell("lock", 50, 3), cell("queue", 50, 4), ...pair(50, 9, 30)];
+      const results = buildResults({ cells, durationSeconds: 60, note: "n", generatedAt: null });
+      const md = renderMarkdown({ results, details: cells.map((c) => detail(c.policy, c.agents)), meta: {} });
+      assert.match(md, /Ryke has the highest landed\/min at every N >= 50/);
+      assert.match(md, /\| 50 +\| queue 4 > lock 3 > ryke 9|\| 50 +\| ryke 9 > queue 4 > lock 3/);
+      assert.doesNotMatch(md, /ryke-nolease \d+ >/);
+    });
+
+    const comparison = [
+      ["leases win", pair(50, 24, 20), "+20 %"],
+      ["leases lose", pair(50, 15, 20), "-25 %"],
+      ["equal", pair(50, 20, 20), "+0 %"],
+      ["nothing lands without leases", pair(50, 20, 0), "n/a"],
+    ];
+    for (const [name, cells, delta] of comparison) {
+      it(`leaseComparison, ${name}: ${delta}`, () => {
+        const { rows, lines } = leaseComparison(cells.map((c) => aborted(c, c.policy === "ryke" ? 2 : 7)), cells.map((c) => detail(c.policy, c.agents)));
+        assert.equal(rows.length, 2);
+        assert.deepEqual(rows.map((r) => r[1]), ["ryke", "ryke-nolease"]);
+        assert.deepEqual(rows.map((r) => r[6]), [2, 7]);
+        assert.equal(lines.length, 1);
+        assert.ok(lines[0].includes(`(${delta})`), lines[0]);
+        assert.match(lines[0], /stale_read aborts 2 against 7/);
+      });
+    }
+
+    it("leaseComparison pairs by agent count and shows a lone ablation cell without a delta", () => {
+      const cells = [...pair(10, 5, 4), cell("ryke-nolease", 50, 9), cell("ryke", 100, 30)];
+      const { rows, lines } = leaseComparison(cells, cells.map((c) => detail(c.policy, c.agents)));
+      assert.deepEqual(rows.map((r) => `${r[0]} ${r[1]}`), ["10 ryke", "10 ryke-nolease", "50 ryke-nolease"]);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^- 10 agents/);
+    });
+
+    it("leaseComparison is empty, and the section absent, when no ablation cell ran", () => {
+      assert.deepEqual(leaseComparison([cell("ryke", 50, 9), cell("lock", 50, 3)], []), { rows: [], lines: [] });
+      const results = buildResults({ cells: [cell("ryke", 50, 9)], durationSeconds: 60, note: "n", generatedAt: null });
+      assert.doesNotMatch(renderMarkdown({ results, details: [detail("ryke", 50)], meta: {} }), /Write leases on and off/);
+    });
+
+    it("the markdown has the lease section, both policies in the cell table and the Ryke internals", () => {
+      const cells = pair(50, 24, 20);
+      const results = buildResults({ cells, durationSeconds: 120, note: noteFor({ factor: 1, seed: 7 }), generatedAt: "2026-10-12T10:00:00.000Z" });
+      const details = cells.map((c) => detail(c.policy, c.agents, c.policy === "ryke-nolease" ? { leaseWaits: 0 } : {}));
+      const md = renderMarkdown({ results, details, meta: { caveats: caveatsFor(details) } });
+      for (const part of ["## Write leases on and off", "ryke-nolease", "leases on land 24/min against 20/min with leases off (+20 %)", "| policy", "never call intend-write"]) assert.ok(md.includes(part), part);
+      assert.equal((md.match(/^\| ryke(-nolease)? +\| 50 /gm) ?? []).length >= 4, true, "both policies appear in every per-cell table");
+    });
+  });
+
   it("the markdown says plainly when Ryke does not win", () => {
     const cells = [cell("ryke", 50, 3), cell("queue", 50, 6)];
     const results = buildResults({ cells, durationSeconds: 60, note: "n", generatedAt: null });
@@ -805,7 +886,34 @@ describe("the command line", () => {
     assert.ok(o.out.endsWith("/x"));
   });
 
+  const policyCases = [
+    [[], ["lock", "queue", "ryke"], "bench/results"],
+    [["--policy", "ryke,ryke-nolease"], ["ryke", "ryke-nolease"], "bench/results/ablation"],
+    [["--policy", "ryke-nolease"], ["ryke-nolease"], "bench/results/ablation"],
+    [["--policy", "lock,queue,ryke,ryke-nolease"], ["lock", "queue", "ryke", "ryke-nolease"], "bench/results/ablation"],
+    [["--policy", "queue,ryke"], ["queue", "ryke"], "bench/results"],
+    [["--policy", "ryke,ryke-nolease", "--out", "/tmp/x"], ["ryke", "ryke-nolease"], "/tmp/x"],
+    [["--policy", "ryke", "--out", "bench/other"], ["ryke"], "bench/other"],
+  ];
+  for (const [argv, policies, out] of policyCases) {
+    it(`policies ${JSON.stringify(policies)}, results go to ${out}${argv.includes("--out") ? " (explicit)" : ""}`, () => {
+      const o = parseBenchArgs(argv);
+      assert.deepEqual(o.policies, policies);
+      assert.ok(o.out.endsWith(out), `${o.out} should end with ${out}`);
+      // The default policy list never includes an ablation: the dashboard file must keep its three names.
+      if (argv.length === 0) assert.ok(o.policies.every((p) => !ABLATION_POLICIES.includes(p)));
+    });
+  }
+
+  it("the policy names are the dashboard's three plus the one ablation", () => {
+    assert.deepEqual(BENCH_POLICIES, [...POLICIES, "ryke-nolease"]);
+    for (const [name, want] of [["ryke", true], ["ryke-nolease", true], ["lock", false], ["queue", false], ["ryke2", false], ["nolease", false]]) assert.equal(isRyke(name), want, name);
+  });
+
   const bad = [
+    [["--policy", "nolease"], /--policy/],
+    [["--policy", "ryke-nolease2"], /--policy/],
+    [["--policy", "ryke,,Ryke"], /--policy/],
     [["--agents", "0"], /--agents/],
     [["--agents", "ten"], /--agents/],
     [["--agents", ""], /at least one/],
@@ -1389,6 +1497,36 @@ describe("the policies against fakes", () => {
     assert.deepEqual([s.snapshot, s.source, s.attempt, stats.refreshes], ["r".repeat(40), { remote: "http://trunk", token: "trt", ref: "r".repeat(40) }, 1, 1]);
   });
 
+  describe("ryke-nolease", () => {
+    const make = (extra = {}) => ({ api: fakeApi(extra), repo: "r", clock: clockOf(), stats: { refreshes: 0, leaseWaits: 0, leaseWaitMs: 0, leaseGaveUp: 0 } });
+
+    it("is Ryke with the lease tool taken away and nothing else", () => {
+      const ryke = rykePolicy(make());
+      const nolease = rykeNoLeasePolicy(make());
+      assert.equal(typeof ryke.admit, "function");
+      assert.equal(nolease.admit, undefined);
+      assert.equal("admit" in nolease, false);
+      assert.deepEqual(Object.keys(nolease).sort(), Object.keys(ryke).filter((k) => k !== "admit").sort());
+      assert.deepEqual([ryke.name, nolease.name], ["ryke", "ryke-nolease"]);
+      for (const k of ["open", "report", "think", "submit", "retry", "refresh", "close"]) assert.equal(typeof nolease[k], "function", k);
+    });
+
+    // Refresh on a warning is the part the two share, so it must behave the same.
+    for (const [name, build] of [["ryke", rykePolicy], ["ryke-nolease", rykeNoLeasePolicy]]) {
+      it(`${name}: refresh and think behave identically`, async () => {
+        const args = make();
+        const p = build(args);
+        const s = { id: "t_9", attempt: 1, snapshot: "old", source: { ref: "main" } };
+        await p.refresh(s);
+        assert.deepEqual(args.api.calls.find((c) => c[0] === "call").slice(1), ["POST", "/api/txns/t_9/refresh", {}]);
+        assert.equal(args.stats.refreshes, 1);
+        assert.deepEqual(await p.think(s, 20), { early: false, spentMs: 20 });
+        const [kind] = (await p.open("a", { intent: "i" })).id.split("_");
+        assert.equal(kind, "t");
+      });
+    }
+  });
+
   it("lock and queue have neither leases nor refresh", () => {
     for (const make of [lockPolicy, queuePolicy]) {
       const p = make({ ctl: fakeCtl(), trunk: "r", policy, clock: clockOf(), stats: { verifyMs: [] } });
@@ -1628,6 +1766,58 @@ describe("the synthetic agent against a local git remote", () => {
     assert.deepEqual(rec.d.attempts.map((a) => [a.attempt, a.outcome]), [[1, "stale_read"], [2, "landed"]]);
   });
 
+  // The real Ryke policies on a fake API, with the agent's git going to the local remote: this is where
+  // "no admit" has to show up as "no lease calls, no lease waits".
+  function rykeOn(over = {}) {
+    const calls = [];
+    const rec = (name, fn) => async (...a) => (calls.push([name, ...a]), fn(...a));
+    const api = {
+      calls,
+      begin: rec("begin", async () => ({ txn: "t_9", state: "open", snapshot: seedSha, remote, token: "x" })),
+      reads: rec("reads", async () => ({ staleWarnings: [] })),
+      intendWrite: rec("intendWrite", async () => ({ go: true })),
+      wait: rec("wait", async () => ({ txn: { state: "landed", reason: null }, detail: {}, staleWarnings: [] })),
+      submit: rec("submit", async () => ({ state: "ready" })),
+      abort: rec("abort", async () => ({})),
+      call: rec("call", async () => ({ snapshot: seedSha, attempt: 1, delta: [], trunk: { remote, token: "x" } })),
+      // Overrides are recorded too, so a test can see which calls were made.
+      ...Object.fromEntries(Object.entries(over).map(([name, fn]) => [name, rec(name, fn)])),
+    };
+    return { api, stats: { verifyMs: [], refreshes: 0, leaseWaits: 0, leaseWaitMs: 0, leaseGaveUp: 0 } };
+  }
+
+  const leaseCases = [
+    ["ryke", rykePolicy, true],
+    ["ryke-nolease", rykeNoLeasePolicy, false],
+  ];
+  for (const [name, build, leases] of leaseCases) {
+    it(`${name}: a held hot file ${leases ? "makes the agent wait" : "is never asked about"}`, async () => {
+      let held = 2;
+      const { api, stats } = rykeOn({ intendWrite: async () => (held-- > 0 ? { go: false, owner: "t_1", retryAfterMs: 15 } : { go: true }) });
+      const rec = recorderOf();
+      const clk = clock(rec);
+      await runAgent(ctx(rec, build({ api, repo: "r", clock: clk, stats }), clk));
+      const asked = api.calls.filter((c) => c[0] === "intendWrite");
+      assert.equal(asked.length > 0, leases);
+      assert.equal(stats.leaseWaits > 0, leases);
+      assert.equal(stats.leaseWaitMs > 0, leases);
+      assert.equal(rec.d.attempts[0].leaseWaitS > 0, leases);
+      assert.equal(rec.d.txns[0].status, "landed");
+      if (!leases) assert.deepEqual([stats.leaseWaits, stats.leaseWaitMs, stats.leaseGaveUp, rec.d.attempts[0].leaseWaitS], [0, 0, 0, 0]);
+    });
+
+    it(`${name}: a stale warning before the think refreshes onto the trunk in both variants`, async () => {
+      let first = true;
+      const { api, stats } = rykeOn({ reads: async () => ({ staleWarnings: first ? ((first = false), [{ path: "src/format.ts" }]) : [] }) });
+      const rec = recorderOf();
+      const clk = clock(rec);
+      await runAgent(ctx(rec, build({ api, repo: "r", clock: clk, stats }), clk));
+      assert.equal(stats.refreshes, 1);
+      assert.equal(api.calls.filter((c) => c[0] === "call").length, 1);
+      assert.equal(rec.d.attempts[0].refreshes, 1);
+    });
+  }
+
   it("an error is recorded, the policy is closed and the agent carries on", async () => {
     const rec = recorderOf();
     const policy = scripted([]);
@@ -1780,7 +1970,7 @@ describe(`real cells (3 agents, 20 s) on a private stack at offset ${STACK_OFFSE
     await stack?.close();
   });
 
-  for (const policy of POLICIES) {
+  for (const policy of BENCH_POLICIES) {
     it(`${policy}: lands changes and leaves a trunk that passes its own tests`, async () => {
       const { cell, detail } = await runCell({ policy, agents: 3, durationS: 20, factor: 0.2, seed: 7, stack, graceS: 10 });
       assert.equal(cell.policy, policy);
@@ -1793,13 +1983,14 @@ describe(`real cells (3 agents, 20 s) on a private stack at offset ${STACK_OFFSE
       assert.ok(detail.trunkCommits >= cell.landed + 2);
       assert.ok(cell.landedPerMinute > 0 && cell.p50 > 0 && cell.p95 >= cell.p50);
       // The baselines verify every change at least once; a Ryke train verifies several changes in one run.
-      assert.ok(policy === "ryke" ? cell.verifyRunsPerLanded > 0 : cell.verifyRunsPerLanded >= 1, `verify runs per landed ${cell.verifyRunsPerLanded}`);
-      // The cell must be a valid row of the dashboard's results file.
-      assert.ok(parseBench({ generatedAt: null, durationSeconds: 20, synthetic: true, note: "n", cells: [cell] }));
-      if (policy === "ryke") {
+      assert.ok(isRyke(policy) ? cell.verifyRunsPerLanded > 0 : cell.verifyRunsPerLanded >= 1, `verify runs per landed ${cell.verifyRunsPerLanded}`);
+      // The cell must be a valid row of the results file (the ablation as the Ryke variant it is).
+      assert.ok(parseBench({ generatedAt: null, durationSeconds: 20, synthetic: true, note: "n", cells: [{ ...cell, policy: isRyke(policy) ? "ryke" : policy }] }));
+      if (isRyke(policy)) {
         assert.equal(detail.ledger.quiet, true);
         assert.ok(detail.ryke.trains >= 1);
       }
+      if (policy === "ryke-nolease") assert.deepEqual([detail.leaseWaits, detail.leaseWaitSeconds, detail.leaseGaveUp], [0, 0, 0]);
     });
   }
 });

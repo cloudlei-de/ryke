@@ -1,6 +1,6 @@
 // bench/results/latest.md: the table of every cell, an ASCII chart of landed/min against agents, and the
 // caveats. Pure text in, text out.
-import { POLICIES } from "../../src/shared/bench.ts";
+import { BENCH_POLICIES, POLICIES } from "./metrics.mjs";
 
 const pad = (v, n) => String(v).padEnd(n);
 const lpad = (v, n) => String(v).padStart(n);
@@ -20,14 +20,15 @@ export function table(headers, rows) {
 export function chart(cells, { width = 48 } = {}) {
   const max = Math.max(...cells.map((c) => c.landedPerMinute), 0);
   const counts = [...new Set(cells.map((c) => c.agents))].sort((a, b) => a - b);
+  const label = Math.max(5, ...cells.map((c) => c.policy.length));
   const lines = ["landed per minute (one # is " + fmt(max / width || 0) + ")", ""];
   for (const n of counts) {
     lines.push(`${n} agents`);
-    for (const policy of POLICIES) {
+    for (const policy of BENCH_POLICIES) {
       const c = cells.find((x) => x.agents === n && x.policy === policy);
       if (!c) continue;
       const bar = max === 0 ? "" : "#".repeat(Math.round((c.landedPerMinute / max) * width));
-      lines.push(`  ${pad(policy, 5)} |${pad(bar, width)}| ${fmt(c.landedPerMinute)}`);
+      lines.push(`  ${pad(policy, label)} |${pad(bar, width)}| ${fmt(c.landedPerMinute)}`);
     }
     lines.push("");
   }
@@ -45,6 +46,28 @@ export function verdict(cells) {
   return { rows, rykeWinsEveryLarge: large.length > 0 && large.every((r) => r.rykeFirst), large: large.length };
 }
 
+// Ryke with and without write leases, side by side per agent count. Only agent counts that ran both get a
+// delta line; a lone `ryke-nolease` cell still gets its row.
+export function leaseComparison(cells, details) {
+  const rows = [];
+  const lines = [];
+  const counts = [...new Set(cells.filter((c) => c.policy === "ryke-nolease").map((c) => c.agents))].sort((a, b) => a - b);
+  const stale = (c) => c.aborts.stale_read ?? 0;
+  for (const n of counts) {
+    const pair = ["ryke", "ryke-nolease"].map((policy) => ({ cell: cells.find((c) => c.agents === n && c.policy === policy), detail: details.find((d) => d.agents === n && d.policy === policy) }));
+    for (const { cell: c, detail: d } of pair) {
+      if (!c) continue;
+      rows.push([n, c.policy, fmt(c.landedPerMinute), fmt(c.p50), fmt(c.p95), fmt(c.wastedAgentSeconds), stale(c), c.aborts.max_attempts ?? 0, d?.refreshes ?? 0, `${d?.leaseWaits ?? 0} (${d?.leaseWaitSeconds ?? 0} s)`, d?.ryke?.staleWhileReady ?? 0]);
+    }
+    const [on, off] = pair.map((p) => p.cell);
+    if (on && off) {
+      const delta = off.landedPerMinute === 0 ? "n/a" : `${on.landedPerMinute >= off.landedPerMinute ? "+" : ""}${fmt(((on.landedPerMinute - off.landedPerMinute) / off.landedPerMinute) * 100)} %`;
+      lines.push(`- ${n} agents: leases on land ${fmt(on.landedPerMinute)}/min against ${fmt(off.landedPerMinute)}/min with leases off (${delta}); stale_read aborts ${stale(on)} against ${stale(off)}; wasted agent-seconds ${fmt(on.wastedAgentSeconds)} against ${fmt(off.wastedAgentSeconds)}.`);
+    }
+  }
+  return { rows, lines };
+}
+
 // results: BenchResults; details: [{ policy, agents, ...detail }]; meta: { factor, seed, offset, commentary: [string] }
 export function renderMarkdown({ results, details, meta }) {
   const cells = results.cells;
@@ -54,7 +77,8 @@ export function renderMarkdown({ results, details, meta }) {
   out.push(`Generated ${results.generatedAt}. Every cell ran for ${results.durationSeconds} s of wall time on a fresh \`convert\` trunk; only changes that landed inside that window count.`, "");
 
   out.push("## Throughput", "", "```", chart(cells), "```", "");
-  const v = verdict(cells);
+  // `ryke-nolease` is an ablation of Ryke, not a competitor, so it does not take part in the verdict.
+  const v = verdict(cells.filter((c) => POLICIES.includes(c.policy)));
   out.push("## Does Ryke win?", "");
   out.push(table(["agents", "ranking by landed/min", "winner"], v.rows.map((r) => [r.agents, r.ranking, r.best.policy])), "");
   out.push(
@@ -66,12 +90,20 @@ export function renderMarkdown({ results, details, meta }) {
     "",
   );
 
+  const lease = leaseComparison(cells, details);
+  if (lease.rows.length > 0) {
+    out.push("## Write leases on and off", "");
+    out.push("`ryke-nolease` is Ryke with the same agents and the same refresh on a stale warning, but the agents never take write leases.", "");
+    out.push(table(["agents", "policy", "landed/min", "p50 s", "p95 s", "wasted agent-s", "stale_read aborts", "max_attempts", "refreshes", "lease waits", "stale while ready"], lease.rows), "");
+    if (lease.lines.length > 0) out.push(...lease.lines, "");
+  }
+
   out.push("## Every cell", "");
   out.push(
     table(
       ["policy", "agents", "landed", "landed/min", "p50 s", "p95 s", "verify runs/landed", "wasted agent-s", "trunk breakages", "aborts"],
       [...cells]
-        .sort((a, b) => a.agents - b.agents || POLICIES.indexOf(a.policy) - POLICIES.indexOf(b.policy))
+        .sort((a, b) => a.agents - b.agents || BENCH_POLICIES.indexOf(a.policy) - BENCH_POLICIES.indexOf(b.policy))
         .map((c) => [c.policy, c.agents, c.landed, fmt(c.landedPerMinute), fmt(c.p50), fmt(c.p95), fmt(c.verifyRunsPerLanded), fmt(c.wastedAgentSeconds), c.trunkBreakages, abortsText(c.aborts)]),
     ),
     "",
@@ -105,8 +137,9 @@ export function renderMarkdown({ results, details, meta }) {
     out.push("### Ryke internals", "");
     out.push(
       table(
-        ["agents", "trains", "mean size", "max size", "bisect probes", "stale warnings", "stale aborts (while ready)", "text conflicts", "train cycle p50/p95 s", "lease wait s (gave up)", "think lost to refresh s", "stale aborts by path"],
+        ["policy", "agents", "trains", "mean size", "max size", "bisect probes", "stale warnings", "stale aborts (while ready)", "text conflicts", "train cycle p50/p95 s", "lease wait s (gave up)", "think lost to refresh s", "stale aborts by path"],
         ryke.map((d) => [
+          d.policy,
           d.agents,
           d.ryke.trains,
           d.ryke.meanTrainSize,

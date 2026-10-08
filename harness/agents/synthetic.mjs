@@ -104,12 +104,13 @@ async function work({ session, tag, planRng, startMs, ws, policy, rec, clock, se
 
     // 2. Ryke only: lease the paths about to be written, then move onto the trunk before the work if
     // something this change read has moved (the holder we waited for, or anyone else).
-    const waitStart = clock.elapsedMs();
+    let leaseWaitS = 0;
     if (policy.admit) {
+      const waitStart = clock.elapsedMs();
       const { waited } = await policy.admit(session, written(), clock.signal);
+      leaseWaitS = (clock.elapsedMs() - waitStart) / 1000;
       if (waited) ({ warned } = await policy.report(session, readsOf(), clock.signal));
     }
-    const leaseWaitS = (clock.elapsedMs() - waitStart) / 1000;
     let refreshes = 0;
     let lostMs = 0;
     const refresh = async () => {

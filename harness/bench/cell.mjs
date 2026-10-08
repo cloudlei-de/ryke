@@ -10,9 +10,9 @@ import { runAgent, brief } from "../agents/synthetic.mjs";
 import { client } from "../lib/client.mjs";
 import { Workspace } from "../lib/gitops.mjs";
 import { resilient } from "../swarm.mjs";
-import { rykeOpStats, rykeVerifyRuns, round, summarizeCell } from "./metrics.mjs";
+import { isRyke, rykeOpStats, rykeVerifyRuns, round, summarizeCell } from "./metrics.mjs";
 import { checkTrunk, controlPlane, sleep } from "./plumbing.mjs";
-import { lockPolicy, queuePolicy, rykePolicy } from "./policies.mjs";
+import { lockPolicy, queuePolicy, rykeNoLeasePolicy, rykePolicy } from "./policies.mjs";
 import { waitWhileSettling } from "./settle.mjs";
 import { estimateIncompatibility, seedFiles } from "./workload.mjs";
 
@@ -63,7 +63,7 @@ async function seedTrunk({ ctl, api, repo, policyName }) {
   const read = async (path) => (await ctl.file(repo, "main", path)) ?? "";
   const files = Object.fromEntries(await Promise.all(["src/format.ts", "src/ui/layout.ts"].map(async (p) => [p, await read(p)])));
   const edits = seedFiles(files);
-  if (policyName !== "ryke") {
+  if (!isRyke(policyName)) {
     const ws = await Workspace.create("bench-seed");
     try {
       const [info, token] = [await ctl.info(repo), await ctl.token(repo, "write", 600)];
@@ -139,7 +139,12 @@ export async function runCell(opts) {
     signal: abort.signal,
   };
   const impl = { ctl, trunk: repo, policy, clock, stats };
-  const pol = policyName === "lock" ? lockPolicy(impl) : policyName === "queue" ? queuePolicy(impl) : rykePolicy({ api, repo, clock, stats });
+  const pol =
+    policyName === "lock"
+      ? lockPolicy(impl)
+      : policyName === "queue"
+        ? queuePolicy(impl)
+        : (policyName === "ryke-nolease" ? rykeNoLeasePolicy : rykePolicy)({ api, repo, clock, stats });
 
   const root = await mkdtemp(join(tmpdir(), `ryke-bench-${policyName}-${agents}-`));
   const lag = monitorEventLoopDelay({ resolution: 20 });
@@ -167,7 +172,7 @@ export async function runCell(opts) {
   // Let the lander finish what it already holds, so the trunk check sees a trunk that stopped moving.
   let ledger = null;
   let ops = [];
-  if (policyName === "ryke") {
+  if (isRyke(policyName)) {
     const q = await quiesce(api, repo, 90_000);
     ledger = { quiet: q.quiet, head: q.summary.head, seq: q.summary.seq };
     ops = await allOps(api, repo);
@@ -216,7 +221,7 @@ export async function runCell(opts) {
     agentCpuSeconds: round(cpuS, 1),
     loadAverage1m: round(loadavg()[0]),
     ledger,
-    ryke: policyName === "ryke" ? rykeOpStats(ops, { sinceAt: t0Epoch, untilAt: t0Epoch + durationS * 1000 }) : null,
+    ryke: isRyke(policyName) ? rykeOpStats(ops, { sinceAt: t0Epoch, untilAt: t0Epoch + durationS * 1000 }) : null,
   };
 
   // Forks are scratch; the trunk stays for a post-mortem.

@@ -4,6 +4,12 @@ import { POLICIES, parseBench } from "../../src/shared/bench.ts";
 
 export { POLICIES };
 
+// `ryke-nolease` is Ryke with write leases switched off, for the lease comparison. The dashboard's results
+// format only knows POLICIES, so a run that includes it is kept apart from bench/results/latest.json.
+export const ABLATION_POLICIES = ["ryke-nolease"];
+export const BENCH_POLICIES = [...POLICIES, ...ABLATION_POLICIES];
+export const isRyke = (name) => name === "ryke" || ABLATION_POLICIES.includes(name);
+
 export const round = (n, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
 
 // Linear interpolation between closest ranks (the usual "type 7" definition), 0 for no data.
@@ -68,7 +74,9 @@ export function summarizeCell({ policy, agents, durationMs, attempts, txns, veri
 export function buildResults({ cells, durationSeconds, note, generatedAt = new Date().toISOString() }) {
   const results = { generatedAt, durationSeconds, synthetic: true, note, cells };
   // The dashboard validates the file with the same function; a result it would refuse must never be written.
-  if (parseBench(JSON.parse(JSON.stringify(results))) === null) throw new Error("bench results do not match src/shared/bench.ts");
+  // Ablation cells carry a name it does not know, so they are checked as the Ryke cell they are a variant of.
+  const asKnown = { ...results, cells: cells.map((c) => (ABLATION_POLICIES.includes(c.policy) ? { ...c, policy: "ryke" } : c)) };
+  if (parseBench(JSON.parse(JSON.stringify(asKnown))) === null) throw new Error("bench results do not match src/shared/bench.ts");
   return results;
 }
 
