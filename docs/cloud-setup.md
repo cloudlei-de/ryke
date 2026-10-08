@@ -62,7 +62,7 @@ until the definition of done in §14 is met; never wait for answers.
 ## Session settings
 
 - Model: **Opus 5.5** for the main session. Project subagents in `.claude/agents/` pin their own
-  model (Sonnet for implementer, patch-author and verifier; Opus for reviewer), see PLAN.md §0.10.
+  model (Sonnet for implementer, patch-author and verifier; Opus for reviewer), see PLAN.md §0.9.
 - Effort: the highest available.
 - One session only. Parallelism comes from subagents; a second session on the same branch would
   cause conflicts.

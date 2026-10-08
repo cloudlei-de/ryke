@@ -27,6 +27,25 @@ After M9, open one PR `feat/ryke-mvp → main` with `gh api` (title and body rul
 0.3 **Gates for every commit.** `npm run check` and `npm test` must pass. A milestone is done only when
 its acceptance commands (listed per milestone) pass and their output summary is recorded in `PROGRESS.md`.
 
+0.3a **Complete tests, always.** Every module ships with complete tests in the same commit, never "tests later".
+"Complete" means:
+- **Pure logic.** Every rule and branch is covered: `validate` V1–V9, train selection incl. fairness, heat decay and
+  thresholds, recall planning incl. transitive and cascade, policy globs, the op reducers. Use table-driven tests with the edge cases
+  (empty sets, union-only overlaps, protected new-vs-existing files, max attempts).
+- **Ledger.** Every state transition in §4.2, including every illegal transition answered with 409, plus idempotent
+  push ingest and submit.
+- **API and MCP.** Every route and tool: success, 401 without a token, 404 for an unknown id, 409 for a wrong state, 422 for
+  invalid input.
+- **Store and runner.** The contract suite against the local adapter, using the real git CLI, plus token expiry, read-only
+  push rejection, and the event envelope shape.
+- **Workflow.** The land path, the stale path, the text-conflict path, bisection with 1 and 2 culprits, compare-and-swap
+  rejection, needs_human removal.
+- **Harness.** Each agent mode against a running local stack (claude via the stub).
+- **End to end.** Every milestone's Accept line exists as an `npm run e2e:*` script, not a manual walkthrough.
+
+No skipped, `.only`, empty or assertion-free tests. A bug fix starts with a failing test.
+`PROGRESS.md` records the test count per suite at every milestone.
+
 0.4 **Memory across context compaction.** `PROGRESS.md` is your memory. Keep it current with:
 - the current milestone and step,
 - what is done, with evidence (command plus key output lines),
@@ -75,27 +94,32 @@ No UI component libraries, no state libraries, no ORMs.
 - TypeScript strict
 - tests for every behaviour in §4 and §5
 
-0.10 **Model and subagents.** The main session (you) is the lead. It owns the schedule, the Ledger
+0.9 **Model and subagents.** The main session (you) is the lead. It owns the schedule, the Ledger
 and Land code (§4, §5), every `PROGRESS.md`/`DECISIONS.md` entry, and every commit. It delegates
 bounded work to the project subagents in `.claude/agents/`:
 
 | Subagent | Model | Use for | Parallel limit |
 |---|---|---|---|
-| `implementer` | sonnet | One module or directory with its tests, from a named PLAN section | 3 at once, on disjoint directories only |
-| `patch-author` | sonnet | M3 solution patches; split the 40 tasks into batches of 8 | 5 at once |
-| `verifier` | sonnet | Running a milestone's Accept commands before `PROGRESS.md` says done | 1 |
-| `reviewer` | opus | Reviewing every milestone diff before it is pushed; fix its serious findings first | 1 |
+| `implementer` | sonnet | One module or directory with its tests, from a named PLAN section | 9 at once, on disjoint directories only |
+| `patch-author` | sonnet | M3 solution patches; split the 40 tasks into 15 batches of 2–3 | 15 at once |
+| `verifier` | sonnet | Running Accept commands before `PROGRESS.md` says done; one verifier per criterion group | 5 at once, each with its own `RYKE_PORT_OFFSET` |
+| `reviewer` | opus | Reviewing every milestone diff before it is pushed, split by area (ledger, landing, interfaces, UI, tests); fix serious findings first | 5 at once |
 
 - Give each subagent its PLAN section number, the exact files it owns, and the test that must pass.
 - Merge its work yourself and re-run `npm run check && npm test` after every merge.
-- The VM has 4 vCPU and 16 GB RAM. Never run more than one swarm, bench or e2e run at a time.
+- The VM has 4 vCPU and 16 GB RAM. Subagents mostly wait on the model, so these limits are about file
+  ownership, not CPU. Heavy runs are different: at most 2 e2e or swarm runs at once, and the bench always
+  runs alone.
+- Parallel runs must not share ports or state. `dev/all.mjs` and every e2e script read `RYKE_PORT_OFFSET`
+  (default 0). They add it to every port (store 8788, runner 8789, vite 5173) and use `.ryke-<offset>/` as the state dir.
+  Give each parallel verifier a distinct offset (0, 10, 20, 30, 40).
 - Good parallel splits:
   - M0: `dev/store` ∥ `dev/runner` ∥ `src/shared/policy.ts`
   - M1: `validate.ts` + `trains.ts` + `heat.ts` (pure, one implementer) ∥ MCP tools
   - M4: one implementer per dashboard view, after you have built the shared op reducers
   - M6/M7: `recall.ts` ∥ bench harness
 
-0.11 **Truthfulness.** Never claim a capability the code does not have. The README, the dashboard and the
+0.10 **Truthfulness.** Never claim a capability the code does not have. The README, the dashboard and the
 demo briefing label simulated parts as simulated. The bench uses real git, real merges and real tests,
 but its agents are synthetic; the bench page says so.
 

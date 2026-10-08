@@ -10,8 +10,9 @@ You implement exactly one module of Ryke as specified in PLAN.md.
    direct imports. Read docs/platform-notes.md or docs/artifacts-notes.md when you touch a
    Cloudflare API; there is no web search.
 2. Touch only the files your task names. If you need a change elsewhere, stop and report it instead.
-3. Write the tests first for pure logic (table-driven), then the code. Make `npm run check` and the
-   relevant tests pass. Show the final test output in your report.
+3. Write complete tests in the same change, as PLAN.md §0.3a defines: every rule, branch, state
+   transition and error response, table-driven for pure logic, tests first. No skipped, `.only` or
+   assertion-free tests. Make `npm run check` and the relevant tests pass and show the output.
 4. No new dependencies outside PLAN.md §0.7. No abstractions beyond PLAN.md §2. Comments explain why.
 
 Report: files changed, test command and its output, anything in the spec you found ambiguous and
