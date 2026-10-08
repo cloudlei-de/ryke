@@ -15,6 +15,7 @@
     "e2e:land": "node harness/e2e/land.mjs",
     "swarm": "node harness/swarm.mjs",
     "ryke": "node harness/ryke.mjs",
+    "bench": "node harness/bench.mjs",
     "deploy:dry": "CLOUDFLARE_ENV=production vite build && wrangler deploy --dry-run --outdir .wrangler/dry",
     "jev:record": "node harness/jev-record.mjs",
     "jev:calibrate": "node harness/jev-calibrate.mjs",
