@@ -1,4 +1,4 @@
-// The numbers across the top of the Line (PLAN.md §12 "live counters"), from the folded state alone so the
+// The numbers in the Line's margin (PLAN.md §12 "live counters"), from the folded state alone so the
 // replay shows the counters of the moment it is at. Pure, so every rule is table-tested.
 import { counters, type LineState } from "../../../shared/reducers";
 import { abortRows } from "./geometry";
@@ -12,8 +12,6 @@ export type Stats = {
   human: number;
   landed: number;
   perMinute: number;
-  // Landed commits per bucket, oldest first, ending at `now`.
-  spark: number[];
   trains: number;
   bisected: number;
   speculative: number;
@@ -22,20 +20,6 @@ export type Stats = {
   needsHuman: string[];
   head: { sha: string; seq: number; at: number | null } | null;
 };
-
-export const SPARK_BUCKETS = 20;
-export const SPARK_BUCKET_MS = 30_000;
-
-export function sparkline(at: readonly number[], now: number, buckets = SPARK_BUCKETS, bucketMs = SPARK_BUCKET_MS): number[] {
-  const out = new Array<number>(buckets).fill(0);
-  const start = now - buckets * bucketMs;
-  for (const t of at) {
-    if (t <= start || t > now) continue;
-    const i = Math.min(buckets - 1, Math.floor((t - start) / bucketMs));
-    out[i]!++;
-  }
-  return out;
-}
 
 export function stats(state: LineState, now: number): Stats {
   const c = counters(state, now);
@@ -60,10 +44,6 @@ export function stats(state: LineState, now: number): Stats {
     human: needsHuman.length,
     landed: c.landed,
     perMinute: c.landedPerMinute,
-    spark: sparkline(
-      state.ticks.filter((k) => k.txn).map((k) => k.at),
-      now,
-    ),
     trains: c.trains,
     bisected: trains.filter((t) => t.probes.length > 0).length,
     speculative: trains.filter((t) => t.after !== null).length,

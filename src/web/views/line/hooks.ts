@@ -32,6 +32,20 @@ export function useSize<T extends HTMLElement>(): [RefObject<T | null>, { width:
   return [ref, size];
 }
 
+// Whether a media query holds now, following it as the window changes. Without a window (the render tests run in
+// workerd) it holds nothing.
+export function useMedia(query: string): boolean {
+  const [on, setOn] = useState(() => typeof matchMedia === "function" && matchMedia(query).matches);
+  useEffect(() => {
+    const mq = matchMedia(query);
+    const change = () => setOn(mq.matches);
+    change();
+    mq.addEventListener("change", change);
+    return () => mq.removeEventListener("change", change);
+  }, [query]);
+  return on;
+}
+
 type Files = { files: string[] | null; error: string | null; key: string };
 
 // The repo's file list for the heat map. The list always comes from the current head; `when` only decides

@@ -307,12 +307,12 @@ async function main() {
       }
     }
 
-    // The fonts ship with the dashboard (@fontsource), so a shot in a fallback face means the bundle is broken.
+    // The fonts ship with the dashboard (src/web/fonts), so a shot in a fallback face means the bundle is broken.
     const fonts = await page.evaluate(async () => {
       await document.fonts.ready;
-      return ["Geist Variable", "Geist Mono Variable"].every((f) => [...document.fonts].some((x) => x.family.replace(/"/g, "") === f && x.status === "loaded"));
+      return ["IBM Plex Sans Condensed", "IBM Plex Mono"].every((f) => [...document.fonts].some((x) => x.family.replace(/"/g, "") === f && x.status === "loaded"));
     });
-    if (!fonts) problems.push({ where, kind: "fonts", text: "Geist and Geist Mono did not load: the shots would use the fallback fonts", url: "" });
+    if (!fonts) problems.push({ where, kind: "fonts", text: "IBM Plex Sans Condensed and IBM Plex Mono did not load: the shots would use the fallback fonts", url: "" });
 
     await waitUntil("a mid-run state with trains, stale notches and heat", async () => {
       if (swarm.exitCode !== null) throw new Error("the swarm finished before the mid-run condition (landed >= 6, stale >= 2, trains >= 2, heat) was reached");
@@ -441,7 +441,7 @@ async function main() {
     await page.waitForSelector(".recall-outcome", { timeout: 5 * 60_000 });
     const tone = await page.locator(".recall-outcome").getAttribute("data-tone");
     if (tone !== "go") problems.push({ where, kind: "recall", text: `the recall did not land (outcome tone "${tone}"): ${(await page.locator(".recall-outcome").innerText()).split("\n").slice(0, 3).join(" | ")}`, url: "" });
-    // A struck-through target in the dialog: the recalled transactions of the plan, drawn in --recall.
+    // A struck-through target in the dialog: the recalled transactions of the plan, their intent struck through.
     if (!(await page.locator('.recall-outcome .recall-rows li[data-tone="revert"]').count())) {
       problems.push({ where, kind: "recall", text: "the outcome lists no struck-through target", url: "" });
     }

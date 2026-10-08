@@ -2,7 +2,6 @@
 // demo video from it, so the controls stay small and the Line keeps the room.
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Live } from "../../live";
-import { Icon } from "../../ui";
 import { LineView } from "../line";
 import { describeOp, plain } from "../line/activity";
 import { shortData } from "../line/geometry";
@@ -30,6 +29,9 @@ import {
   type Seen,
 } from "./scrub";
 import "./replay.css";
+
+// The range input's thumb is this wide (replay.css), so its centre runs from half of it to the width less half.
+const THUMB_W = 10;
 
 // 25 renders a second is smooth enough for bars growing on a timetable and leaves the Line room to paint.
 const TICK_EVERY_MS = 40;
@@ -137,7 +139,6 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
       <div className="replay-stage">
         {n === 0 ? (
           <div className="replay-empty">
-            <Icon name="clock" size={22} />
             <p className="replay-empty-title">{history.status.status === "loading" ? "Loading the op log" : "Nothing to replay yet"}</p>
             <p className="muted">{history.status.status === "loading" ? `Fetching every op recorded for ${repo}.` : `No ops recorded for ${repo} yet. Run a swarm, then come back.`}</p>
           </div>
@@ -146,23 +147,23 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
         )}
       </div>
 
-      <footer className="scrubber card">
+      <footer className="scrubber">
         <div className="controls">
           <div className="transport" role="group" aria-label="Playback">
-            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "start" })} disabled={n === 0} title="Jump to the start (Home)" aria-label="Jump to the start">
-              <Icon name="first" size={15} />
+            <button type="button" className="btn btn-sm" onClick={press({ type: "start" })} disabled={n === 0} title="Jump to the start (Home)" aria-label="Jump to the start">
+              Start
             </button>
-            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "step", by: -1 })} disabled={n === 0} title="Back one op (←)" aria-label="Back one op">
-              <Icon name="prev" size={15} />
+            <button type="button" className="btn btn-sm" onClick={press({ type: "step", by: -1 })} disabled={n === 0} title="Back one op (←)" aria-label="Back one op">
+              −1 op
             </button>
-            <button type="button" className="play" onClick={press({ type: "toggle" })} disabled={n === 0} title="Play or pause (space)" aria-pressed={p.playing} aria-label={p.playing ? "Pause" : "Play"}>
-              <Icon name={p.playing ? "pause" : "play"} size={16} />
+            <button type="button" className="btn btn-primary play" onClick={press({ type: "toggle" })} disabled={n === 0} title="Play or pause (space)" aria-pressed={p.playing} aria-label={p.playing ? "Pause" : "Play"}>
+              {p.playing ? "Pause" : "Play"}
             </button>
-            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "step", by: 1 })} disabled={n === 0} title="Forward one op (→)" aria-label="Forward one op">
-              <Icon name="next" size={15} />
+            <button type="button" className="btn btn-sm" onClick={press({ type: "step", by: 1 })} disabled={n === 0} title="Forward one op (→)" aria-label="Forward one op">
+              +1 op
             </button>
-            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "end" })} disabled={n === 0} title="Jump to the end (End)" aria-label="Jump to the end">
-              <Icon name="last" size={15} />
+            <button type="button" className="btn btn-sm" onClick={press({ type: "end" })} disabled={n === 0} title="Jump to the end (End)" aria-label="Jump to the end">
+              End
             </button>
           </div>
           <div className="seg" role="group" aria-label="Speed">
@@ -198,7 +199,7 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
         <div className="scrub-track">
           <div className="marks" aria-hidden="true">
             {marks.map((m, i) => (
-              <i key={i} data-tone={m.tone} style={{ left: `calc(${m.at * 100}% + ${8 - m.at * 16}px)` }} />
+              <i key={i} data-tone={m.tone} style={{ left: `calc(${m.at * 100}% + ${THUMB_W / 2 - m.at * THUMB_W}px)` }} />
             ))}
           </div>
           <input

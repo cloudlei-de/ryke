@@ -1,28 +1,13 @@
-// The counters over the Line: in flight by where the time goes, landings and their sparkline, trains, aborts,
-// the transactions waiting for a human, and the trunk head.
+// The counters in the Line's margin: in flight by where the time goes, landings, trains, aborts, the
+// transactions waiting for a human, and the trunk head.
 import { describe, expect, it } from "vitest";
 import { fold } from "../src/shared/reducers";
 import type { Op, OpKind } from "../src/shared/types";
-import { ago, sparkline, SPARK_BUCKET_MS, SPARK_BUCKETS, stats } from "../src/web/views/line/stats";
+import { ago, stats } from "../src/web/views/line/stats";
 import e2eLand from "./fixtures/ops/e2e-land.json";
 
 let seq = 0;
 const op = (kind: OpKind, at: number, data: Record<string, unknown> = {}, txn: string | null = null, agent: string | null = null): Op => ({ seq: ++seq, at, kind, txn, agent, data });
-
-describe("sparkline", () => {
-  const now = 1_000_000;
-  it.each<[string, number[], number, number, number[]]>([
-    ["empty", [], 4, 1000, [0, 0, 0, 0]],
-    ["one landing in the newest bucket", [now - 10], 4, 1000, [0, 0, 0, 1]],
-    ["counts per bucket, oldest first", [now - 3500, now - 3400, now - 1500, now], 4, 1000, [2, 0, 1, 1]],
-    ["drops landings older than the window or in the future", [now - 4000, now - 4001, now + 1], 4, 1000, [0, 0, 0, 0]],
-  ])("%s", (_n, at, buckets, ms, out) => expect(sparkline(at, now, buckets, ms)).toEqual(out));
-
-  it("defaults to ten minutes in thirty-second buckets", () => {
-    expect(SPARK_BUCKETS * SPARK_BUCKET_MS).toBe(600_000);
-    expect(sparkline([now], now)).toHaveLength(SPARK_BUCKETS);
-  });
-});
 
 describe("ago", () => {
   it.each([
@@ -71,6 +56,5 @@ describe("stats", () => {
       ["stale read", 1],
     ]);
     expect(out.head).toEqual({ ...s.head, at: s.ticks.at(-1)!.at });
-    expect(out.spark.reduce((a, b) => a + b, 0)).toBe(5);
   });
 });

@@ -3,14 +3,14 @@
 // verdicts, readiness) are left to the raw view, which lists every op as the Ledger wrote it.
 import type { LineState, TrainView, TxnView } from "../../../shared/reducers";
 import type { Op } from "../../../shared/types";
-import type { IconName } from "../../ui";
+import type { MarkName } from "../../ui";
 import { reasonLabel } from "../txn/format";
 import { clipText, kindSignal, shortSha, type Signal } from "./geometry";
 
 // A piece of a sentence: plain words, a transaction (shown by its intent, linked to its page), or a path.
 export type Part = string | { txn: string; label: string } | { code: string };
 // "agent-05 went stale", then the transaction it is about, then what happened in detail.
-export type FeedItem = { seq: number; at: number; tone: Signal | null; icon: IconName; actor: string | null; text: Part[]; subject: Part | null; detail: Part[] | null };
+export type FeedItem = { seq: number; at: number; tone: Signal | null; mark: MarkName; actor: string | null; text: Part[]; subject: Part | null; detail: Part[] | null };
 
 const INTENT_CHARS = 72;
 // A transaction named inside a detail line (the one that made this one stale, the one it may duplicate) is
@@ -50,43 +50,43 @@ export function describeOp(op: Op, state: Pick<LineState, "txns" | "trains">): F
   const subject = op.txn ? txnPart(op.txn, txns) : null;
   const base = { seq: op.seq, at: op.at, tone: kindSignal(op.kind), actor: op.agent };
   // About a transaction: the agent's name leads, the transaction follows on its own line.
-  const about = (icon: IconName, text: Part[], detail: Part[] | null = null): FeedItem => ({ ...base, icon, text, subject, detail });
+  const about = (mark: MarkName, text: Part[], detail: Part[] | null = null): FeedItem => ({ ...base, mark, text, subject, detail });
   // About the trunk, a train or a recall: no agent, no subject.
-  const event = (icon: IconName, text: Part[], detail: Part[] | null, tone: Signal | null = base.tone): FeedItem => ({ ...base, tone, actor: null, icon, text, subject: null, detail });
+  const event = (mark: MarkName, text: Part[], detail: Part[] | null, tone: Signal | null = base.tone): FeedItem => ({ ...base, tone, actor: null, mark, text, subject: null, detail });
   switch (op.kind) {
     case "txn.open":
       if (d.refresh) return null;
-      return Number(d.attempt) > 1 ? about("retry", [`retried · attempt ${d.attempt}`]) : about("pulse", ["began"]);
+      return Number(d.attempt) > 1 ? about("retry", [`retried · attempt ${d.attempt}`]) : about("working", ["began"]);
     case "txn.landed":
-      return about("check", ["landed"], [`seq ${d.seq}${d.sha ? ` · ${shortSha(str(d.sha))}` : ""}`]);
+      return about("landed", ["landed"], [`seq ${d.seq}${d.sha ? ` · ${shortSha(str(d.sha))}` : ""}`]);
     case "txn.stale":
-      return about("retry", ["went stale"], stalePaths(d, txns));
+      return about("stale", ["went stale"], stalePaths(d, txns));
     case "txn.failed": {
       const name = str(d.failures?.[0]?.name);
-      return about("x", ["failed verify"], name ? [{ code: name }] : reason(d));
+      return about("failed", ["failed verify"], name ? [{ code: name }] : reason(d));
     }
     case "txn.rejected":
-      return about("ban", ["was rejected"], reason(d));
+      return about("rejected", ["was rejected"], reason(d));
     case "txn.needs_human":
-      return about("user", ["needs a human"], reason(d));
+      return about("human", ["needs a human"], reason(d));
     case "txn.aborted":
-      return about("x", ["gave up"], reason(d));
+      return about("aborted", ["gave up"], reason(d));
     case "txn.recalled":
-      return about("undo", ["was recalled"], reason(d));
+      return about("recalled", ["was recalled"], reason(d));
     case "stale.warning": {
       const paths = strs(d.paths);
-      return about("alert", ["was warned"], paths.length ? [{ code: paths[0]! }, paths.length > 1 ? ` +${paths.length - 1}` : "", " changed on trunk"] : null);
+      return about("warning", ["was warned"], paths.length ? [{ code: paths[0]! }, paths.length > 1 ? ` +${paths.length - 1}` : "", " changed on trunk"] : null);
     }
     case "lease.waiting":
-      return about("lock", ["waits for a lease"], d.path ? [{ code: str(d.path) }] : null);
+      return about("lease", ["waits for a lease"], d.path ? [{ code: str(d.path) }] : null);
     case "dup.warning":
-      return about("alert", ["may be a duplicate"], ["of ", txnPart(str(d.other), txns, CAUSE_CHARS)]);
+      return about("warning", ["may be a duplicate"], ["of ", txnPart(str(d.other), txns, CAUSE_CHARS)]);
     case "conflict.warning":
-      return about("alert", ["may conflict"], ["with ", txnPart(str(d.other), txns, CAUSE_CHARS)]);
+      return about("warning", ["may conflict"], ["with ", txnPart(str(d.other), txns, CAUSE_CHARS)]);
     case "trunk.advanced":
-      if (d.recall) return event("undo", ["Trunk reverted by recall ", { code: str(d.recall) }], [`seq ${d.seq} · ${shortSha(str(d.sha))}`], "recall");
+      if (d.recall) return event("recalled", ["Trunk reverted by recall ", { code: str(d.recall) }], [`seq ${d.seq} · ${shortSha(str(d.sha))}`], "recall");
       // A move with no transaction and no recall is the seed commit; a landing is told by txn.landed.
-      return Array.isArray(d.txns) && d.txns.length > 0 ? null : event("commit", ["Trunk created"], [`seq ${d.seq} · ${shortSha(str(d.sha))}`], null);
+      return Array.isArray(d.txns) && d.txns.length > 0 ? null : event("trunk", ["Trunk created"], [`seq ${d.seq} · ${shortSha(str(d.sha))}`], null);
     case "trunk.diverged":
       return event("alert", ["Trunk diverged from the store"], [`store ${shortSha(str(d.store))} ≠ ledger ${shortSha(str(d.ledger))}`]);
     // A train of one change says nothing its landing does not; trains are news when they batch or go wrong.
@@ -105,11 +105,11 @@ export function describeOp(op: Op, state: Pick<LineState, "txns" | "trains">): F
       return event("train", [`Train ${outcome.replace(/_/g, " ") || "ended"}`], [{ code: str(d.train) }], outcome === "failed" ? "stop" : null);
     }
     case "recall.planned":
-      return event("undo", [`Recall planned: ${plural(strs(d.targets).length, "target")}`], [{ code: str(d.recall) }, strs(d.dependents).length ? ` · ${plural(strs(d.dependents).length, "dependent")}` : ""]);
+      return event("recalled", [`Recall planned: ${plural(strs(d.targets).length, "target")}`], [{ code: str(d.recall) }, strs(d.dependents).length ? ` · ${plural(strs(d.dependents).length, "dependent")}` : ""]);
     case "recall.done":
-      return event("undo", [str(d.outcome) === "pass" ? "Recall landed" : `Recall ended: ${str(d.outcome).replace(/_/g, " ")}`], [{ code: str(d.recall) }], str(d.outcome) === "pass" ? "recall" : "stop");
+      return event("recalled", [str(d.outcome) === "pass" ? "Recall landed" : `Recall ended: ${str(d.outcome).replace(/_/g, " ")}`], [{ code: str(d.recall) }], str(d.outcome) === "pass" ? "recall" : "stop");
     case "policy.updated":
-      return d.error ? event("alert", ["Policy rejected"], [str(d.error)], "stop") : event("shield", ["Policy updated"], d.sha ? [shortSha(str(d.sha))] : null, null);
+      return d.error ? event("alert", ["Policy rejected"], [str(d.error)], "stop") : event("policy", ["Policy updated"], d.sha ? [shortSha(str(d.sha))] : null, null);
     default:
       return null;
   }

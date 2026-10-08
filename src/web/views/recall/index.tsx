@@ -4,7 +4,7 @@ import { useEffect, useId, useReducer, useRef, useState, type FormEvent } from "
 import { createPortal } from "react-dom";
 import type { LineState } from "../../../shared/reducers";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
-import { Icon } from "../../ui";
+import { Lamp } from "../../ui";
 import {
   buildSelector,
   candidates,
@@ -56,7 +56,6 @@ export function RecallButton({ repo, state, reason }: { repo: string; state: Lin
   return (
     <>
       <button ref={opener} type="button" className="btn recall-open" disabled={Boolean(reason)} title={reason ?? "Revert landed transactions by agent, model or id"} aria-haspopup="dialog" onClick={() => setOpen(true)}>
-        <Icon name="undo" size={14} />
         Recall…
       </button>
       {open && <RecallDialog repo={repo} state={state} onClose={() => setOpen(false)} />}
@@ -189,9 +188,6 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
     >
       <div className="recall" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={box} tabIndex={-1}>
         <header className="recall-head">
-          <span className="recall-badge" aria-hidden="true">
-            <Icon name="undo" size={16} />
-          </span>
           <div className="recall-heading">
             <h2 id={titleId}>Recall</h2>
             <p className="muted">
@@ -200,8 +196,7 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
           </div>
           <span className="spacer" />
           <button type="button" className="btn btn-ghost btn-sm recall-close" onClick={onClose} aria-label="Close">
-            <kbd>Esc</kbd>
-            <Icon name="x" size={15} />
+            Close <kbd>Esc</kbd>
           </button>
         </header>
 
@@ -211,8 +206,7 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
           </p>
 
           {!token && (
-            <form className="recall-token callout" onSubmit={saveToken}>
-              <Icon name="lock" size={15} />
+            <form className="recall-token callout" data-tone="caution" onSubmit={saveToken}>
               <label className="field">
                 <span className="label">Admin token</span>
                 <input className="input" type="password" autoComplete="off" value={draft} placeholder="RYKE_TOKEN" data-autofocus onChange={(e) => setDraft(e.target.value)} />
@@ -276,7 +270,6 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
           <div className="recall-result" aria-live="polite">
             {flow.error && (
               <p className="callout recall-error" data-tone="stop" role="alert">
-                <Icon name="alert" size={15} />
                 {flow.error}
               </p>
             )}
@@ -298,7 +291,6 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
             </span>
             <span className="spacer" />
             <button type="button" className="btn btn-danger recall-go" disabled={!token || flow.phase === "executing" || flow.plan.targets.length === 0} onClick={() => void execute()}>
-              <Icon name="undo" size={14} />
               {flow.phase === "executing" ? "Executing…" : "Execute recall"}
             </button>
           </footer>
@@ -313,7 +305,7 @@ type Tone = "revert" | "cascade" | "revalidate" | "stay";
 type RowView = { row: PlanRow; tone: Tone; label: string; requeuedAs?: string | null };
 
 // One row per transaction, newest first, on a vertical trunk. A filled node is taken off trunk (its intent struck
-// through in --recall); an outlined node stays and is revalidated by the tests that run after the revert.
+// through); an outlined node stays and is revalidated by the tests that run after the revert.
 function Rows({ rows }: { rows: RowView[] }) {
   return (
     <ol className="recall-rows">
@@ -377,11 +369,10 @@ function OutcomeView({ outcome, state }: { outcome: Outcome; state: LineState })
   return (
     <section className="recall-outcome" data-tone={s.tone} aria-label="Outcome">
       <div className="recall-outcome-head">
-        <span className="recall-outcome-icon" aria-hidden="true">
-          <Icon name={s.tone === "go" ? "check" : "alert"} size={16} />
-        </span>
         <div>
-          <h3>{s.headline}</h3>
+          <h3>
+            <Lamp tone={s.tone === "go" ? "go" : "stop"}>{s.headline}</Lamp>
+          </h3>
           <p className="recall-sentence">{s.detail}</p>
         </div>
       </div>

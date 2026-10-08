@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAX_ATTEMPTS } from "../../../shared/types";
 import type { Live } from "../../live";
-import { Icon } from "../../ui";
 import { useNow } from "../line/hooks";
-import { Patterns } from "../line/Timeline";
 import { computeDelta, deltaRequest, deltaView, fileFetcher, type DeltaRequest, type DeltaState } from "./delta";
 import { attemptDetail, attemptRows, journeyView, lastSeqFor, loadedSeq, previewFor, selectAttempt, shouldRefetch, type Detail } from "./format";
-import { AttemptPicker, Criteria, Deltas, Evidence, Gate, Header, Journey, PathList } from "./parts";
+import { AttemptPicker, Criteria, Deltas, Evidence, Gate, Header, Journey, PathList, SectHead } from "./parts";
 import "./txn.css";
 
 type Load = { status: "loading" } | { status: "missing" } | { status: "error"; message: string } | { status: "ready"; detail: Detail };
@@ -60,12 +58,11 @@ function TxnPage({ repo, id, liveSeq }: { repo: string; id: string; liveSeq: num
   return (
     <article className="txn">
       <nav className="txn-crumbs" aria-label="Breadcrumb">
-        <a className="btn btn-ghost btn-sm txn-back" href="#/">
-          <Icon name="back" size={14} />
+        <a className="txn-back" href="#/">
           Line
         </a>
         <span className="muted">/</span>
-        <span className="muted">Transaction</span>
+        <span>Transaction</span>
       </nav>
       {state.status === "loading" && (
         <p className="txn-status muted">
@@ -73,7 +70,7 @@ function TxnPage({ repo, id, liveSeq }: { repo: string; id: string; liveSeq: num
         </p>
       )}
       {state.status === "missing" && (
-        <div className="txn-status card">
+        <div className="txn-status callout">
           <p>
             There is no transaction <span className="mono">{id}</span> in this ledger.
           </p>
@@ -81,8 +78,7 @@ function TxnPage({ repo, id, liveSeq }: { repo: string; id: string; liveSeq: num
         </div>
       )}
       {state.status === "error" && (
-        <p className="callout" data-tone="stop" role="alert">
-          <Icon name="alert" size={15} />
+        <p className="callout txn-status" data-tone="stop" role="alert">
           <span>
             Could not load <span className="mono">{id}</span>: {state.message}
           </span>
@@ -145,34 +141,26 @@ function Loaded({ repo, detail, reload }: { repo: string; detail: Detail; reload
 
   return (
     <>
-      <Patterns />
       <Header detail={detail} preview={landing} view={view} now={now} />
       {detail.txn.state === "needs_human" && <Gate id={detail.txn.id} reason={detail.txn.reason} reload={reload} />}
 
       <div className="txn-grid">
         <div className="txn-main">
-          <section className="card">
-            <header className="card-head">
-              <h2>Attempts</h2>
-              <span className="count">
-                {rows.length} of {MAX_ATTEMPTS}
-              </span>
-              <span className="spacer" />
+          <section className="txn-sect">
+            <SectHead title="Attempts" count={`${rows.length} of ${MAX_ATTEMPTS}`}>
               {rows.length > 1 && <span className="muted hint">Pick one to see its footprint, verdicts and evidence</span>}
-            </header>
+            </SectHead>
             <Journey rows={rows} view={view} selected={attempt} onPick={setPicked} now={now} />
           </section>
 
-          <section className="card">
-            <header className="card-head">
-              <h2>Footprint</h2>
-              <span className="spacer" />
+          <section className="txn-sect">
+            <SectHead title="Footprint">
               <AttemptPicker attempts={attempts} selected={attempt} onPick={setPicked} />
-            </header>
-            <div className="card-body">
+            </SectHead>
+            <div>
               <div className="txn-pair">
-                <PathList title="Read" icon="eye" rows={ad.reads} none="No reads recorded." />
-                <PathList title="Written" icon="file" rows={ad.writes} none="No writes recorded yet." />
+                <PathList title="Read" rows={ad.reads} none="No reads recorded." />
+                <PathList title="Written" rows={ad.writes} none="No writes recorded yet." />
               </div>
               <Deltas rows={[...ad.reads, ...ad.writes]} />
               {past.status === "loading" && <p className="muted txn-note">Reading the stale files at the two snapshots to show what changed on trunk…</p>}

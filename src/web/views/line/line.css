@@ -1,35 +1,38 @@
-/* The Line (PLAN.md §12 view 1): header, counters, the timeline of agents against trunk, and the side
-   column with the hot files and the activity feed. At 1440x900 it fits the screen; each panel scrolls inside. */
+/* The Line (PLAN.md §12 view 1) is a graphic timetable sheet: the sidings drawn against a time grid on the left,
+   the counters, hot files and log book in the margin, the key and the title block along the foot. At 1440x900 it
+   fits the screen; the sidings and the log book scroll inside. */
 .line {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   height: 100%;
-  padding: 16px 20px 20px;
-}
-.defs {
-  position: absolute;
+  padding: 14px 20px 16px;
 }
 
-/* ------------------------------------------------------------------ header */
+/* ------------------------------------------------------------------ sheet header */
 
 .line-head {
   display: flex;
   align-items: center;
   gap: 16px;
-  min-height: 34px;
+  min-height: 30px;
 }
 .line-title {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 16px;
   min-width: 0;
 }
 .line-title h1 {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  font-size: 22px;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+.line-note {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-style: italic;
 }
 .line-actions {
   display: flex;
@@ -48,156 +51,36 @@
 }
 .demo-token .input {
   width: 170px;
-  height: 32px;
 }
 .demo-msg {
   font-family: var(--mono);
   font-size: 11.5px;
-  color: var(--go-text);
 }
 .demo-msg[data-ok="false"] {
-  color: var(--stop-text);
-}
-
-/* ------------------------------------------------------------------ counters */
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 12px;
-}
-.stat {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px 12px;
-  border-radius: var(--r-lg);
-}
-.stat-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 500;
-}
-.stat-label svg {
-  color: var(--text-3);
-}
-.stat[data-tone="go"] .stat-label svg {
-  color: var(--go);
-}
-.stat[data-tone="stop"] .stat-label svg {
   color: var(--stop);
 }
-.stat[data-tone="caution"] {
-  border-color: color-mix(in srgb, var(--caution) 55%, var(--border));
-  background: var(--caution-soft);
-}
-.stat[data-tone="caution"] .stat-label svg {
-  color: var(--caution-text);
-}
-.stat-row {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 32px;
-}
-.stat-value {
-  font-size: 26px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-  line-height: 1.1;
-}
-.stat-seq {
-  font-size: 22px;
-}
-.stat-sub {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--text-3);
-  font-size: 12px;
-  line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.stat-sub a {
-  color: var(--caution-text);
-  font-weight: 500;
-  text-decoration: none;
-}
-.stat-sub a svg {
-  vertical-align: -1px;
-}
-.split {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.split .dot {
-  width: 6px;
-  height: 6px;
-}
-.split:not(:last-child) {
-  margin-right: 10px;
-}
-.spark {
-  flex: none;
-  margin-bottom: 3px;
-}
-.spark-bar {
-  fill: var(--go);
-}
-.spark-zero {
-  fill: var(--border);
-}
 
-/* ------------------------------------------------------------------ grid */
+/* ------------------------------------------------------------------ the sheet's two columns */
 
 .line-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) 348px;
+  gap: 28px;
   min-height: 0;
 }
 .line-side {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 14px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 18px;
   min-height: 0;
 }
 
-/* ------------------------------------------------------------------ timeline */
+/* ------------------------------------------------------------------ timetable */
 
 .timeline {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
-}
-.timeline .card-head {
-  flex-wrap: wrap;
-  row-gap: 6px;
-}
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: var(--text-2);
-  font-size: 11.5px;
-}
-.legend li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-.lg-swatch {
-  overflow: visible;
 }
 .tl-body {
   position: relative;
@@ -210,125 +93,159 @@
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
 }
-.tl-head svg {
+.tl-head svg,
+.rows {
   display: block;
 }
-.tl-head .axis text {
-  fill: var(--text-3);
+.axis text {
+  fill: var(--ink-2);
   font-size: 11px;
-  font-variant-numeric: tabular-nums;
 }
+.axis-base,
+.axis-major {
+  stroke: var(--ink);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.axis-minor {
+  stroke: var(--ink-2);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+/* "Now" is printed in reverse, the one moving thing on the sheet. */
 .now-flag rect {
-  fill: var(--text);
+  fill: var(--ink);
 }
 .now-flag text {
-  fill: var(--surface);
+  fill: var(--paper);
   font-size: 10.5px;
   font-weight: 600;
 }
-.trunk {
-  overflow: visible;
+.now-flag line,
+.now {
+  stroke: var(--ink);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
 }
+
+/* The main line: the heaviest stroke on the sheet, each commit a tick across it. */
 .trunk-name {
-  fill: var(--text);
+  fill: var(--ink);
   font-size: 12.5px;
   font-weight: 600;
 }
 .trunk-head {
-  fill: var(--text-3);
+  fill: var(--ink-2);
   font-family: var(--mono);
   font-size: 10.5px;
 }
-.trunk-sep {
-  stroke: var(--border);
-}
 .mainline {
-  stroke: var(--border-strong);
-  stroke-width: 2;
-  stroke-linecap: round;
+  stroke: var(--ink);
+  stroke-width: 3;
+}
+.tick {
+  fill: var(--ink);
+  shape-rendering: crispEdges;
+}
+.tick.culprit {
+  fill: var(--stop);
+}
+.tick.recall {
+  fill: var(--paper);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  shape-rendering: auto;
+}
+a:hover > .tick,
+a:focus-visible > .tick {
+  fill: var(--run);
 }
 .block-box {
-  fill: var(--surface-3);
-  stroke: var(--border-strong);
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
 }
 .block-count {
-  fill: var(--text-3);
-  font-size: 9.5px;
+  fill: var(--ink);
+  font-size: 10.5px;
   font-weight: 600;
-}
-.trunk .tick {
-  fill: var(--go);
-  stroke: var(--surface);
-  stroke-width: 1.5;
-}
-.trunk .tick.seed {
-  fill: var(--text-3);
-}
-.trunk .tick.recall {
-  fill: var(--recall);
 }
 .dot-hit {
   fill: transparent;
-  cursor: pointer;
 }
-.trunk a:hover .tick,
-.trunk a:focus-visible .tick {
-  stroke: var(--text);
-}
-.dot-ring {
-  fill: none;
-  stroke: var(--stop);
-  stroke-width: 1.5;
-  stroke-dasharray: 2 2;
-}
-.wave-label {
-  fill: var(--stop-text);
-  font-size: 10px;
-  font-weight: 600;
-}
-.block.arrive {
-  animation: arrive 900ms cubic-bezier(0.2, 0.8, 0.2, 1);
+/* A landing arrives the way ink does: its ticks print from the line outwards. */
+.block.arrive .tick {
   transform-box: fill-box;
   transform-origin: center;
+  animation: print 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
-@keyframes arrive {
-  0% {
-    opacity: 0;
-    transform: translateY(10px) scale(0.85);
-  }
-  100% {
-    opacity: 1;
-    transform: none;
+.block.arrive .block-box,
+.block.arrive .block-count {
+  animation: appear 700ms ease-out both;
+}
+@keyframes print {
+  from {
+    transform: scaleY(0);
   }
 }
 
-.rows {
-  display: block;
+/* A landing that made others stale draws a guide in --stop down to each notch it caused. */
+.wave {
+  fill: none;
+  stroke: var(--stop);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
 }
-.row-bg {
-  fill: transparent;
+/* The branches to each notch are leader lines, dotted as a drawing's references are, so they never read as a frame. */
+.wave.leader {
+  stroke-dasharray: 1 2;
+  shape-rendering: auto;
 }
-.row.hot .row-bg {
-  fill: var(--surface-2);
+.wave-label {
+  fill: var(--stop);
+  font-size: 10.5px;
+  font-style: italic;
+}
+
+/* The rows: the time grid in two weights, the station column ruled off, an agent per row. */
+.grid {
+  stroke: var(--grid);
+  shape-rendering: crispEdges;
+}
+.grid-minor {
+  stroke: var(--grid-2);
+  shape-rendering: crispEdges;
+}
+.gutter {
+  stroke: var(--rule);
+  shape-rendering: crispEdges;
 }
 .rowline {
-  stroke: var(--border);
-  stroke-opacity: 0.6;
+  stroke: var(--grid);
+  shape-rendering: crispEdges;
 }
-.rows .grid {
-  stroke: var(--border);
-  stroke-opacity: 0.7;
+.row-bg,
+.row-mark {
+  fill: transparent;
+}
+.row.hot .row-mark {
+  fill: var(--ink);
 }
 .agent {
-  fill: var(--text-2);
+  fill: var(--ink);
   font-size: 12px;
-  font-weight: 500;
+}
+.row.hot .agent {
+  font-weight: 600;
 }
 .agent-dot {
-  fill: var(--border-strong);
+  fill: var(--paper);
+  stroke: var(--ink);
+  stroke-width: 1.25;
 }
 .agent-dot[data-tone="go"] {
   fill: var(--go);
@@ -342,40 +259,13 @@
 .agent-dot[data-tone="run"] {
   fill: var(--run);
 }
-.agent-dot[data-tone="recall"] {
-  fill: var(--recall);
-}
-.rows .now {
-  stroke: var(--text);
-  stroke-width: 1;
-  stroke-dasharray: 3 3;
-  opacity: 0.55;
-}
-.wave {
-  fill: none;
-  stroke: var(--stop);
-  stroke-width: 1.25;
-  stroke-dasharray: 2 3;
-  opacity: 0.65;
-}
 
-/* bars */
-.bar {
-  cursor: pointer;
-  outline: none;
-}
-.bar .hit {
-  fill: transparent;
+/* An attempt: filled by state, one ink frame round it, open on the right while it runs. */
+.part {
+  shape-rendering: crispEdges;
 }
 .seg-open {
-  fill: var(--work);
-}
-.queue-bg {
-  fill: var(--queue);
-}
-.queue-line {
-  stroke: var(--queue-line);
-  stroke-width: 2;
+  fill: var(--paper);
 }
 .seg-verify {
   fill: var(--run);
@@ -383,376 +273,400 @@
 .seg-landed {
   fill: var(--go);
 }
-.seg-human {
-  fill: var(--caution);
+.is-recalled .seg-landed {
+  fill: var(--paper);
 }
-.lease-bg {
-  fill: var(--caution-soft);
+.bar-frame {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
 }
-.lease-dot {
-  fill: var(--caution);
+.bar.hot .bar-frame {
+  stroke-width: 2;
 }
 .bar-label {
-  fill: var(--work-ink);
+  fill: var(--ink);
   font-size: 11px;
-  font-weight: 500;
   pointer-events: none;
 }
-.bar.hot .part,
-.bar:focus-visible .part {
-  filter: brightness(0.93);
+.hit {
+  fill: transparent;
 }
-:root[data-theme="dark"] .bar.hot .part,
-:root[data-theme="dark"] .bar:focus-visible .part {
-  filter: brightness(1.2);
+.bar {
+  cursor: pointer;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .bar.hot .part,
-  :root:not([data-theme="light"]) .bar:focus-visible .part {
-    filter: brightness(1.2);
-  }
+.bar:focus {
+  outline: none;
 }
 .bar:focus-visible .hit {
-  stroke: var(--focus);
-  stroke-width: 1.5;
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
 }
-.m-landed {
-  fill: var(--go);
-  stroke: var(--surface);
-  stroke-width: 1.5;
+/* A hovered attempt's path to and from trunk, drawn over everything like a pencil line on the print. */
+.paths {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  overflow: visible;
+  pointer-events: none;
 }
-.m-failed {
-  fill: var(--stop);
-  stroke: var(--surface);
-  stroke-width: 1.5;
-}
-.m-aborted {
-  fill: var(--text-3);
-  stroke: var(--surface);
-  stroke-width: 1.5;
-}
-.m-stale {
-  fill: var(--stop);
-}
-.glyph-ink {
+.path-depart,
+.path-arrive {
   fill: none;
-  stroke: #fff;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  stroke: var(--ink);
+  stroke-width: 1.25;
 }
-.warn {
-  fill: var(--caution);
+.path-arrive {
+  stroke: var(--go);
 }
-.bar.is-recalled .part,
-.recalled {
-  opacity: 0.4;
+.path-arrive.recalled {
+  stroke: var(--ink);
 }
-.strike {
-  stroke: var(--recall);
-  stroke-width: 2.25;
-  stroke-linecap: round;
+.path-stop {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
 }
-
+.path-stop.arrive {
+  stroke: var(--go);
+}
 .tl-empty {
   display: grid;
-  justify-items: center;
+  justify-items: start;
   gap: 6px;
-  padding: 56px 24px;
-  text-align: center;
-  color: var(--text-3);
+  padding: 28px 0 0 16px;
 }
 .tl-empty-title {
-  color: var(--text);
   font-size: 14px;
   font-weight: 600;
 }
 .tl-empty pre {
-  margin: 8px 0 0;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  background: var(--surface-2);
-  color: var(--text-2);
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
   font-size: 12px;
-  white-space: pre-wrap;
 }
 
-/* ------------------------------------------------------------------ hot files */
+/* ------------------------------------------------------------------ margin: counters */
 
-.hot-files {
-  display: flex;
-  flex-direction: column;
-  max-height: 290px;
-  min-height: 0;
+.c-table {
+  width: 100%;
+  border-collapse: collapse;
 }
+.c-table tr {
+  border-bottom: 1px solid var(--grid);
+}
+.c-table th,
+.c-table td {
+  padding: 5px 0;
+  vertical-align: baseline;
+}
+.c-table th {
+  width: 98px;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+.c-lamp {
+  width: 17px;
+}
+.c-lamp .dot {
+  width: 8px;
+  height: 8px;
+  border-width: 1.25px;
+  vertical-align: -0.5px;
+}
+.c-fig {
+  width: 38px;
+  padding-right: 12px !important;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: right;
+}
+.c-sub {
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+.c-sub a {
+  color: var(--ink);
+}
+.split {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+.split:last-child {
+  margin-right: 0;
+}
+
+/* ------------------------------------------------------------------ margin: hot files */
+
+/* Every file of a large repo is one press away; the list scrolls in its place so the log book keeps its room. */
 .heat-list {
-  flex: 1;
-  min-height: 0;
+  max-height: 34vh;
   margin: 0;
-  padding: 6px 0;
+  padding: 0;
   overflow-y: auto;
   list-style: none;
 }
 .heat-list li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 84px 30px;
+  grid-template-columns: minmax(0, 1fr) auto 64px 30px;
   align-items: center;
-  gap: 10px;
-  padding: 4px 16px;
-  font-size: 12px;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--grid);
 }
 .heat-name {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-}
-.heat-icon {
-  flex: none;
-  color: var(--heat);
-}
-.heat-icon.cold {
-  color: var(--text-3);
-}
-.heat-lock {
-  flex: none;
-  color: var(--caution-text);
-}
-.path {
   overflow: hidden;
-  font-family: var(--mono);
   font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: ltr;
-}
-.path-dir {
-  color: var(--text-3);
-}
-.path-base {
-  color: var(--text);
 }
 .heat-list li[data-hot="true"] .path-base {
-  font-weight: 600;
+  font-weight: 500;
 }
-.heat-list li[data-cold="true"] .path-base {
-  color: var(--text-2);
+.heat-list li[data-cold="true"] .heat-name {
+  color: var(--ink-2);
+}
+.heat-lease {
+  font-size: 11px;
+  text-decoration: underline dotted var(--caution) 2px;
+  text-underline-offset: 3px;
 }
 .heat-track {
   position: relative;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--surface-3);
+  height: 7px;
+  border: 1px solid var(--ink);
 }
+/* The hot mark: a tick through the scale where heat 2 is reached. */
 .heat-track::after {
   content: "";
   position: absolute;
   top: -3px;
   bottom: -3px;
   left: var(--hot-at);
-  width: 1.5px;
-  border-radius: 1px;
-  background: var(--border-strong);
+  width: 1px;
+  background: var(--ink);
 }
-.heat-fill {
+.heat-fill,
+.heat-over {
   position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--heat) 55%, var(--surface));
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--ink);
 }
-.heat-list li[data-hot="true"] .heat-fill {
-  background: var(--heat);
+.heat-over {
+  background: var(--stop);
 }
 .heat-val {
-  color: var(--text-2);
-  font-family: var(--mono);
   font-size: 11.5px;
   text-align: right;
 }
-.heat-list li[data-hot="true"] .heat-val {
-  color: var(--text);
-  font-weight: 600;
-}
 .more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  height: 34px;
+  padding: 5px 0 0;
   border: 0;
-  border-top: 1px solid var(--border);
-  border-radius: 0 0 var(--r-lg) var(--r-lg);
-  background: transparent;
-  color: var(--text-2);
+  background: none;
+  color: var(--ink-2);
   font-size: 12px;
-  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
 }
 .more:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-.flip {
-  transform: rotate(180deg);
+  color: var(--ink);
 }
 
-/* ------------------------------------------------------------------ activity */
+/* ------------------------------------------------------------------ margin: log book */
 
 .activity {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
 }
 .feed,
 .ops {
   flex: 1;
   min-height: 0;
   margin: 0;
-  padding: 4px 0 8px;
+  padding: 0;
   overflow-y: auto;
   list-style: none;
 }
 .feed-item {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  gap: 10px;
-  padding: 7px 16px;
+  grid-template-columns: 50px 24px minmax(0, 1fr);
+  align-items: baseline;
+  padding: 5px 0 6px;
+  border-bottom: 1px solid var(--grid);
 }
-.feed-item + .feed-item {
-  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+.feed-time {
+  color: var(--ink-2);
+  font-size: 11px;
 }
-.feed-icon {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--surface-3);
-  color: var(--text-3);
-}
-.feed-item[data-tone="go"] .feed-icon {
-  background: var(--go-soft);
-  color: var(--go-text);
-}
-.feed-item[data-tone="stop"] .feed-icon {
-  background: var(--stop-soft);
-  color: var(--stop-text);
-}
-.feed-item[data-tone="caution"] .feed-icon {
-  background: var(--caution-soft);
-  color: var(--caution-text);
-}
-.feed-item[data-tone="run"] .feed-icon {
-  background: var(--run-soft);
-  color: var(--run-text);
-}
-.feed-item[data-tone="recall"] .feed-icon {
-  background: var(--recall-soft);
-  color: var(--recall-text);
-}
-.feed-text {
-  min-width: 0;
-  font-size: 12.5px;
-  line-height: 1.4;
-}
-.feed-detail {
-  overflow-wrap: anywhere;
+.feed-mark {
+  align-self: start;
+  padding-top: 4px;
 }
 .feed-line {
-  color: var(--text-2);
+  font-size: 12.5px;
 }
 .feed-actor {
-  color: var(--text);
   font-weight: 600;
 }
 .feed-subject {
+  display: -webkit-box;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .feed-txn {
-  color: var(--text);
-  font-weight: 500;
   text-decoration: none;
 }
 .feed-txn:hover {
   text-decoration: underline;
-  text-decoration-color: var(--text-3);
-  text-underline-offset: 2px;
 }
 .feed-detail {
-  margin-top: 1px;
-  color: var(--text-3);
-  font-size: 12px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
 }
-.feed-detail .feed-txn {
-  color: var(--text-2);
-  font-weight: 400;
-}
-.feed-text code {
-  padding: 0 4px;
-  border-radius: 4px;
-  background: var(--surface-3);
-  color: var(--text-2);
-  font-size: 11px;
-}
-.feed-time {
-  padding-top: 2px;
-  color: var(--text-3);
+.feed-detail code {
+  color: var(--ink);
   font-size: 11px;
 }
 .ops li {
   display: grid;
-  grid-template-columns: 36px 118px minmax(0, 1fr);
-  gap: 8px;
-  padding: 2px 16px;
+  grid-template-columns: 34px 128px minmax(0, 1fr);
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--grid-2);
   font-family: var(--mono);
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 .op-seq {
-  color: var(--text-3);
+  color: var(--ink-2);
   text-align: right;
 }
 .op-kind {
-  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
-.op-kind[data-tone="go"] {
-  color: var(--go-text);
+.op-kind::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--ink);
 }
-.op-kind[data-tone="stop"] {
-  color: var(--stop-text);
+.op-kind[data-tone="go"]::before {
+  border-color: var(--go);
+  background: var(--go);
 }
-.op-kind[data-tone="caution"] {
-  color: var(--caution-text);
+.op-kind[data-tone="stop"]::before {
+  border-color: var(--stop);
+  background: var(--stop);
 }
-.op-kind[data-tone="run"] {
-  color: var(--run-text);
+.op-kind[data-tone="caution"]::before {
+  border-color: var(--caution);
+  background: var(--caution);
 }
-.op-kind[data-tone="recall"] {
-  color: var(--recall-text);
+.op-kind[data-tone="run"]::before {
+  border-color: var(--run);
+  background: var(--run);
+}
+.op-kind[data-tone="recall"]::before {
+  background: var(--ink);
 }
 .op-data {
   overflow: hidden;
-  color: var(--text-2);
+  color: var(--ink-2);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .op-txn {
-  color: var(--text-3);
+  color: var(--ink);
 }
 
-/* ------------------------------------------------------------------ narrower screens */
+/* ------------------------------------------------------------------ foot: key and title block */
+
+.line-foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 28px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+}
+.key {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  min-width: 0;
+}
+.key-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+/* The key is set in aligned columns, as a printed key is, not as a run of words. */
+.legend {
+  display: grid;
+  grid-template-columns: repeat(6, auto);
+  justify-content: start;
+  gap: 5px 22px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+}
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.title-block {
+  display: grid;
+  grid-template-columns: auto auto auto;
+  margin: 0;
+  border: 1px solid var(--rule);
+}
+.title-block > div {
+  padding: 3px 10px 4px;
+  border-left: 1px solid var(--rule);
+}
+.title-block > div:first-child {
+  border-left: 0;
+}
+.title-block dt {
+  color: var(--ink-2);
+  font-size: 10.5px;
+}
+.title-block dd {
+  margin: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ narrower sheets */
 
 @media (max-width: 1280px) {
-  .stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
   .line-grid {
-    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 1fr) 312px;
+    gap: 22px;
+  }
+  .legend {
+    grid-template-columns: repeat(4, auto);
   }
 }
 @media (max-width: 1080px) {
@@ -764,10 +678,12 @@
   .line-grid {
     display: flex;
     flex-direction: column;
+    gap: 24px;
   }
-  .timeline,
-  .activity {
-    overflow: visible;
+  .line-side {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
   }
   .tl-body {
     overflow: visible;
@@ -775,12 +691,19 @@
   .tl-head {
     position: static;
   }
-  .hot-files {
-    max-height: none;
-  }
   .feed,
   .ops {
     max-height: 520px;
+  }
+  .heat-list {
+    max-height: 420px;
+  }
+  .line-foot {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .title-block {
+    justify-self: start;
   }
 }
 @media (max-width: 640px) {
@@ -795,27 +718,25 @@
   .line-actions {
     margin-left: 0;
   }
-  .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-  }
-  .stat {
-    padding: 10px 12px;
-  }
-  .stat-value {
-    font-size: 22px;
-  }
-  .stat-seq {
-    font-size: 18px;
-  }
-  .spark {
-    display: none;
+  .key {
+    flex-direction: column;
+    gap: 6px;
   }
   .legend {
-    gap: 4px 10px;
-    font-size: 11px;
+    grid-template-columns: repeat(2, auto);
+    gap: 5px 16px;
   }
-  .agent {
-    font-size: 11px;
+  .title-block {
+    grid-template-columns: 1fr 1fr;
+    justify-self: stretch;
+  }
+  .title-block .tb-head {
+    grid-column: 1 / -1;
+  }
+  .title-block > div:nth-child(2) {
+    border-left: 0;
+  }
+  .title-block > div:nth-child(n + 2) {
+    border-top: 1px solid var(--rule);
   }
 }

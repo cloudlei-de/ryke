@@ -12,8 +12,8 @@ export type BlamePath = { path: string; by: string | null };
 
 // ---------------------------------------------------------------------------- vocabulary
 
-// §12: signal colours are used only as signals. Open, submitted, ready and aborted carry none; the
-// chip draws them as an outline and a hatch instead, so a lamp always means something happened.
+// §12: signal colours are used only as signals. Open, submitted, ready and aborted carry none; their
+// marks are an outline, a hatch and an ink buffer stop instead, so a lit lamp always means something happened.
 const SIGNALS: Record<string, Signal> = {
   landed: "go",
   stale: "stop",

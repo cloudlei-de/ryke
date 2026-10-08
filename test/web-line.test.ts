@@ -51,6 +51,7 @@ import {
   txnHref,
   type Scale,
 } from "../src/web/views/line/geometry";
+import { AXIS_STEPS_MS, blockLabels, fmtSpan, minorStep, minorTicks, scaleNote, trainPath, type AttemptBar, type TrunkBlock } from "../src/web/views/line/geometry";
 import e2eLand from "./fixtures/ops/e2e-land.json";
 
 // ---------------------------------------------------------------- builders
@@ -1164,4 +1165,120 @@ describe("idleView", () => {
     expect(idle.window.start).toBeLessThanOrEqual(0);
     expect(idle.window.end).toBeGreaterThan(3 * MIN);
   });
+});
+
+// ---------------------------------------------------------------- the printed grid, the title block, the hovered path
+
+describe("minorStep", () => {
+  it.each([
+    [1000, 500],
+    [2000, 1000],
+    [5000, 1000],
+    [10_000, 2000],
+    [15_000, 5000],
+    [30_000, 10_000],
+    [60_000, 10_000],
+    [120_000, 30_000],
+    [300_000, 60_000],
+    [600_000, 120_000],
+    [900_000, 300_000],
+    [1_800_000, 600_000],
+    [3_600_000, 900_000],
+    [7000, 7000], // a step the axis never takes is not divided
+  ])("a %d ms label step is ruled every %d ms", (step, minor) => expect(minorStep(step)).toBe(minor));
+
+  it("divides every step the axis takes evenly, into at most six lines", () => {
+    for (const s of AXIS_STEPS_MS) {
+      expect(s % minorStep(s)).toBe(0);
+      expect(s / minorStep(s)).toBeGreaterThan(1);
+      expect(s / minorStep(s)).toBeLessThanOrEqual(6);
+    }
+  });
+});
+
+describe("minorTicks", () => {
+  const t = Date.UTC(2026, 9, 8, 14, 0, 0);
+  it("rules the fine lines between the labels, on the clock, leaving out the labelled ones", () => {
+    // 60 s over 600 px: labels every 10 s (axis test above), lines every 2 s
+    const lines = minorTicks({ start: t + 3000, end: t + 63_000 }, 600, 0);
+    expect(lines.slice(0, 5).map((x) => (x - t) / 1000)).toEqual([4, 6, 8, 12, 14]);
+    expect(lines).toHaveLength(24);
+    expect(lines.some((x) => (x - t) % 10_000 === 0)).toBe(false);
+  });
+  it("aligns to the viewer's clock, as the labels do", () => {
+    // Nepal, UTC+5:45, 3 h over 600 px: labels every 30 min, lines every 10 min, at :10 and :20 local
+    const lines = minorTicks({ start: t, end: t + 3 * 3_600_000 }, 600, 345);
+    expect(new Date(lines[0]!).getUTCMinutes()).toBe(5);
+    expect(lines.every((x) => (x + 345 * 60_000) % 600_000 === 0 && (x + 345 * 60_000) % 1_800_000 !== 0)).toBe(true);
+  });
+  it.each([
+    ["reversed window", { start: 10, end: 5 }, 600],
+    ["empty window", { start: 5, end: 5 }, 600],
+    ["no width", { start: 0, end: 5000 }, 0],
+  ])("returns nothing for %s", (_n, w, width) => expect(minorTicks(w, width, 0)).toEqual([]));
+});
+
+describe("fmtSpan and scaleNote", () => {
+  it.each([
+    [0, "0 s"],
+    [-5, "0 s"],
+    [500, "0.5 s"],
+    [2000, "2 s"],
+    [10_000, "10 s"],
+    [90_000, "1.5 min"],
+    [600_000, "10 min"],
+    [5_400_000, "1.5 h"],
+    [59_940, "59.9 s"],
+    [59_960, "1 min"], // rounds to 60.0 s, so it is printed in the next unit
+    [3_596_000, "59.9 min"],
+    [3_597_000, "1 h"],
+  ])("fmtSpan(%d) = %s", (ms, text) => expect(fmtSpan(ms)).toBe(text));
+
+  it("says what one fine line is worth and how much time the sheet shows", () => {
+    const t = Date.UTC(2026, 9, 8, 14, 0, 0);
+    expect(scaleNote({ start: t + 3000, end: t + 63_000 }, 600)).toBe("2 s a line · 1 min shown");
+    expect(scaleNote({ start: t, end: t + 600_000 }, 1000)).toBe("10 s a line · 10 min shown");
+    expect(scaleNote({ start: 5, end: 5 }, 600)).toBe("");
+    expect(scaleNote({ start: 0, end: 5000 }, 0)).toBe("");
+  });
+});
+
+describe("trainPath", () => {
+  const tk = (seq: number, at: number, txn: string | null, train: string | null = null): Tick => ({ seq, sha: `${seq}`.padEnd(40, "a"), txn, train, recall: null, at });
+  const ticks = [tk(0, 0, null), tk(1, 100, "t1"), tk(2, 300, "t2", "trA"), tk(3, 300, "t3", "trA")];
+  const blocks = layoutTrunk(ticks, scale);
+  const xOf = (seq: number) => blocks.flatMap((b) => b.ticks).find((t) => t.seq === seq)!.x;
+
+  it.each<[string, { txn: string; mark: AttemptBar["mark"] }, number, { from: number | null; to: number | null }]>([
+    ["an attempt sets out from trunk's head when it began", { txn: "t9", mark: null }, 150, { from: 100, to: null }],
+    ["a landed attempt ends at its own commit", { txn: "t3", mark: { kind: "landed", x: 300 } }, 150, { from: 100, to: 300 + DOT_GAP }],
+    ["an attempt begun the instant a train landed sets out from the train's last commit", { txn: "t9", mark: null }, 300, { from: 300 + DOT_GAP, to: null }],
+    ["an attempt before the first commit set out from nothing on the sheet", { txn: "t9", mark: null }, -5, { from: null, to: null }],
+    ["a stale attempt does not end on trunk", { txn: "t1", mark: { kind: "stale", x: 90 } }, 50, { from: 0, to: null }],
+  ])("%s", (_n, bar, start, out) => expect(trainPath(bar, start, ticks, blocks)).toEqual(out));
+
+  it("finds the commits where layoutTrunk drew them, pushed or not", () => {
+    expect(trainPath({ txn: "t2", mark: { kind: "landed", x: 300 } }, 120, ticks, blocks)).toEqual({ from: xOf(1), to: xOf(2) });
+  });
+
+  it("gives no end for a commit off the sheet", () => {
+    const later = layoutTrunk(ticks, { t0: 200, t1: 1000, x0: 0, x1: 800 });
+    expect(trainPath({ txn: "t3", mark: { kind: "landed", x: 120 } }, 150, ticks, later)).toEqual({ from: null, to: 100 + DOT_GAP });
+  });
+});
+
+describe("blockLabels", () => {
+  const mk = (key: string, x: number, n: number): TrunkBlock => ({
+    key,
+    train: key,
+    at: 0,
+    x,
+    w: (n - 1) * DOT_GAP,
+    ticks: Array.from({ length: n }, (_, i) => ({ key: `${key}${i}`, x: x + i * DOT_GAP, seq: i, sha: "", txn: null, recall: null, title: "" })),
+  });
+  it("writes a train's size unless it would run into the size before it, and never over a single commit", () => {
+    const labels = blockLabels([mk("a", 100, 3), mk("b", 124, 2), mk("c", 132, 2), mk("d", 140, 1), mk("e", 150, 2)]);
+    expect([...labels]).toEqual(["a", "b", "e"]);
+  });
+  it("labels nothing on an empty trunk", () => expect(blockLabels([]).size).toBe(0));
 });
