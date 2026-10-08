@@ -13,11 +13,14 @@ export type Part = string | { txn: string; label: string } | { code: string };
 export type FeedItem = { seq: number; at: number; tone: Signal | null; icon: IconName; actor: string | null; text: Part[]; subject: Part | null; detail: Part[] | null };
 
 const INTENT_CHARS = 72;
+// A transaction named inside a detail line (the one that made this one stale, the one it may duplicate) is
+// the second subject of the item, so it gets less room than the first.
+const CAUSE_CHARS = 44;
 
-function txnPart(id: string | null | undefined, txns: ReadonlyMap<string, TxnView>): Part {
+function txnPart(id: string | null | undefined, txns: ReadonlyMap<string, TxnView>, max = INTENT_CHARS): Part {
   if (!id) return "a transaction";
   const intent = txns.get(id)?.intent.trim();
-  return { txn: id, label: intent ? clipText(intent, INTENT_CHARS) : id };
+  return { txn: id, label: intent ? clipText(intent, max) : id };
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -30,7 +33,7 @@ function stalePaths(d: Op["data"], txns: ReadonlyMap<string, TxnView>): Part[] |
   if (d.reason === "text_conflict") return first ? ["text conflict in ", { code: str(first.path) }] : ["text conflict"];
   if (!first || typeof first.path !== "string") return null;
   const out: Part[] = [{ code: first.path }, " changed"];
-  if (typeof first.by === "string" && first.by) out.push(" by ", txnPart(first.by, txns));
+  if (typeof first.by === "string" && first.by) out.push(" by ", txnPart(first.by, txns, CAUSE_CHARS));
   if (paths.length > 1) out.push(` · +${paths.length - 1} more`);
   return out;
 }
@@ -77,9 +80,9 @@ export function describeOp(op: Op, state: Pick<LineState, "txns" | "trains">): F
     case "lease.waiting":
       return about("lock", ["waits for a lease"], d.path ? [{ code: str(d.path) }] : null);
     case "dup.warning":
-      return about("alert", ["may be a duplicate"], ["of ", txnPart(str(d.other), txns)]);
+      return about("alert", ["may be a duplicate"], ["of ", txnPart(str(d.other), txns, CAUSE_CHARS)]);
     case "conflict.warning":
-      return about("alert", ["may conflict"], ["with ", txnPart(str(d.other), txns)]);
+      return about("alert", ["may conflict"], ["with ", txnPart(str(d.other), txns, CAUSE_CHARS)]);
     case "trunk.advanced":
       if (d.recall) return event("undo", ["Trunk reverted by recall ", { code: str(d.recall) }], [`seq ${d.seq} · ${shortSha(str(d.sha))}`], "recall");
       // A move with no transaction and no recall is the seed commit; a landing is told by txn.landed.

@@ -113,11 +113,13 @@
   font-size: 22px;
 }
 .stat-sub {
+  display: -webkit-box;
   overflow: hidden;
   color: var(--text-3);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .stat-sub a {
   color: var(--caution-text);
@@ -131,6 +133,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 .split .dot {
   width: 6px;

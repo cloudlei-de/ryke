@@ -92,6 +92,9 @@ describe("describeOp", () => {
     const label = (describeOp(op("txn.landed", { seq: 1, sha: "a" }, "t_l"), long)!.subject as { label: string }).label;
     expect(label).toHaveLength(72);
     expect(label.endsWith("…")).toBe(true);
+    // named as the cause in a detail line, it gets less room
+    const cause = describeOp(op("dup.warning", { other: "t_l" }), long)!.detail!;
+    expect((cause[1] as { label: string }).label).toHaveLength(44);
   });
 });
 
