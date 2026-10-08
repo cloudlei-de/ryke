@@ -15,7 +15,7 @@ import {
   type Warning,
 } from "../../shared/types";
 import { StoreError, storeFor, type RepoStore } from "../store/store";
-import { bump, decayed, isHot, leaseDecision, LEASE_MS, shouldEmit } from "./heat";
+import { bump, decayed, HEAT_EMIT_MS, isHot, leaseDecision, shouldEmit } from "./heat";
 import { migrate } from "./schema";
 import { selectTrain } from "./trains";
 import { validate } from "./validate";
@@ -176,6 +176,7 @@ export class Ledger extends DurableObject<Env> {
   private locks = new Map<string, Promise<void>>();
   private outbox: Op[] = [];
   private heatEmitted = new Map<string, number>();
+  private heatPending = new Set<string>();
   private trunkWaiters: (() => void)[] = [];
   private policyCache: Policy | null = null;
   private trunkAccess: { remote: string; token: string; expires: number } | null = null;
@@ -404,11 +405,23 @@ export class Ledger extends DurableObject<Env> {
         next.value,
         next.at,
       );
-      if (shouldEmit(this.heatEmitted.get(path), now)) {
-        this.heatEmitted.set(path, now);
-        this.op("heat.changed", null, { path, value: next.value, hot: isHot(next.value) });
-      }
+      this.heatPending.add(path);
     }
+    this.flushHeat();
+  }
+
+  // heat.changed is throttled per path (§7.1); throttled values wait here and go out on a later
+  // alarm, so a burst of aborts on one file still ends with its true heat on the dashboard.
+  private flushHeat(): void {
+    const now = this.now();
+    for (const path of this.heatPending) {
+      if (!shouldEmit(this.heatEmitted.get(path), now)) continue;
+      this.heatPending.delete(path);
+      this.heatEmitted.set(path, now);
+      const value = this.heatOf(path);
+      this.op("heat.changed", null, { path, value, hot: isHot(value) });
+    }
+    if (this.heatPending.size > 0) this.scheduleSoon(HEAT_EMIT_MS + 50);
   }
 
   private heatOf(path: string): number {
@@ -905,6 +918,7 @@ export class Ledger extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     if (!this.meta("repo")) return;
+    this.flushHeat();
     this.expireLeases();
     this.revalidateReady();
     await this.maybeFormTrain();

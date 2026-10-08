@@ -48,18 +48,21 @@ function git(args, { cwd, env = {}, config = [], input } = {}) {
   ];
   return new Promise((resolve) => {
     const child = spawn("git", full, { cwd, env: { ...GIT_ENV, ...env } });
+    // A wedged git must fail the test, not hang the run.
+    const watchdog = setTimeout(() => child.kill("SIGKILL"), 60_000);
     const out = [];
     const err = [];
     child.stdout.on("data", (c) => out.push(c));
     child.stderr.on("data", (c) => err.push(c));
-    child.on("close", (code) =>
+    child.on("close", (code) => {
+      clearTimeout(watchdog);
       resolve({
         ok: code === 0,
         code,
         stdout: Buffer.concat(out).toString("utf8"),
         stderr: Buffer.concat(err).toString("utf8"),
-      }),
-    );
+      });
+    });
     child.stdin.end(input);
   });
 }
@@ -136,6 +139,7 @@ function request(baseUrl, method, target, { headers = {}, body } = {}) {
       });
     });
     req.on("error", reject);
+    req.setTimeout(30_000, () => req.destroy(new Error(`${method} ${target} timed out`)));
     req.end(body);
   });
 }
@@ -285,10 +289,13 @@ describe("startStore", () => {
     await assert.rejects(startStore({ port: 0, stateDir: dir }), /cannot load .*tokens\.json/);
   });
 
-  test("close stops listening", async () => {
+  test("close stops listening and may be called twice", async () => {
     const s = await startStore({ port: 0, stateDir: await freshDir("state-close") });
-    assert.equal((await request(s.url, "GET", "/v1/health")).status, 200);
-    await Promise.all([s.close(), s.close()]);
+    try {
+      assert.equal((await request(s.url, "GET", "/v1/health")).status, 200);
+    } finally {
+      await Promise.all([s.close(), s.close()]);
+    }
     await assert.rejects(request(s.url, "GET", "/v1/health"), /ECONNREFUSED/);
     await s.close();
   });
@@ -1637,14 +1644,20 @@ describe("restart", () => {
     const stateDir = await freshDir("state-restart");
     const options = { stateDir, eventsUrl: capture.url };
     const first = await startStore({ port: 0, internalSecret: SECRET, ...options });
-    const call1 = controlApi(first);
-    await call1("POST", "/v1/repos", { name: "persist" });
-    const write = (await call1("POST", "/v1/repos/persist/tokens", { scope: "write", ttl: 600 })).json.token;
-    const read = (await call1("POST", "/v1/repos/persist/tokens", { scope: "read", ttl: 600 })).json.token;
+    let write;
+    let read;
+    let sha;
     const work = await newWork("persist");
-    const sha = await commit(work, { "a.txt": "kept\n" }, "kept");
-    await gitOk(["push", "-q", withBasic(`${first.url}/git/ryke/persist.git`, write), "main"], { cwd: work });
-    await first.close();
+    try {
+      const call1 = controlApi(first);
+      await call1("POST", "/v1/repos", { name: "persist" });
+      write = (await call1("POST", "/v1/repos/persist/tokens", { scope: "write", ttl: 600 })).json.token;
+      read = (await call1("POST", "/v1/repos/persist/tokens", { scope: "read", ttl: 600 })).json.token;
+      sha = await commit(work, { "a.txt": "kept\n" }, "kept");
+      await gitOk(["push", "-q", withBasic(`${first.url}/git/ryke/persist.git`, write), "main"], { cwd: work });
+    } finally {
+      await first.close();
+    }
 
     const onDisk = JSON.parse(await fs.readFile(path.join(stateDir, "store", "tokens.json"), "utf8"));
     assert.equal(onDisk[secretOf(write)].scope, "write");

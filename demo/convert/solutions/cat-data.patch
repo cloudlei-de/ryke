@@ -1,0 +1,82 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..df29a50 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the data converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..ec52050 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { data } from "./units/data.ts";
+diff --git a/src/units/data.ts b/src/units/data.ts
+new file mode 100644
+index 0000000..a273bc9
+--- /dev/null
++++ b/src/units/data.ts
+@@ -0,0 +1,18 @@
++import type { Category } from "../types.ts";
++
++export const data: Category = {
++  id: "data",
++  name: "Data",
++  base: "B",
++  units: [
++    { id: "b", name: "Byte", symbol: "B", toBase: (v) => v, fromBase: (v) => v },
++    { id: "bit", name: "Bit", symbol: "bit", toBase: (v) => v * 0.125, fromBase: (v) => v / 0.125 },
++    { id: "kb", name: "Kilobyte", symbol: "kB", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "mb", name: "Megabyte", symbol: "MB", toBase: (v) => v * 1e6, fromBase: (v) => v / 1e6 },
++    { id: "gb", name: "Gigabyte", symbol: "GB", toBase: (v) => v * 1e9, fromBase: (v) => v / 1e9 },
++    { id: "tb", name: "Terabyte", symbol: "TB", toBase: (v) => v * 1e12, fromBase: (v) => v / 1e12 },
++    { id: "kib", name: "Kibibyte", symbol: "KiB", toBase: (v) => v * 1024, fromBase: (v) => v / 1024 },
++    { id: "mib", name: "Mebibyte", symbol: "MiB", toBase: (v) => v * 1048576, fromBase: (v) => v / 1048576 },
++    { id: "gib", name: "Gibibyte", symbol: "GiB", toBase: (v) => v * 1073741824, fromBase: (v) => v / 1073741824 },
++  ],
++};
+diff --git a/test/data.test.ts b/test/data.test.ts
+new file mode 100644
+index 0000000..c5820ef
+--- /dev/null
++++ b/test/data.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=data&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "gib", to: "mb", v: 1, result: 1073.741824, display: "1073.74" },
++  { from: "gb", to: "mib", v: 1, result: 953.674316406, display: "953.67" },
++  { from: "mib", to: "mb", v: 5, result: 5.24288, display: "5.24" },
++];
++
++for (const c of cases) {
++  test(`data: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`data: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("data has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/data"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Data"));
++});

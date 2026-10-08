@@ -1,0 +1,77 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..020f4a6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add a copy-link button to converter pages.
+diff --git a/src/index.ts b/src/index.ts
+index c88e61e..616c153 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -3,6 +3,7 @@ import * as registry from "./registry.ts";
+ import type { Category } from "./types.ts";
+ import { escapeHtml } from "./ui/html.ts";
+ import { layout } from "./ui/layout.ts";
++import { shareButton, shareScript } from "./ui/share.ts";
+ 
+ // The registry stays one export line per category, so concurrent additions merge as a union. Deriving
+ // the list here means adding a category never edits this file.
+@@ -53,7 +54,9 @@ function renderConverter(category: Category): string {
+   <tbody>
+ ${rows}
+   </tbody>
+-</table>`;
++</table>
++${shareButton}
++${shareScript}`;
+ }
+ 
+ function convertApi(params: URLSearchParams): Response {
+diff --git a/src/ui/share.ts b/src/ui/share.ts
+new file mode 100644
+index 0000000..c9eb4bb
+--- /dev/null
++++ b/src/ui/share.ts
+@@ -0,0 +1,13 @@
++export const shareButton = `<p><button class="share" type="button" data-share>Copy link</button></p>`;
++
++// The page URL already names the category, so copying it is the whole feature; no server round trip.
++export const shareScript = `<script>
++(function () {
++  var btn = document.querySelector("[data-share]");
++  btn.addEventListener("click", function () {
++    navigator.clipboard.writeText(location.href).then(function () {
++      btn.textContent = "Link copied";
++    });
++  });
++})();
++</script>`;
+diff --git a/test/share.test.ts b/test/share.test.ts
+new file mode 100644
+index 0000000..3567e10
+--- /dev/null
++++ b/test/share.test.ts
+@@ -0,0 +1,20 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++import { shareButton, shareScript } from "../src/ui/share.ts";
++
++async function html(path: string): Promise<string> {
++  return (await worker.fetch(new Request(`http://localhost${path}`))).text();
++}
++
++test("converter pages have the copy-link button and its script", async () => {
++  const page = await html("/c/length");
++  assert.ok(page.includes(shareButton));
++  assert.ok(page.includes(shareScript));
++  assert.ok(page.includes("data-share"));
++  assert.ok(page.includes("navigator.clipboard"));
++});
++
++test("the home page has no copy-link button", async () => {
++  assert.ok(!(await html("/")).includes("data-share"));
++});

@@ -1,0 +1,79 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..600e39f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the cooking converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..8aba426 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { cooking } from "./units/cooking.ts";
+diff --git a/src/units/cooking.ts b/src/units/cooking.ts
+new file mode 100644
+index 0000000..d34c810
+--- /dev/null
++++ b/src/units/cooking.ts
+@@ -0,0 +1,15 @@
++import type { Category } from "../types.ts";
++
++export const cooking: Category = {
++  id: "cooking",
++  name: "Cooking",
++  base: "mL",
++  units: [
++    { id: "ml", name: "Millilitre", symbol: "mL", toBase: (v) => v, fromBase: (v) => v },
++    { id: "tsp", name: "Teaspoon (US)", symbol: "tsp", toBase: (v) => v * 4.92892159375, fromBase: (v) => v / 4.92892159375 },
++    { id: "tbsp", name: "Tablespoon (US)", symbol: "tbsp", toBase: (v) => v * 14.78676478125, fromBase: (v) => v / 14.78676478125 },
++    { id: "floz", name: "Fluid ounce (US)", symbol: "fl oz", toBase: (v) => v * 29.5735295625, fromBase: (v) => v / 29.5735295625 },
++    { id: "cup", name: "Cup (US)", symbol: "cup", toBase: (v) => v * 236.5882365, fromBase: (v) => v / 236.5882365 },
++    { id: "pint", name: "Pint (US)", symbol: "pt", toBase: (v) => v * 473.176473, fromBase: (v) => v / 473.176473 },
++  ],
++};
+diff --git a/test/cooking.test.ts b/test/cooking.test.ts
+new file mode 100644
+index 0000000..cacf6c6
+--- /dev/null
++++ b/test/cooking.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=cooking&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "tsp", to: "tbsp", v: 3, result: 1, display: "1" },
++  { from: "cup", to: "ml", v: 1, result: 236.5882365, display: "236.588" },
++  { from: "ml", to: "cup", v: 250, result: 1.05668820943, display: "1.057" },
++];
++
++for (const c of cases) {
++  test(`cooking: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`cooking: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("cooking has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/cooking"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Cooking"));
++});

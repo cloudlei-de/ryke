@@ -1,0 +1,78 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..abdc500 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the fuel economy converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..d3897fa 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { fuelEconomy } from "./units/fuel-economy.ts";
+diff --git a/src/units/fuel-economy.ts b/src/units/fuel-economy.ts
+new file mode 100644
+index 0000000..7a52c6b
+--- /dev/null
++++ b/src/units/fuel-economy.ts
+@@ -0,0 +1,14 @@
++import type { Category } from "../types.ts";
++
++// L/100km is the inverse of the other units, so its two functions are the same reciprocal.
++export const fuelEconomy: Category = {
++  id: "fuel-economy",
++  name: "Fuel economy",
++  base: "km/L",
++  units: [
++    { id: "kpl", name: "Kilometre per litre", symbol: "km/L", toBase: (v) => v, fromBase: (v) => v },
++    { id: "l100", name: "Litre per 100 km", symbol: "L/100km", toBase: (v) => 100 / v, fromBase: (v) => 100 / v },
++    { id: "mpg-us", name: "Mile per US gallon", symbol: "mpg", toBase: (v) => (v * 1.609344) / 3.785411784, fromBase: (v) => (v * 3.785411784) / 1.609344 },
++    { id: "mpg-uk", name: "Mile per imperial gallon", symbol: "mpg (UK)", toBase: (v) => (v * 1.609344) / 4.54609, fromBase: (v) => (v * 4.54609) / 1.609344 },
++  ],
++};
+diff --git a/test/fuel-economy.test.ts b/test/fuel-economy.test.ts
+new file mode 100644
+index 0000000..9a0c48f
+--- /dev/null
++++ b/test/fuel-economy.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=fuel-economy&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "l100", to: "kpl", v: 8, result: 12.5, display: "12.50" },
++  { from: "mpg-us", to: "kpl", v: 30, result: 12.7543112229, display: "12.75" },
++  { from: "mpg-us", to: "l100", v: 25, result: 9.40858333333, display: "9.41" },
++];
++
++for (const c of cases) {
++  test(`fuel-economy: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`fuel-economy: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("fuel-economy has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/fuel-economy"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Fuel economy"));
++});

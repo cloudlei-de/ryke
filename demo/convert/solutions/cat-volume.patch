@@ -1,0 +1,83 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..50ddc48 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the volume converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..d4f48e8 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { volume } from "./units/volume.ts";
+diff --git a/src/units/volume.ts b/src/units/volume.ts
+new file mode 100644
+index 0000000..e67b2bd
+--- /dev/null
++++ b/src/units/volume.ts
+@@ -0,0 +1,19 @@
++import type { Category } from "../types.ts";
++
++export const volume: Category = {
++  id: "volume",
++  name: "Volume",
++  base: "L",
++  units: [
++    { id: "l", name: "Litre", symbol: "L", toBase: (v) => v, fromBase: (v) => v },
++    { id: "ml", name: "Millilitre", symbol: "mL", toBase: (v) => v * 0.001, fromBase: (v) => v / 0.001 },
++    { id: "m3", name: "Cubic metre", symbol: "m³", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "cm3", name: "Cubic centimetre", symbol: "cm³", toBase: (v) => v * 0.001, fromBase: (v) => v / 0.001 },
++    { id: "gal", name: "US gallon", symbol: "gal", toBase: (v) => v * 3.785411784, fromBase: (v) => v / 3.785411784 },
++    { id: "qt", name: "US quart", symbol: "qt", toBase: (v) => v * 0.946352946, fromBase: (v) => v / 0.946352946 },
++    { id: "pt", name: "US pint", symbol: "pt", toBase: (v) => v * 0.473176473, fromBase: (v) => v / 0.473176473 },
++    { id: "floz", name: "US fluid ounce", symbol: "fl oz", toBase: (v) => v * 0.0295735295625, fromBase: (v) => v / 0.0295735295625 },
++    { id: "ft3", name: "Cubic foot", symbol: "ft³", toBase: (v) => v * 28.316846592, fromBase: (v) => v / 28.316846592 },
++    { id: "igal", name: "Imperial gallon", symbol: "imp gal", toBase: (v) => v * 4.54609, fromBase: (v) => v / 4.54609 },
++  ],
++};
+diff --git a/test/volume.test.ts b/test/volume.test.ts
+new file mode 100644
+index 0000000..de1725f
+--- /dev/null
++++ b/test/volume.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=volume&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "gal", to: "ml", v: 1, result: 3785.411784, display: "3785.41" },
++  { from: "m3", to: "l", v: 1, result: 1000, display: "1000.00" },
++  { from: "igal", to: "gal", v: 1, result: 1.2009499255, display: "1.20" },
++];
++
++for (const c of cases) {
++  test(`volume: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`volume: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("volume has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/volume"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Volume"));
++});

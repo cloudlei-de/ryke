@@ -1,0 +1,62 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..c0d6de1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add a category search box to the header.
+diff --git a/src/ui/layout.ts b/src/ui/layout.ts
+index 19d4873..dcb4dfd 100644
+--- a/src/ui/layout.ts
++++ b/src/ui/layout.ts
+@@ -21,6 +21,20 @@ export function layout({ title, body }: Page): string {
+     <a href="/">Categories</a>
+     <a href="/api/convert?c=length&amp;from=km&amp;to=m&amp;v=1">API</a>
+   </nav>
++  <div class="search" style="margin-left: auto">
++    <input id="search" type="search" placeholder="Search categories" aria-label="Search categories" autocomplete="off">
++  </div>
++  <script>
++    (function () {
++      var input = document.getElementById("search");
++      input.addEventListener("input", function () {
++        var q = input.value.trim().toLowerCase();
++        document.querySelectorAll(".tile").forEach(function (tile) {
++          tile.hidden = q !== "" && tile.textContent.toLowerCase().indexOf(q) === -1;
++        });
++      });
++    })();
++  </script>
+ </header>
+ <main class="page">
+   <h1>${escapeHtml(title)}</h1>
+diff --git a/test/search.test.ts b/test/search.test.ts
+new file mode 100644
+index 0000000..a8033cf
+--- /dev/null
++++ b/test/search.test.ts
+@@ -0,0 +1,22 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++async function html(path: string): Promise<string> {
++  return (await worker.fetch(new Request(`http://localhost${path}`))).text();
++}
++
++for (const path of ["/", "/c/length", "/nope"]) {
++  test(`${path} has the search box in the header`, async () => {
++    const page = await html(path);
++    const header = page.slice(page.indexOf("<header"), page.indexOf("</header>"));
++    assert.ok(header.includes('id="search"'));
++    assert.ok(header.includes('type="search"'));
++  });
++}
++
++test("the filter script targets the search box and the tiles", async () => {
++  const page = await html("/");
++  assert.ok(page.includes('document.getElementById("search")'));
++  assert.ok(page.includes('querySelectorAll(".tile")'));
++});

@@ -1,0 +1,20 @@
+{
+  "generatedAt": "2026-10-12T14:03:00.000Z",
+  "durationSeconds": 300,
+  "synthetic": true,
+  "note": "Test fixture, not a measurement.",
+  "cells": [
+    { "policy": "lock", "agents": 10, "landed": 19, "landedPerMinute": 3.8, "p50": 14.2, "p95": 31.5, "aborts": {}, "verifyRunsPerLanded": 1, "wastedAgentSeconds": 410, "trunkBreakages": 0 },
+    { "policy": "queue", "agents": 10, "landed": 33, "landedPerMinute": 6.6, "p50": 11.8, "p95": 24.9, "aborts": { "text_conflict": 4, "failed_verify": 2 }, "verifyRunsPerLanded": 1.18, "wastedAgentSeconds": 96, "trunkBreakages": 0 },
+    { "policy": "ryke", "agents": 10, "landed": 41, "landedPerMinute": 8.2, "p50": 9.4, "p95": 19.1, "aborts": { "stale_read": 6, "failed_verify": 1 }, "verifyRunsPerLanded": 0.42, "wastedAgentSeconds": 58, "trunkBreakages": 0 },
+    { "policy": "lock", "agents": 50, "landed": 20, "landedPerMinute": 4, "p50": 71.3, "p95": 142.8, "aborts": {}, "verifyRunsPerLanded": 1, "wastedAgentSeconds": 5230, "trunkBreakages": 0 },
+    { "policy": "queue", "agents": 50, "landed": 41, "landedPerMinute": 8.2, "p50": 38.6, "p95": 97.4, "aborts": { "text_conflict": 52, "failed_verify": 17, "max_attempts": 3 }, "verifyRunsPerLanded": 2.1, "wastedAgentSeconds": 1840, "trunkBreakages": 0 },
+    { "policy": "ryke", "agents": 50, "landed": 160, "landedPerMinute": 32, "p50": 12.7, "p95": 36.2, "aborts": { "stale_read": 41, "failed_verify": 5, "duplicate": 3 }, "verifyRunsPerLanded": 0.31, "wastedAgentSeconds": 520, "trunkBreakages": 0 },
+    { "policy": "lock", "agents": 100, "landed": 19, "landedPerMinute": 3.8, "p50": 148.9, "p95": 291.2, "aborts": {}, "verifyRunsPerLanded": 1, "wastedAgentSeconds": 11840, "trunkBreakages": 0 },
+    { "policy": "queue", "agents": 100, "landed": 39, "landedPerMinute": 7.8, "p50": 81.4, "p95": 214.6, "aborts": { "text_conflict": 131, "failed_verify": 44, "max_attempts": 16 }, "verifyRunsPerLanded": 3.4, "wastedAgentSeconds": 5120, "trunkBreakages": 0 },
+    { "policy": "ryke", "agents": 100, "landed": 228, "landedPerMinute": 45.6, "p50": 16.9, "p95": 52.3, "aborts": { "stale_read": 118, "failed_verify": 9, "duplicate": 11, "max_attempts": 2 }, "verifyRunsPerLanded": 0.27, "wastedAgentSeconds": 1730, "trunkBreakages": 0 },
+    { "policy": "lock", "agents": 200, "landed": 18, "landedPerMinute": 3.6, "p50": 262.4, "p95": 298.7, "aborts": {}, "verifyRunsPerLanded": 1, "wastedAgentSeconds": 24960, "trunkBreakages": 0 },
+    { "policy": "queue", "agents": 200, "landed": 33, "landedPerMinute": 6.6, "p50": 142.2, "p95": 281.9, "aborts": { "text_conflict": 302, "failed_verify": 96, "max_attempts": 41 }, "verifyRunsPerLanded": 4.9, "wastedAgentSeconds": 13400, "trunkBreakages": 0 },
+    { "policy": "ryke", "agents": 200, "landed": 281, "landedPerMinute": 56.2, "p50": 24.8, "p95": 77.5, "aborts": { "stale_read": 287, "failed_verify": 14, "duplicate": 26, "max_attempts": 9 }, "verifyRunsPerLanded": 0.24, "wastedAgentSeconds": 4310, "trunkBreakages": 0 }
+  ]
+}

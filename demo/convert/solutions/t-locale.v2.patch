@@ -1,0 +1,58 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..c5b1854 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Format numbers with Intl.NumberFormat (en-US, no grouping).
+diff --git a/src/format.ts b/src/format.ts
+index 9596ea1..74b770e 100644
+--- a/src/format.ts
++++ b/src/format.ts
+@@ -2,7 +2,7 @@
+ // change to the rounding rule is read by nearly every other change in flight.
+ export function formatValue(n: number, digits = 3): string {
+   if (!Number.isFinite(n)) return "—";
+-  const fixed = n.toFixed(digits);
+-  // Trimming here keeps whole numbers readable ("1000", not "1000.000") now that the default is wider.
+-  return fixed.includes(".") ? fixed.replace(/0+$/, "").replace(/\.$/, "") : fixed;
++  // Intl instead of toFixed so the rounding rule lives in one locale-aware place. en-US without grouping
++  // keeps "." as the decimal mark and "1000" as a single token for API consumers.
++  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 0, maximumFractionDigits: digits, useGrouping: false }).format(n);
+ }
+diff --git a/test/locale.test.ts b/test/locale.test.ts
+new file mode 100644
+index 0000000..fef08f4
+--- /dev/null
++++ b/test/locale.test.ts
+@@ -0,0 +1,28 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { formatValue } from "../src/format.ts";
++
++// Every call passes its digit count, so the table holds whatever the default digit count is.
++const cases: [number, number, string][] = [
++  [1234.5, 2, "1234.5"],
++  [1000, 2, "1000"],
++  [2.5, 3, "2.5"],
++  [1 / 3, 3, "0.333"],
++  [12.3456, 2, "12.35"],
++  [7, 3, "7"],
++  [-1234.567, 1, "-1234.6"],
++];
++
++for (const [n, digits, expected] of cases) {
++  test(`formatValue(${n}, ${digits}) is ${expected}`, () => {
++    assert.equal(formatValue(n, digits), expected);
++  });
++}
++
++test("thousands are never grouped", () => {
++  assert.ok(!formatValue(1234567.891, 2).includes(","));
++});
++
++test("non-finite values are a dash", () => {
++  for (const n of [NaN, Infinity, -Infinity]) assert.equal(formatValue(n, 2), "—");
++});

@@ -1,0 +1,37 @@
+diff --git a/src/units/temperature.ts b/src/units/temperature.ts
+index ccabd3c..f04bdf2 100644
+--- a/src/units/temperature.ts
++++ b/src/units/temperature.ts
+@@ -7,7 +7,7 @@ export const temperature: Category = {
+   base: "°C",
+   units: [
+     { id: "c", name: "Celsius", symbol: "°C", toBase: (v) => v, fromBase: (v) => v },
+-    { id: "f", name: "Fahrenheit", symbol: "°F", toBase: (v) => ((v - 32) * 5) / 9, fromBase: (v) => (v * 9) / 5 + 32 },
++    { id: "f", name: "Fahrenheit", symbol: "°F", toBase: (v) => ((v - 32) * 5) / 9, fromBase: (v) => Math.round(((v * 9) / 5 + 32) * 10) / 10 },
+     { id: "k", name: "Kelvin", symbol: "K", toBase: (v) => v - 273.15, fromBase: (v) => v + 273.15 },
+   ],
+ };
+diff --git a/test/fahrenheit.test.ts b/test/fahrenheit.test.ts
+new file mode 100644
+index 0000000..a5bb14f
+--- /dev/null
++++ b/test/fahrenheit.test.ts
+@@ -0,0 +1,18 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++const cases: [number, string, string, number][] = [
++  [100, "c", "f", 212],
++  [0, "c", "f", 32],
++  [212, "f", "c", 100],
++  [32, "f", "c", 0],
++];
++
++for (const [v, from, to, expected] of cases) {
++  test(`${v} ${from} is ${expected} ${to}`, async () => {
++    const res = await worker.fetch(new Request(`http://localhost/api/convert?c=temperature&from=${from}&to=${to}&v=${v}`));
++    const body = (await res.json()) as { result: number };
++    assert.ok(Math.abs(body.result - expected) < 1e-9, `got ${body.result}`);
++  });
++}

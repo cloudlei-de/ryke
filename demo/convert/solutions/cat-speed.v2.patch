@@ -1,0 +1,79 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..e146449 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the speed converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..8d32c25 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { speed } from "./units/speed.ts";
+diff --git a/src/units/speed.ts b/src/units/speed.ts
+new file mode 100644
+index 0000000..3fd3664
+--- /dev/null
++++ b/src/units/speed.ts
+@@ -0,0 +1,15 @@
++import type { Category } from "../types.ts";
++
++export const speed: Category = {
++  id: "speed",
++  name: "Speed",
++  base: "m/s",
++  units: [
++    { id: "mps", name: "Metre per second", symbol: "m/s", toBase: (v) => v, fromBase: (v) => v },
++    { id: "kmh", name: "Kilometre per hour", symbol: "km/h", toBase: (v) => v / 3.6, fromBase: (v) => v * 3.6 },
++    { id: "mph", name: "Mile per hour", symbol: "mph", toBase: (v) => v * 0.44704, fromBase: (v) => v / 0.44704 },
++    { id: "kn", name: "Knot", symbol: "kn", toBase: (v) => (v * 1852) / 3600, fromBase: (v) => (v * 3600) / 1852 },
++    { id: "fps", name: "Foot per second", symbol: "ft/s", toBase: (v) => v * 0.3048, fromBase: (v) => v / 0.3048 },
++    { id: "mach", name: "Mach (sea level)", symbol: "Mach", toBase: (v) => v * 340.29, fromBase: (v) => v / 340.29 },
++  ],
++};
+diff --git a/test/speed.test.ts b/test/speed.test.ts
+new file mode 100644
+index 0000000..2dd3841
+--- /dev/null
++++ b/test/speed.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=speed&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "kmh", to: "mph", v: 100, result: 62.1371192237, display: "62.137" },
++  { from: "kn", to: "kmh", v: 1, result: 1.852, display: "1.852" },
++  { from: "mach", to: "kmh", v: 1, result: 1225.044, display: "1225.044" },
++];
++
++for (const c of cases) {
++  test(`speed: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`speed: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("speed has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/speed"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Speed"));
++});

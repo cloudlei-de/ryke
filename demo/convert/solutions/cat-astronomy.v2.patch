@@ -1,0 +1,80 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..71906e2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the astronomy converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..eaa3979 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { astronomy } from "./units/astronomy.ts";
+diff --git a/src/units/astronomy.ts b/src/units/astronomy.ts
+new file mode 100644
+index 0000000..4e1ec39
+--- /dev/null
++++ b/src/units/astronomy.ts
+@@ -0,0 +1,16 @@
++import type { Category } from "../types.ts";
++
++export const astronomy: Category = {
++  id: "astronomy",
++  name: "Astronomy",
++  base: "km",
++  units: [
++    { id: "ly", name: "Light-year", symbol: "ly", toBase: (v) => v * 9460730472580.8, fromBase: (v) => v / 9460730472580.8 },
++    { id: "pc", name: "Parsec", symbol: "pc", toBase: (v) => v * 30856775814913.67, fromBase: (v) => v / 30856775814913.67 },
++    { id: "au", name: "Astronomical unit", symbol: "au", toBase: (v) => v * 149597870.7, fromBase: (v) => v / 149597870.7 },
++    { id: "ld", name: "Lunar distance", symbol: "LD", toBase: (v) => v * 384399, fromBase: (v) => v / 384399 },
++    { id: "rsun", name: "Solar radius", symbol: "R☉", toBase: (v) => v * 695700, fromBase: (v) => v / 695700 },
++    { id: "rearth", name: "Earth radius", symbol: "R⊕", toBase: (v) => v * 6371, fromBase: (v) => v / 6371 },
++    { id: "km", name: "Kilometre", symbol: "km", toBase: (v) => v, fromBase: (v) => v },
++  ],
++};
+diff --git a/test/astronomy.test.ts b/test/astronomy.test.ts
+new file mode 100644
+index 0000000..23b467b
+--- /dev/null
++++ b/test/astronomy.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=astronomy&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "pc", to: "ly", v: 1, result: 3.26156377717, display: "3.262" },
++  { from: "ly", to: "au", v: 1, result: 63241.0770843, display: "63241.077" },
++  { from: "au", to: "ld", v: 1, result: 389.173412782, display: "389.173" },
++];
++
++for (const c of cases) {
++  test(`astronomy: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`astronomy: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("astronomy has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/astronomy"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Astronomy"));
++});

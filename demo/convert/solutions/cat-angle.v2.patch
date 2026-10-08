@@ -1,0 +1,79 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..02448b8 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the angle converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..6e2f41c 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { angle } from "./units/angle.ts";
+diff --git a/src/units/angle.ts b/src/units/angle.ts
+new file mode 100644
+index 0000000..217d96c
+--- /dev/null
++++ b/src/units/angle.ts
+@@ -0,0 +1,15 @@
++import type { Category } from "../types.ts";
++
++export const angle: Category = {
++  id: "angle",
++  name: "Angle",
++  base: "°",
++  units: [
++    { id: "deg", name: "Degree", symbol: "°", toBase: (v) => v, fromBase: (v) => v },
++    { id: "rad", name: "Radian", symbol: "rad", toBase: (v) => (v * 180) / Math.PI, fromBase: (v) => (v * Math.PI) / 180 },
++    { id: "grad", name: "Gradian", symbol: "grad", toBase: (v) => v * 0.9, fromBase: (v) => v / 0.9 },
++    { id: "turn", name: "Turn", symbol: "turn", toBase: (v) => v * 360, fromBase: (v) => v / 360 },
++    { id: "arcmin", name: "Arcminute", symbol: "′", toBase: (v) => v / 60, fromBase: (v) => v * 60 },
++    { id: "arcsec", name: "Arcsecond", symbol: "″", toBase: (v) => v / 3600, fromBase: (v) => v * 3600 },
++  ],
++};
+diff --git a/test/angle.test.ts b/test/angle.test.ts
+new file mode 100644
+index 0000000..e9ea296
+--- /dev/null
++++ b/test/angle.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=angle&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "turn", to: "rad", v: 1, result: 6.28318530718, display: "6.283" },
++  { from: "deg", to: "rad", v: 180, result: 3.14159265359, display: "3.142" },
++  { from: "rad", to: "deg", v: 1, result: 57.2957795131, display: "57.296" },
++];
++
++for (const c of cases) {
++  test(`angle: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`angle: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("angle has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/angle"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Angle"));
++});

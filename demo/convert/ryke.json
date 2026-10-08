@@ -1,0 +1,9 @@
+{
+  "protected": ["test/**", "ryke.json"],
+  "union": ["src/registry.ts", "CHANGELOG.md"],
+  "verify": "node --test --experimental-strip-types test/*.test.ts",
+  "verifyTimeoutSeconds": 120,
+  "human": ["src/payments/**"],
+  "trainMax": 8,
+  "preview": { "main": "src/index.ts" }
+}

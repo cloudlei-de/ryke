@@ -1,0 +1,80 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..0c210d7 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the torque converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..dcebdaf 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { torque } from "./units/torque.ts";
+diff --git a/src/units/torque.ts b/src/units/torque.ts
+new file mode 100644
+index 0000000..8761548
+--- /dev/null
++++ b/src/units/torque.ts
+@@ -0,0 +1,16 @@
++import type { Category } from "../types.ts";
++
++export const torque: Category = {
++  id: "torque",
++  name: "Torque",
++  base: "N·m",
++  units: [
++    { id: "nm", name: "Newton-metre", symbol: "N·m", toBase: (v) => v, fromBase: (v) => v },
++    { id: "knm", name: "Kilonewton-metre", symbol: "kN·m", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "kgfm", name: "Kilogram-force metre", symbol: "kgf·m", toBase: (v) => v * 9.80665, fromBase: (v) => v / 9.80665 },
++    { id: "lbfft", name: "Pound-force foot", symbol: "lbf·ft", toBase: (v) => v * 1.3558179483314, fromBase: (v) => v / 1.3558179483314 },
++    { id: "lbfin", name: "Pound-force inch", symbol: "lbf·in", toBase: (v) => v * 0.112984829028, fromBase: (v) => v / 0.112984829028 },
++    { id: "ozfin", name: "Ounce-force inch", symbol: "ozf·in", toBase: (v) => v * 0.00706155181423, fromBase: (v) => v / 0.00706155181423 },
++    { id: "dyncm", name: "Dyne-centimetre", symbol: "dyn·cm", toBase: (v) => v * 1e-7, fromBase: (v) => v / 1e-7 },
++  ],
++};
+diff --git a/test/torque.test.ts b/test/torque.test.ts
+new file mode 100644
+index 0000000..1868fbc
+--- /dev/null
++++ b/test/torque.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=torque&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "lbfft", to: "nm", v: 1, result: 1.35581794833, display: "1.36" },
++  { from: "nm", to: "lbfft", v: 100, result: 73.7562149277, display: "73.76" },
++  { from: "lbfin", to: "lbfft", v: 12, result: 1, display: "1.00" },
++];
++
++for (const c of cases) {
++  test(`torque: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`torque: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("torque has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/torque"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Torque"));
++});

@@ -1,0 +1,78 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..703d6a3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the illuminance converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..70cf2d7 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { illuminance } from "./units/illuminance.ts";
+diff --git a/src/units/illuminance.ts b/src/units/illuminance.ts
+new file mode 100644
+index 0000000..113cff9
+--- /dev/null
++++ b/src/units/illuminance.ts
+@@ -0,0 +1,14 @@
++import type { Category } from "../types.ts";
++
++export const illuminance: Category = {
++  id: "illuminance",
++  name: "Illuminance",
++  base: "lx",
++  units: [
++    { id: "lx", name: "Lux", symbol: "lx", toBase: (v) => v, fromBase: (v) => v },
++    { id: "klx", name: "Kilolux", symbol: "klx", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "fc", name: "Foot-candle", symbol: "fc", toBase: (v) => v * 10.7639104167, fromBase: (v) => v / 10.7639104167 },
++    { id: "ph", name: "Phot", symbol: "ph", toBase: (v) => v * 10000, fromBase: (v) => v / 10000 },
++    { id: "nx", name: "Nox", symbol: "nx", toBase: (v) => v * 0.001, fromBase: (v) => v / 0.001 },
++  ],
++};
+diff --git a/test/illuminance.test.ts b/test/illuminance.test.ts
+new file mode 100644
+index 0000000..8a7a9a4
+--- /dev/null
++++ b/test/illuminance.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=illuminance&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "fc", to: "lx", v: 1, result: 10.7639104167, display: "10.76" },
++  { from: "ph", to: "lx", v: 1, result: 10000, display: "10000.00" },
++  { from: "lx", to: "fc", v: 1000, result: 92.9030400001, display: "92.90" },
++];
++
++for (const c of cases) {
++  test(`illuminance: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`illuminance: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("illuminance has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/illuminance"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Illuminance"));
++});

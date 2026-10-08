@@ -542,7 +542,9 @@ export async function startStore({
 
     const child = spawn("git", ["http-backend"], { env, stdio: ["pipe", "pipe", "pipe"] });
     cgiChildren.add(child);
-    child.on("close", () => cgiChildren.delete(child));
+    // "close" comes after stdout and stderr have both been drained, unlike the end of stdout alone.
+    const closed = new Promise((resolve) => child.on("close", resolve));
+    closed.then(() => cgiChildren.delete(child));
     const stderr = [];
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     // http-backend may answer (a 403, say) without reading the whole body.
@@ -570,6 +572,7 @@ export async function startStore({
       if (body.length > 0) await writeWithBackpressure(res, body);
     }
     if (!started) {
+      await closed;
       if (res.writableEnded || res.destroyed) return;
       return sendError(res, 503, "UNAVAILABLE", `git http-backend failed: ${Buffer.concat(stderr).toString("utf8").trim()}`);
     }
