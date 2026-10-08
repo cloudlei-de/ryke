@@ -23,7 +23,7 @@ import {
 } from "../src/shared/judge-questions";
 import { DEFAULT_POLICY } from "../src/shared/policy";
 import type { Policy } from "../src/shared/types";
-import { ask, evidenceGate, fixtureKey, neutral, screenIntent, stable } from "../src/worker/judge";
+import { ask, evidenceGate, fixtureKey, jevMode, neutral, screenIntent, stable } from "../src/worker/judge";
 import { topSimilar } from "../src/worker/ledger/similar";
 import requestsJson from "./fixtures/jev/requests.json";
 
@@ -543,6 +543,29 @@ describe("ask", () => {
       conflict_1_ba: { type: "score", score: 1, confidence: 0 },
     });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["auto", "k", "live"],
+    ["auto", "", "off"],
+    ["live", "k", "live"],
+    ["live", "", "live"],
+    ["recorded", "k", "recorded"],
+    ["off", "k", "off"],
+  ])("jevMode(%s, key %j) is %s", (mode, key, expected) => {
+    expect(jevMode({ ...env, RYKE_JEV: mode, TYPESAFE_API_KEY: key } as Env)).toBe(expected);
+  });
+
+  it("auto without a key answers like off: neutral, no fixture lookup, no warning", async () => {
+    const e = entry("screen-duplicate");
+    expect(await ask({ ...env, RYKE_JEV: "auto", TYPESAFE_API_KEY: "" } as Env, e.state, e.questions)).toEqual({ answers: neutral(e.questions), source: "off" });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("auto with a key asks the live API", async () => {
+    const answers = { q: { type: "noul", noul: 0.61 } };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ model: MODEL, answers, usage: {} }), { status: 200, headers: { "content-type": "application/json" } }));
+    expect(await ask({ ...env, RYKE_JEV: "auto", TYPESAFE_API_KEY: "k" } as Env, unrecorded.state, unrecorded.questions)).toEqual({ answers, source: "live" });
   });
 
   it("falls back to the recorded fixtures when live mode has no API key", async () => {

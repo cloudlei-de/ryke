@@ -13,7 +13,7 @@ const production = process.env.CLOUDFLARE_ENV === "production";
 // edits the tree under a running swarm; `npm run dev:all` opts back in with RYKE_WATCH=1.
 const watch = !process.env.RYKE_STATE_DIR || process.env.RYKE_WATCH === "1";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [
     react(),
     cloudflare({
@@ -27,8 +27,11 @@ export default defineConfig({
                 RYKE_STORE_URL: `http://127.0.0.1:${8788 + offset}`,
                 RYKE_RUNNER_URL: `http://127.0.0.1:${8789 + offset}`,
                 // Recorded answers exist only for the tests' fixed requests; a swarm's requests never repeat,
-                // so locally Jev is live with a key and off (hard checks only) without one.
-                RYKE_JEV: process.env.RYKE_JEV ?? (process.env.TYPESAFE_API_KEY ? "live" : "off"),
+                // so locally Jev is live with a key and off (hard checks only) without one (judge.ts jevMode).
+                RYKE_JEV: process.env.RYKE_JEV ?? "auto",
+                // The plugin passes no shell variable to the Worker, so a key exported in the shell would
+                // never reach it. Only the dev server gets it: a build must not carry a secret in its config.
+                ...(command === "serve" && process.env.TYPESAFE_API_KEY ? { TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY } : {}),
                 // Verify screenshots cost a browser run per train, so only `npm run shots` turns them on.
                 RYKE_SCREENSHOTS: process.env.RYKE_SCREENSHOTS ?? "0",
                 // A fresh clone has no .dev.vars; these match dev/stack.mjs's defaults.
@@ -45,4 +48,4 @@ export default defineConfig({
     // Every git object in a stack's state dir would otherwise cost an inotify watch.
     watch: watch ? { ignored: ["**/.ryke/**", "**/.ryke-*/**", "**/.wrangler/**", "**/dist/**"] } : null,
   },
-});
+}));

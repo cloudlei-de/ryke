@@ -57,9 +57,16 @@ export function neutral(questions: Questions): Record<string, Answer> {
   );
 }
 
+// `auto` (the local default, vite.config.ts) is live when the Worker really has a key and off when it
+// has none: the key may come from .dev.vars or the shell, and only the Worker knows which arrived.
+export function jevMode(env: Env): string {
+  return env.RYKE_JEV === "auto" ? (env.TYPESAFE_API_KEY ? "live" : "off") : env.RYKE_JEV;
+}
+
 export async function ask(env: Env, state: Record<string, unknown>, questions: Questions): Promise<Asked> {
-  if (env.RYKE_JEV === "off") return { answers: neutral(questions), source: "off" };
-  if (env.RYKE_JEV === "live" && env.TYPESAFE_API_KEY) {
+  const mode = jevMode(env);
+  if (mode === "off") return { answers: neutral(questions), source: "off" };
+  if (mode === "live" && env.TYPESAFE_API_KEY) {
     try {
       const client = new TypeSafeClient({ apiKey: env.TYPESAFE_API_KEY, defaultModel: MODEL, timeout: 3000 });
       const res = await client.systemOne({ model: MODEL, state: state as never, questions });
@@ -101,7 +108,7 @@ export async function screenIntent(env: Env, intent: string, live: { id: string;
 export async function evidenceGate(env: Env, g: GateInput, policy: Policy): Promise<GateResult> {
   const hard = hardChecks(g);
   if (hard) return hard;
-  if (env.RYKE_JEV === "off") {
+  if (jevMode(env) === "off") {
     const human = g.writes.some((w) => matchesAny(policy.human, w));
     return {
       decision: human ? "needs_human" : "land",
