@@ -29,11 +29,11 @@ Das Wort „Transaktion“ muss den Juroren am Ende hängen bleiben. Ryke ist �
 | S5 | 3:50–4:40 | Duplikat abgelehnt, Konfliktwarnung, Tamper-Versuch rot durchgekreuzt | "Before work starts, Ryke catches duplicate intents with a calibrated judge model. And an agent that tries to edit a protected test is rejected — test tampering is the most common way agents cheat." |
 | S6 | 4:40–5:40 | Recall-Dialog: `model = sloppy-v0`, Plan-Vorschau, Ausführen, lila Durchstreichungen, Re-Runs | "Two changes from a bad model version slipped through. One command recalls everything that model landed, reverts it, and revalidates every change that depended on it." |
 | S7 | 5:40–6:50 | Bench-Kurve | "Is it faster? We measured. Same repo, same workload, three policies: a global lock, a classic merge queue, and Ryke. At 50, 100, 200 agents …" Zahlen aus `bench/results/latest.md` vorlesen. Klar sagen: "The bench agents are synthetic — real git, real merges, real tests, scripted edits." |
-| S8 | 6:50–7:40 | Architekturbild aus der README | "Built entirely on Cloudflare: Artifacts for trunk and forks, one Durable Object per repo as the transaction ledger, Workflows for landing, Containers for git and tests, Dynamic Workers for a live preview of every change, and an MCP endpoint so any agent can join. MIT licensed." |
+| S8 | 6:50–7:40 | Architekturbild aus der README | "Built for Cloudflare: Artifacts for trunk and forks, one Durable Object per repo as the transaction ledger, Workflows for landing, Containers for git and tests, Dynamic Workers for a live preview of every change, and an MCP endpoint so any agent can join. MIT licensed." Nur wenn es bis dahin auf `ryke.ai` läuft, darfst du "runs on Cloudflare" sagen; sonst dazusagen: "What you saw ran locally, with stand-ins for Artifacts and Containers." |
 
 ## Live-Demo bei Cloudflare Connect (falls Finalist)
 
-- **Ablauf:** Dashboard auf `ryke.ai` öffnen, „Run demo“ drücken (Admin-Token vorher eingeben) und S2–S6 live zeigen.
+- **Ablauf:** Dashboard auf `ryke.ai` öffnen und den Lauf vom Laptop gegen die echte API starten: `RYKE_API_URL=https://ryke.ai RYKE_TOKEN=… npm run swarm -- --mode scripted --agents 12 --repo convert` (wie in `docs/deploy.md`). „Run demo“ im Dashboard funktioniert nur lokal; im Container-Modus antwortet es 503, weil der Swarm dort kein Job ist. Dann S2–S6 live zeigen.
 - **Ausweichplan:** Fällt etwas aus, wechselst du auf den Replay des aufgenommenen Laufs, ohne Erklärung, einfach weiter.
 - **Wahrscheinliche Juror-Fragen:**
   - *Agents reading via Bash `cat`?* → Reads laufen über Hooks am Read-, Grep- und Glob-Tool. Wer nichts meldet, wird konservativ serialisiert.

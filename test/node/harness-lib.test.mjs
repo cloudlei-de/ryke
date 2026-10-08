@@ -893,7 +893,7 @@ describe("swarm arguments", () => {
     const o = parse([]);
     assert.deepEqual(
       { ...o, verifySlots: typeof o.verifySlots },
-      { mode: "scripted", agents: 12, repo: "convert", speed: 1, fresh: false, contention: true, stack: false, tasks: null, json: null, api: "http://127.0.0.1:5173", token: "dev", seed: 42, demo: null, stub: false, model: null, verifySlots: "number", offset: 0, help: false },
+      { mode: "scripted", agents: 12, repo: "convert", speed: 4, fresh: false, contention: true, stack: false, tasks: null, json: null, api: "http://127.0.0.1:5173", token: "dev", seed: 42, demo: null, stub: false, model: null, verifySlots: "number", offset: 0, help: false },
     );
     assert.ok(o.verifySlots >= 1);
   });

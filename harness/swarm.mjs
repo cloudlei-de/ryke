@@ -12,7 +12,7 @@ import { ApiError, client } from "./lib/client.mjs";
 import { buildReport, checkPreview, evaluateCriteria, formatReport, landedCategories, verifyTrunk } from "./lib/report.mjs";
 import { loadCatalogue, makeRng, orderTasks, seedFor, selectTasks, startGates } from "./lib/tasks.mjs";
 
-const USAGE = `usage: swarm.mjs [--mode scripted|claude] [--agents N] [--repo convert] [--speed 4] [--fresh]
+const USAGE = `usage: swarm.mjs [--mode scripted|claude] [--agents N] [--repo convert] [--speed 4 (default)] [--fresh]
                  [--contention on|off] [--tasks id,id] [--seed 42] [--json out.json] [--verify-slots 2]
                  [--api URL] [--token T] [--stack] [--demo convert] [--stub] [--model M]
   --stub, --model   claude mode only: run the recorded stub instead of the real claude, or name the model
@@ -32,7 +32,9 @@ export function parseSwarmArgs(argv, env = process.env) {
         mode: { type: "string", default: "scripted" },
         agents: { type: "string", default: "12" },
         repo: { type: "string", default: "convert" },
-        speed: { type: "string", default: "1" },
+        // The README quickstart passes no --speed: at 1, twelve agents think long enough for several trunk
+        // moves to overlap each change, and late categories ran out of attempts. 4 is the M3 run's speed.
+        speed: { type: "string", default: "4" },
         fresh: { type: "boolean", default: false },
         contention: { type: "string", default: "on" },
         stack: { type: "boolean", default: false },
