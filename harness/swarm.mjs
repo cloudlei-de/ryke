@@ -19,7 +19,7 @@ const USAGE = `usage: swarm.mjs [--mode scripted|claude|codex] [--agents N] [--r
                  [--auth subscription|api-key|auto]
   --stub, --model   claude and codex modes: run the recorded stub instead of the real CLI, or name the model
   --auth   claude and codex modes: subscription runs the CLI on your own login on this machine (claude
-           /login or setup-token, codex login with ChatGPT); api-key on ANTHROPIC_API_KEY, or CODEX_API_KEY /
+           /login, codex login with ChatGPT); api-key on ANTHROPIC_API_KEY, or CODEX_API_KEY /
            OPENAI_API_KEY; auto (default) takes the key when one is set
   --verify-slots   how many agents may run their local tests at once (default half the CPUs)
   --stack   start a private local stack (store, runner, worker) for this run and stop it at the end
@@ -238,7 +238,7 @@ export async function runSwarm(opts, { log = console.log, runAgent: injected } =
   const preflight = injected ? null : await preflightFor(opts.mode);
   if (preflight) {
     const access = await preflight({ auth: opts.auth, stub: opts.stub || undefined, model: opts.model ?? undefined });
-    say(`${opts.mode} runs on ${access.how}${access.mode === "subscription" && opts.agents > 1 ? `; all ${opts.agents} agents draw on that one plan's usage limits` : ""}`);
+    say(`${opts.mode} runs on ${access.how}${access.onPlan && opts.agents > 1 ? `; all ${opts.agents} agents draw on that one plan's usage limits` : ""}`);
   }
   await ensureRepo(api, opts, catalogue.demo, say);
   const baseline = (await allOps(api, opts.repo)).at(-1)?.seq ?? 0;

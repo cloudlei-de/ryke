@@ -59,12 +59,12 @@ const INHERITED_NAMES = new Set([
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "NODE_USE_ENV_PROXY",
-  // Where Claude Code and Codex keep their own login, when it is not under HOME. A subscription agent job
-  // runs the CLI on that login (containers/runner/lib/agent.mjs); the directory is a path, not a secret,
-  // and HOME already gives a job of the same user the same reach.
-  "CLAUDE_CONFIG_DIR",
-  "CODEX_HOME",
 ]);
+
+// Whether only this machine can reach the runner. POST /v1/jobs has no auth, so a runner bound to another
+// address runs jobs for anyone who reaches it, and an agent job must then not run on the owner's
+// subscription login (containers/runner/lib/agent.mjs, resolveAuth).
+export const isLoopbackHost = (host) => host === "localhost" || host === "::1" || /^127\.\d+\.\d+\.\d+$/.test(host);
 // Node refuses --test flags in NODE_OPTIONS, and a runner started under `node --test` can carry them;
 // a job's own `node --test` would then die before running anything.
 const TEST_FLAG = /(?:^|\s)--test(?![A-Za-z0-9])/;
@@ -278,6 +278,7 @@ export async function startRunner({
           ...job.env,
           RYKE_JOB_ID: job.id,
           RYKE_JOB_DIR: job.dir,
+          RYKE_RUNNER_LOCAL: isLoopbackHost(host) ? "1" : "0",
           RYKE_EVIDENCE_DIR: evidenceDir,
           RYKE_ROOT: REPO_ROOT,
         },

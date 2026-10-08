@@ -62,7 +62,7 @@ one session per transaction attempt. `--auth` says whose account the agents run 
 
 | `--auth` | Claude Code | Codex |
 |---|---|---|
-| `subscription` | your login on this machine: `claude`, then `/login` with Pro or Max, or `claude setup-token` | `codex login` with your ChatGPT plan |
+| `subscription` | your login on this machine: `claude`, then `/login` with Pro or Max | `codex login` with your ChatGPT plan |
 | `api-key` | `ANTHROPIC_API_KEY` | `CODEX_API_KEY` or `OPENAI_API_KEY` |
 | `auto` (default) | the key when one is set, otherwise your login | the same |
 
@@ -77,8 +77,11 @@ OPENAI_API_KEY=sk-… npm run swarm -- --mode codex --auth api-key --agents 6 --
 Before any transaction begins, the swarm asks the CLI which login it has (`claude auth status`,
 `codex login status`) or tries the key with a free call, and stops with what to fix. A subscription run
 gives its jobs no credential at all: the CLI uses the login it already has. Ryke never reads, stores or
-forwards that login, takes every key out of the CLI's environment so it cannot fall back on one, and
-refuses a subscription on a runner that is not this machine or inside a Ryke container. This is for one
+forwards that login. It takes every key and token variable out of the CLI's environment, and every key,
+base URL and key helper out of a repo's own Claude settings, so neither the CLI nor the repo can switch
+it to another account or send the login elsewhere. A user-level setting of yours still applies. Ryke
+refuses a subscription on a runner that does not listen on this machine alone, or inside a Ryke
+container. This is for one
 person running agents on their own work, which is what Anthropic's terms allow for a Claude
 subscription ([DECISIONS.md](DECISIONS.md)). All agents of a swarm share that one plan's usage limits,
 so a subscription swarm is a few agents, not fifty. Hosted Ryke runs agents on the operator's API keys
@@ -163,9 +166,10 @@ Two parts of Ryke switched off one at a time, on the same bench
   a script that opens files on its own is missed. Untracked transactions are treated as having read
   every file next to what they wrote.
 - The scripted demo agents apply prepared patches. Claude Code and Codex agents use the same API; here
-  they ran only against stubs. The real Claude CLI ran three short sessions to check the hook format;
-  the real Codex 0.161.0 CLI was run only to check its flags, `login status` and event stream, because
-  this VM cannot reach OpenAI. A real swarm needs your own login or key ([BLOCKERS.md](BLOCKERS.md)).
+  they ran only against stubs. The real Claude CLI ran three short sessions to check the hook format.
+  The real Codex 0.161.0 CLI ran only to check its flags, `login status` and the start of its event
+  stream, because this VM cannot reach OpenAI; the shapes of its items come from its source. A real
+  swarm needs your own login or key ([BLOCKERS.md](BLOCKERS.md)).
 - In process mode jobs run as you. The code your agents write and test can read your CLI login under
   your home directory, as it can when you run the CLI yourself. Only container mode keeps a job away
   from its host.

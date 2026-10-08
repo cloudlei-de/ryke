@@ -25,7 +25,7 @@ const DIFF_TOTAL_MAX = 8000;
 const DIFFS_MAX = 5;
 
 // Not part of the repo, or not something trunk could ever change: reading them says nothing about conflicts.
-const NOT_REPO = [".git", ".claude", ".ryke", "node_modules"];
+export const NOT_REPO = [".git", ".claude", ".ryke", "node_modules"];
 
 export const log = (line) => process.stderr.write(`ryke-hook: ${line}\n`);
 

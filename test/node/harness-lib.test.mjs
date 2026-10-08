@@ -29,7 +29,7 @@ import {
   thinkMs,
 } from "../../harness/lib/tasks.mjs";
 import { main as ryke } from "../../harness/ryke.mjs";
-import { checksTrunk, limiter, parseSwarmArgs, resilient, runSwarm, UsageError } from "../../harness/swarm.mjs";
+import { checksTrunk, limiter, main as swarmMain, parseSwarmArgs, resilient, runSwarm, UsageError } from "../../harness/swarm.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const fixture = JSON.parse(await readFile(join(ROOT, "test/fixtures/ops/e2e-land.json"), "utf8"));
@@ -1026,6 +1026,25 @@ describe("the swarm's worker loop against a fake platform", () => {
       assert.deepEqual(after, ["GET /api/health"], "nothing but the health check reached the platform");
       assert.match(lines[0], /mode=codex auth=subscription agents=2/);
     } finally {
+      if (saved === undefined) delete process.env.RYKE_STUB_LOGIN;
+      else process.env.RYKE_STUB_LOGIN = saved;
+    }
+  });
+
+  it("prints a run that cannot start as one line saying what to fix, without a stack", async () => {
+    const saved = process.env.RYKE_STUB_LOGIN;
+    process.env.RYKE_STUB_LOGIN = "none";
+    const errors = [];
+    const realError = console.error;
+    console.error = (...a) => errors.push(a.join(" "));
+    try {
+      const code = await swarmMain(["--mode", "codex", "--stub", "--api", platform.url, "--token", "tok", "--tasks", "cat-area", "--repo", "never-made-2"], { RYKE_PORT_OFFSET: "0" });
+      assert.equal(code, 1);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /^swarm failed: codex is not logged in on this machine \(Not logged in\); run `codex login`/);
+      assert.doesNotMatch(errors[0], /\n\s+at /);
+    } finally {
+      console.error = realError;
       if (saved === undefined) delete process.env.RYKE_STUB_LOGIN;
       else process.env.RYKE_STUB_LOGIN = saved;
     }

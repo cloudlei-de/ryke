@@ -7,7 +7,8 @@
 // from the commands and their output, the write intents from the patches, the outcome from the turn.
 //
 // `codex login status` answers as the real one does, from RYKE_STUB_LOGIN: chatgpt (default), api-key,
-// or none. Without CODEX_API_KEY and with no login, `codex exec` fails before its turn starts.
+// or none. Without CODEX_API_KEY and with no login, `codex exec` does what the real 0.161.0 did here, where
+// OpenAI is unreachable: it starts its turn and reports reconnects until it is killed (docs/platform-notes.md).
 // The other knobs are the Claude stub's: RYKE_CATALOGUE_DIR, RYKE_STUB_DELAY_MS, RYKE_STUB_GATE_DIR,
 // RYKE_STUB_LOG_DIR.
 import { existsSync, readFileSync } from "node:fs";
@@ -59,8 +60,12 @@ export async function exec(argv, env = process.env) {
     return 2;
   }
   if (!env.CODEX_API_KEY && (env.RYKE_STUB_LOGIN ?? "chatgpt") === "none") {
-    out({ type: "error", message: "Not logged in. Run `codex login` or set CODEX_API_KEY." });
-    return 1;
+    out({ type: "thread.started", thread_id: crypto.randomUUID() });
+    out({ type: "turn.started" });
+    for (let i = 1; ; i++) {
+      out({ type: "error", message: i <= 5 ? `Reconnecting... ${i}/5 (stream disconnected before completion)` : "Reconnecting... waiting for network (Connection failed: error sending request)" });
+      await sleep(Number(env.RYKE_STUB_RECONNECT_MS ?? 1000));
+    }
   }
   const cwd = resolve(args.cd);
   const delay = Number(env.RYKE_STUB_DELAY_MS ?? 0);
