@@ -32,46 +32,169 @@ index c88e61e..616c153 100644
  function convertApi(params: URLSearchParams): Response {
 diff --git a/src/ui/share.ts b/src/ui/share.ts
 new file mode 100644
-index 0000000..c9eb4bb
+index 0000000..7a16f4d
 --- /dev/null
 +++ b/src/ui/share.ts
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,14 @@
 +export const shareButton = `<p><button class="share" type="button" data-share>Copy link</button></p>`;
 +
-+// The page URL already names the category, so copying it is the whole feature; no server round trip.
++// The page URL already names the category, so copying it is the whole feature; no server round trip. A write the
++// browser refuses is dropped on purpose: the label changes only after a real copy.
 +export const shareScript = `<script>
 +(function () {
 +  var btn = document.querySelector("[data-share]");
 +  btn.addEventListener("click", function () {
 +    navigator.clipboard.writeText(location.href).then(function () {
 +      btn.textContent = "Link copied";
-+    });
++    }, function () {});
 +  });
 +})();
 +</script>`;
 diff --git a/test/share.test.ts b/test/share.test.ts
 new file mode 100644
-index 0000000..3567e10
+index 0000000..bea0c5f
 --- /dev/null
 +++ b/test/share.test.ts
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,142 @@
 +import assert from "node:assert/strict";
 +import { test } from "node:test";
++import vm from "node:vm";
 +import worker from "../src/index.ts";
++import * as registry from "../src/registry.ts";
 +import { shareButton, shareScript } from "../src/ui/share.ts";
 +
 +async function html(path: string): Promise<string> {
 +  return (await worker.fetch(new Request(`http://localhost${path}`))).text();
 +}
 +
-+test("converter pages have the copy-link button and its script", async () => {
++const converterPaths = Object.values(registry).map((c) => `/c/${c.id}`);
++
++function shareButtons(page: string): string[] {
++  return [...page.matchAll(/<button\b[^>]*\bdata-share\b[^>]*>[^<]*<\/button>/g)].map((m) => m[0]);
++}
++
++// Other pieces of the shell may ship scripts of their own, so the share script is the one that looks for the button.
++function scriptOf(page: string): string {
++  const script = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!).find((s) => s.includes("[data-share]"));
++  assert.ok(script, "the page carries the share script");
++  return script;
++}
++
++// There is no DOM in the demo, so the script the page ships runs against the few members it uses. Each call is one
++// page load: a button that starts with the label from the markup, a clipboard that either accepts or refuses, and
++// the URL the page is on.
++function openPage(page: string, { href, clipboard = "accepts" }: { href: string; clipboard?: "accepts" | "refuses" }) {
++  const label = /<button\b[^>]*\bdata-share\b[^>]*>([^<]*)<\/button>/.exec(page)?.[1];
++  assert.ok(label, "the page has the copy-link button");
++  let onClick: (() => void) | undefined;
++  const button = {
++    textContent: label,
++    addEventListener(type: string, listener: () => void) {
++      if (type === "click") onClick = listener;
++    },
++  };
++  const written: string[] = [];
++  const location = { href };
++  const sandbox = {
++    document: { querySelector: (selector: string) => (selector === "[data-share]" ? button : null) },
++    navigator: {
++      clipboard: {
++        writeText(text: string) {
++          written.push(text);
++          return clipboard === "accepts" ? Promise.resolve() : Promise.reject(new Error("NotAllowedError"));
++        },
++      },
++    },
++    location,
++  };
++  vm.runInNewContext(scriptOf(page), sandbox);
++  return {
++    written,
++    label: () => button.textContent,
++    moveTo(url: string) {
++      location.href = url;
++    },
++    async click() {
++      assert.ok(onClick, "the script listens for clicks on the button");
++      onClick();
++      // The label changes when the clipboard promise settles, which takes a few ticks.
++      await new Promise((resolve) => setTimeout(resolve, 0));
++    },
++  };
++}
++
++test("converter pages show a Copy link button below the conversion table", async () => {
++  assert.ok(converterPaths.length >= 3, "the registry has its categories");
++  for (const path of converterPaths) {
++    const page = await html(path);
++    const buttons = shareButtons(page);
++    assert.equal(buttons.length, 1, `${path}: expected exactly one Copy link button`);
++    assert.match(buttons[0]!, /^<button\b[^>]*\btype="button"[^>]*>Copy link<\/button>$/, `${path}: not a plain Copy link button`);
++    const table = page.indexOf("</table>");
++    const button = page.indexOf(buttons[0]!);
++    assert.ok(table !== -1, `${path}: no conversion table`);
++    assert.ok(button > table, `${path}: the button is not below the table`);
++    assert.ok(button < page.indexOf("</main>"), `${path}: the button is outside the page content`);
++  }
++});
++
++test("converter pages ship the button and the script of the share module, the script after the button", async () => {
 +  const page = await html("/c/length");
 +  assert.ok(page.includes(shareButton));
 +  assert.ok(page.includes(shareScript));
-+  assert.ok(page.includes("data-share"));
-+  assert.ok(page.includes("navigator.clipboard"));
++  // The script looks the button up when it runs, so it has to come later in the page.
++  assert.ok(page.indexOf(shareScript) > page.indexOf(shareButton));
++});
++
++test("clicking Copy link copies the page URL to the clipboard", async () => {
++  for (const path of converterPaths) {
++    const href = `http://localhost${path}`;
++    const opened = openPage(await html(path), { href });
++    await opened.click();
++    assert.deepEqual(opened.written, [href], path);
++  }
++});
++
++test("nothing is copied before the button is clicked", async () => {
++  const opened = openPage(await html("/c/length"), { href: "http://localhost/c/length" });
++  assert.deepEqual(opened.written, []);
++  assert.equal(opened.label(), "Copy link");
++});
++
++test("the button says Link copied once the page URL is on the clipboard", async () => {
++  const opened = openPage(await html("/c/mass"), { href: "http://localhost/c/mass" });
++  assert.equal(opened.label(), "Copy link");
++  await opened.click();
++  assert.equal(opened.label(), "Link copied");
++});
++
++test("every click copies the URL the page has at that moment, including a query or a hash", async () => {
++  const opened = openPage(await html("/c/length"), { href: "http://localhost/c/length" });
++  await opened.click();
++  opened.moveTo("http://localhost/c/length?v=5#table");
++  await opened.click();
++  assert.deepEqual(opened.written, ["http://localhost/c/length", "http://localhost/c/length?v=5#table"]);
++});
++
++test("when the clipboard refuses, the button does not say Link copied", async () => {
++  const opened = openPage(await html("/c/length"), { href: "http://localhost/c/length", clipboard: "refuses" });
++  await opened.click();
++  assert.deepEqual(opened.written, ["http://localhost/c/length"], "the copy was still attempted");
++  assert.equal(opened.label(), "Copy link");
 +});
 +
 +test("the home page has no copy-link button", async () => {
-+  assert.ok(!(await html("/")).includes("data-share"));
++  const page = await html("/");
++  assert.deepEqual(shareButtons(page), []);
++  assert.ok(!page.includes("data-share"));
++  assert.ok(!page.includes("Copy link"));
++  assert.ok(!page.includes("navigator.clipboard"));
++});
++
++test("the not-found pages have no copy-link button either", async () => {
++  for (const path of ["/c/unknown", "/nope"]) {
++    const page = await html(path);
++    assert.ok(!page.includes("data-share"), path);
++    assert.ok(!page.includes("navigator.clipboard"), path);
++  }
 +});
