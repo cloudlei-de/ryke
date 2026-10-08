@@ -20,7 +20,9 @@ process.env.RYKE_JEV = "off";
 
 const run = promisify(execFile);
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const OFFSET = 200;
+// Spaced so verifiers running npm test at RYKE_PORT_OFFSET 0/10/20/30/40 never share a stack; bench and
+// claude-mode tests take +10 and +20.
+const OFFSET = 200 + 3 * Number(process.env.RYKE_PORT_OFFSET ?? 0);
 const SEED = 42;
 const SPEED = 2;
 // Ordered by the swarm as t-precision, cat-speed, cat-pressure, tamper-routes, cat-energy, dup-speed.
