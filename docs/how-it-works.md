@@ -148,5 +148,7 @@ flowchart LR
   adapters (Artifacts binding, Runner containers) compile and have unit tests, but were not run
   against Cloudflare for this entry: the Artifacts adapter is tested against an in-memory fake of
   the binding, not the real service; see [deploy.md](deploy.md).
+- Read sets are files, not queries. A new file written against a value that another transaction is
+  changing (a phantom) is no read conflict; the train's tests catch it and it fails verify instead.
 - The bench agents are synthetic: real git, real merges, real tests, scripted edits. The scripted
   demo agents apply prepared patches. Real Claude Code agents use the same API and hooks.
