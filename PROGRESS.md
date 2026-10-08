@@ -1,7 +1,9 @@
 # Progress
 
-Current: 2026-10-08 05:10 CEST. M0–M6 built, M7/M8 implementers finishing, M9 config written. No milestone is
-marked accepted until a verifier has re-run its Accept commands. All pushed to `feat/ryke-mvp` through 62a095b.
+Current: 2026-10-08 05:45 CEST. M0–M6 and M8 built, M7 bench implementer finishing, e2e-script implementer
+running, M9 config written. No milestone is marked accepted until a verifier has re-run its Accept commands.
+Pushed through 31a4b23 (33fea0a interface fixes, f68f88f vite/prod build, edb775b agent tokens, d34efec
+recall dialog + shots, 31a4b23 claude mode).
 
 | Milestone | State | Evidence so far |
 |---|---|---|
@@ -9,11 +11,11 @@ marked accepted until a verifier has re-run its Accept commands. All pushed to `
 | M1 Ledger core | built, needs curl walkthrough + verifier | ledger, api, mcp suites green |
 | M2 Landing | built, needs verifier | `npm run e2e:land` PASS (train of 2, stale with delta, bisection 3 probes isolates "broken by design", trunk 89 tests green) |
 | M3 Demo app + scripted swarm | built, needs verifier | swarm 12 agents: 37 landed, 9 T-precision stale aborts all landed on retry, G5 protected, trunk 707 tests green, previews 200; G3 reworded (DECISIONS) |
-| M4 Dashboard | views built; `npm run shots` in progress | web-line, web-txn, web-bench, web-replay suites |
+| M4 Dashboard | views + recall dialog built; `npm run shots` queued | web-recall 123, shots helpers 40 |
 | M5 Jev + contention | calibration done; contention numbers todo | docs/jev-calibration.md 94 % overall, 89 % holdout; leases held until landing + refresh (0d2a9cd) |
 | M6 Recall | built; e2e:recall PASS 05:40, needs verifier | `RYKE_PORT_OFFSET=85 npm run e2e:recall` (clean worktree of 62a095b): swarm 4m45s; recall targets the 2 G6 txns, 4 dependents planned, cascade 1 (kelvin-remove), 3 stay landed revalidated by the recall verify; cascaded intent re-queued and landed on attempt 1; trunk ccfec681 seq 39 tests green; PASS |
 | M7 Bench | harness in progress | measured run waits for a quiet VM |
-| M8 Claude agent mode | Runner DO + gateway committed; agent.sh, stub, Dockerfile in progress | |
+| M8 Claude agent mode | built (31a4b23), e2e:claude being written | claude-mode suite 204 incl. a real-stack e2e (stale retry with delta, failed retry with test names, protected reject, trunk green); agent jobs get a txn-scoped token (edb775b); Docker build blocked by VM proxy TLS (BLOCKERS) |
 | M9 Production + docs | wrangler production env, README, how-it-works, deploy.md written; dry run todo | |
 
 ## How things fit (for after compaction)
