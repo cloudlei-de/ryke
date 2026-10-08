@@ -133,7 +133,8 @@ flowchart LR
   events into fork heads.
 - **Containers**: a Runner Durable Object per job slot drives a container that runs the same job
   scripts as local development. An outbound gateway attaches Artifacts tokens and the Anthropic key,
-  so no secret enters a container.
+  so no long-lived secret enters a container. An agent job carries only its transaction's own token,
+  which can report reads, submit, retry or abort that one transaction, and nothing else.
 - **Dynamic Workers** bundle the demo app at any commit and serve a live preview of every landed
   transaction and every train candidate, sandboxed with a Content Security Policy.
 - **MCP**: nine tools (`ryke_repo`, `ryke_begin`, `ryke_read`, `ryke_reads`, `ryke_submit`,
@@ -143,7 +144,7 @@ flowchart LR
 
 - Everything in this document runs locally with `npm run dev:all`: the real Worker in workerd, real
   git, real merges, real tests. Locally a Node service stands in for Artifacts (same API, token
-  format and push events) and another runs the container scripts as host processes. The production
+  format and push events) and another runs the container scripts as host processes, which isolate nothing. The production
   adapters (Artifacts binding, Runner containers) compile and have unit tests, but were not run
   against Cloudflare for this entry: the Artifacts adapter is tested against an in-memory fake of
   the binding, not the real service; see [deploy.md](deploy.md).

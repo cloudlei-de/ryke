@@ -57,7 +57,7 @@ flowchart LR
 
 Locally `npm run dev:all` swaps two adapters, nothing else: a Node service with the real git CLI
 stands in for Artifacts (same API, token format and push events), and the container job scripts run as
-host processes. The Worker, the Ledger, the workflows and the dashboard are the same code.
+host processes, which isolate nothing. The Worker, the Ledger, the workflows and the dashboard are the same code.
 
 ## Bench
 

@@ -2,7 +2,7 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import latestBench from "../../bench/results/latest.json";
 import type { Res } from "./ledger/ledger";
 import { runnerFor, RunnerError } from "./runner/runner";
-import { begin, createRepo, deleteRepo, ledger, NAME_ERROR, repoKnown, txnLedger, validRepoName } from "./service";
+import { agentToken, agentTokenTxn, begin, createRepo, deleteRepo, ledger, NAME_ERROR, repoKnown, txnLedger, validRepoName } from "./service";
 import { storeFor, StoreError } from "./store/store";
 
 type App = { Bindings: Env };
@@ -29,10 +29,18 @@ export function authorized(env: Env, header: string | undefined): boolean {
 
 export const api = new Hono<App>().basePath("/api");
 
-// Reads are public; every write needs the bearer token (PLAN.md §6.1).
+// What an agent job may do with its transaction's agent token (service.ts): work on that transaction,
+// never approve or reject it, and nothing else.
+const AGENT_ROUTE = /^\/api\/txns\/([^/]+)\/(reads|intend-write|submit|retry|refresh|abort)$/;
+
+// Reads are public; every write needs the bearer token (PLAN.md §6.1) or, on AGENT_ROUTE, the agent token.
 api.use("*", async (c, next) => {
-  if (c.req.method !== "GET" && !authorized(c.env, c.req.header("authorization"))) return c.json({ error: "unauthorized" }, 401);
-  await next();
+  const header = c.req.header("authorization");
+  if (c.req.method === "GET" || authorized(c.env, header)) return next();
+  const route = AGENT_ROUTE.exec(c.req.path);
+  const bearer = header?.startsWith("Bearer ") ? header.slice(7) : null;
+  if (route && bearer && (await agentTokenTxn(c.env, bearer)) === route[1]) return next();
+  return c.json({ error: "unauthorized" }, 401);
 });
 
 // Every /api/repos/:repo… route takes the repo name from the URL, and a Durable Object exists for any
@@ -97,8 +105,13 @@ api.post("/repos/:repo/recall", async (c) => {
   const repo = c.req.param("repo");
   const res = await ledger(c.env, repo).recall(b.selector, b.dryRun !== false);
   // Re-queued transactions are new, so the txn → repo index has to learn them like any begin.
-  if (res.ok) for (const q of res.value.requeued ?? []) await ledger(c.env, "__index").indexPut(q.txn, repo);
-  return respond(c, res);
+  if (!res.ok || !res.value.requeued) return respond(c, res);
+  const requeued = [];
+  for (const q of res.value.requeued) {
+    await ledger(c.env, "__index").indexPut(q.txn, repo);
+    requeued.push({ ...q, agentToken: await agentToken(c.env, q.txn) });
+  }
+  return respond(c, { ...res, value: { ...res.value, requeued } });
 });
 
 // The dashboard's "Run demo" button (PLAN.md §11.2): runs harness/swarm.mjs as a runner job that

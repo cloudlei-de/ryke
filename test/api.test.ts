@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PushEvent } from "../src/shared/types";
 import type { Context } from "hono";
 import { api, authorized, respond } from "../src/worker/api";
-import { ledger } from "../src/worker/service";
+import { agentToken, agentTokenTxn, ledger } from "../src/worker/service";
 import { apiBegin, AUTH, commitToFork, fixture, http, landOnTrunk, lazy, newRepo, ok, opsOf, store, unique, type Json, type TestRepo } from "./helpers";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -117,6 +117,7 @@ describe("authentication and routing", () => {
     ["POST", "/api/txns/t_x/intend-write"],
     ["POST", "/api/txns/t_x/submit"],
     ["POST", "/api/txns/t_x/retry"],
+    ["POST", "/api/txns/t_x/refresh"],
     ["POST", "/api/txns/t_x/abort"],
     ["POST", "/api/txns/t_x/approve"],
     ["POST", "/api/txns/t_x/reject"],
@@ -189,6 +190,114 @@ describe("authentication and routing", () => {
 
   it("checks the token before the route exists, so an unknown write route is 401 without it", async () => {
     expect((await post("/api/does-not-exist", {}, { auth: false })).status).toBe(401);
+  });
+});
+
+// Agent jobs get a token for their own transaction instead of RYKE_TOKEN (service.ts), because the
+// code they run can read their environment.
+describe("agent tokens", () => {
+  const AGENT = /^rtx\.(t_[0-9a-z]+)\.[A-Za-z0-9_-]{43}$/;
+  const bearer = (token: string) => `Bearer ${token}`;
+  const begun = async () => {
+    const t = await newRepo();
+    const b = (await apiBegin(t.name)) as Json;
+    return { t, b, auth: bearer(b.agentToken as string) };
+  };
+
+  it("comes with every begin that opens a transaction and names the transaction it is for", async () => {
+    const { b } = await begun();
+    expect(b.agentToken).toMatch(AGENT);
+    expect(AGENT.exec(b.agentToken)![1]).toBe(b.txn);
+    expect(await agentTokenTxn(env, b.agentToken)).toBe(b.txn);
+  });
+
+  it("works on its own transaction's agent routes", async () => {
+    const { b, auth } = await begun();
+    expect((await post(`/api/txns/${b.txn}/reads`, { paths: ["src/a.ts"] }, { auth })).status).toBe(200);
+    expect((await post(`/api/txns/${b.txn}/intend-write`, { path: "src/b.ts" }, { auth })).status).toBe(200);
+    expect((await post(`/api/txns/${b.txn}/refresh`, {}, { auth })).status).toBe(200);
+    // Wrong state, not wrong credentials: the request reached the Ledger.
+    expect((await post(`/api/txns/${b.txn}/retry`, {}, { auth })).status).toBe(409);
+    expect((await post(`/api/txns/${b.txn}/abort`, { reason: "agent_abort" }, { auth })).status).toBe(200);
+    expect(await txnState(b.txn)).toBe("aborted");
+    const next = await begun();
+    expect((await post(`/api/txns/${next.b.txn}/submit`, {}, { auth: next.auth })).status).toBe(200);
+    expect(await txnState(next.b.txn)).not.toBe("open");
+  });
+
+  it("cannot approve or reject its own transaction", async () => {
+    const { b, auth } = await begun();
+    for (const action of ["approve", "reject"]) {
+      const r = await post(`/api/txns/${b.txn}/${action}`, {}, { auth });
+      expect(r.status, action).toBe(401);
+      expect(r.body).toEqual({ error: "unauthorized" });
+    }
+    expect(await txnState(b.txn)).toBe("open");
+  });
+
+  it("is refused on another transaction and changes nothing there", async () => {
+    const { t, auth } = await begun();
+    const other = await apiBegin(t.name, "agent-02");
+    for (const route of ["reads", "intend-write", "submit", "retry", "refresh", "abort"]) {
+      const r = await post(`/api/txns/${other.txn}/${route}`, { paths: ["src/a.ts"], path: "src/a.ts", reason: "x" }, { auth });
+      expect(r.status, route).toBe(401);
+    }
+    expect(await txnState(other.txn)).toBe("open");
+    expect((await http("GET", `/api/txns/${other.txn}`)).body.attempts.flatMap((a: Json) => a.reads)).toEqual([]);
+  });
+
+  it("is refused everywhere outside the agent routes", async () => {
+    const { t, b, auth } = await begun();
+    const refused: [string, string, unknown][] = [
+      ["POST", "/api/repos", { name: unique("x") }],
+      ["DELETE", `/api/repos/${t.name}`, undefined],
+      ["POST", `/api/repos/${t.name}/txns`, { agent: "a", intent: "x", model: "m" }],
+      ["POST", `/api/repos/${t.name}/recall`, { selector: { txns: [b.txn] } }],
+      ["POST", `/api/demo/${t.name}/start`, { mode: "scripted", agents: 1 }],
+      ["POST", `/api/txns/${b.txn}/reads/extra`, { paths: [] }],
+    ];
+    for (const [method, path, body] of refused) expect((await http(method, path, { body, auth })).status, `${method} ${path}`).toBe(401);
+    expect((await http("GET", `/api/repos/${t.name}`)).status).toBe(200);
+  });
+
+  it.each([
+    ["another transaction's id", async (tok: string) => tok.replace(/\.t_[0-9a-z]+\./, ".t_zzzzzzzz.")],
+    ["one MAC character changed", async (tok: string) => tok.slice(0, -1) + (tok.endsWith("A") ? "B" : "A")],
+    ["the MAC cut short", async (tok: string) => tok.slice(0, -2)],
+    ["no MAC", async (tok: string) => tok.slice(0, tok.lastIndexOf(".") + 1)],
+    ["another prefix", async (tok: string) => tok.replace(/^rtx\./, "rty.")],
+    ["signed under another RYKE_TOKEN", async (_tok: string, txn: string) => agentToken({ ...env, RYKE_TOKEN: "other" } as Env, txn)],
+    ["the admin token's bytes", async () => env.RYKE_TOKEN],
+  ] as const)("is refused with %s", async (_label, forge) => {
+    const { b } = await begun();
+    const forged = await forge(b.agentToken, b.txn);
+    expect(await agentTokenTxn(env, forged)).toBeNull();
+    if (forged !== env.RYKE_TOKEN) expect((await post(`/api/txns/${b.txn}/abort`, { reason: "x" }, { auth: bearer(forged) })).status).toBe(401);
+    expect(await txnState(b.txn)).toBe("open");
+  });
+
+  it("verifies nothing when RYKE_TOKEN is unset", async () => {
+    const token = await agentToken({ ...env, RYKE_TOKEN: "" } as Env, "t_abc123");
+    expect(await agentTokenTxn({ ...env, RYKE_TOKEN: "" } as Env, token)).toBeNull();
+  });
+
+  it("is handed to every transaction a recall re-queues", async () => {
+    const puts: [string, string][] = [];
+    const recall = async () => ({ ok: true, value: { recall: "rc_1", outcome: "pass", requeued: [{ from: "t_a1", txn: "t_b2", token: "fork-token" }] } });
+    const { env: e } = stubEnv({ convert: { recall }, __index: indexStub(["convert"], puts) });
+    const res = await callApi(e, "POST", "/api/repos/convert/recall", { selector: { txns: ["t_a1"] }, dryRun: false });
+    expect(res.status).toBe(200);
+    const q = ((await res.json()) as Json).requeued[0];
+    expect(q).toMatchObject({ from: "t_a1", txn: "t_b2", token: "fork-token" });
+    expect(await agentTokenTxn(e, q.agentToken)).toBe("t_b2");
+    expect(puts).toContainEqual(["t_b2", "convert"]);
+  });
+
+  it("leaves a dry run's answer as the Ledger gave it", async () => {
+    const plan = { recall: null, targets: ["t_a1"], dependents: [], order: ["t_a1"] };
+    const { env: e } = stubEnv({ convert: { recall: async () => ({ ok: true, value: plan }) }, __index: indexStub(["convert"]) });
+    const res = await callApi(e, "POST", "/api/repos/convert/recall", { selector: { txns: ["t_a1"] } });
+    expect((await res.json()) as Json).toEqual(plan);
   });
 });
 

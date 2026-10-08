@@ -66,11 +66,35 @@ export async function begin(env: Env, repo: string, input: Parameters<Ledger["be
     }
   }
   const res = await L.begin(input, screen, reserved);
-  if (res.ok) {
-    await ledger(env, "__index").indexPut(res.value.txn, repo);
-    knownTxns.set(res.value.txn, repo);
-  }
-  return res;
+  if (!res.ok) return res;
+  await ledger(env, "__index").indexPut(res.value.txn, repo);
+  knownTxns.set(res.value.txn, repo);
+  // A rejected transaction is over before it started; there is nothing for a token to do.
+  if (res.value.state === "rejected") return res;
+  return { ...res, value: { ...res.value, agentToken: await agentToken(env, res.value.txn) } };
+}
+
+// An agent job runs code nobody reviewed (Claude's Bash tool sees the job's environment), so it gets a
+// token that works only on its own transaction's agent routes (api.ts), never the admin RYKE_TOKEN,
+// which can also approve, reject, recall and delete.
+const AGENT_TOKEN = /^rtx\.(t_[0-9a-z]+)\.([A-Za-z0-9_-]{43})$/;
+const utf8 = (s: string) => new TextEncoder().encode(s);
+
+function agentKey(env: Env): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", utf8(`ryke-agent:${env.RYKE_TOKEN}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+
+export async function agentToken(env: Env, txn: string): Promise<string> {
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", await agentKey(env), utf8(txn)));
+  return `rtx.${txn}.${btoa(String.fromCharCode(...mac)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}
+
+// The transaction a well-formed, correctly signed agent token is for; null for anything else.
+export async function agentTokenTxn(env: Env, token: string): Promise<string | null> {
+  const m = AGENT_TOKEN.exec(token);
+  if (!m || !env.RYKE_TOKEN) return null;
+  const mac = Uint8Array.from(atob(m[2]!.replace(/-/g, "+").replace(/_/g, "/") + "="), (c) => c.charCodeAt(0));
+  return (await crypto.subtle.verify("HMAC", await agentKey(env), mac, utf8(m[1]!))) ? m[1]! : null;
 }
 
 // Process-mode jobs reach the local store directly, so credentials travel in the remote URL (basic
