@@ -1,5 +1,6 @@
-/* Recall dialog (PLAN.md §12 view 4): choose, read the dry-run plan, execute. Targets are filled nodes with their
-   intent struck through in --recall; dependents are outlined nodes that the tests revalidate. */
+/* Recall dialog (PLAN.md §12 view 4): a form sheet laid over the Line. The Line behind is hatched out, as a
+   drawing hatches what is cut away. Targets are filled nodes with their intent struck through; dependents are
+   outlined nodes that the tests revalidate. */
 .recall-scrim {
   position: fixed;
   inset: 0;
@@ -7,31 +8,19 @@
   display: grid;
   place-items: center;
   padding: 24px 12px;
-  background: var(--scrim);
-  backdrop-filter: blur(2px);
-  animation: fade-in 140ms ease-out;
-}
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-}
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.985);
-  }
+  background:
+    repeating-linear-gradient(45deg, var(--grid-2) 0 1px, transparent 1px 7px),
+    var(--scrim);
+  animation: appear 120ms ease-out;
 }
 .recall {
   display: flex;
   flex-direction: column;
   width: min(680px, 100%);
   max-height: calc(100vh - 48px);
-  border: 1px solid var(--border-strong);
-  border-radius: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow-lg);
-  animation: rise 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  border: 1px solid var(--rule);
+  border-top: 4px solid var(--rule);
+  background: var(--paper);
 }
 .recall:focus {
   outline: none;
@@ -40,40 +29,29 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 16px 14px 20px;
-  border-bottom: 1px solid var(--border);
-}
-.recall-badge {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--recall-soft);
-  color: var(--recall-text);
+  padding: 12px 14px 10px 20px;
+  border-bottom: 3px double var(--rule);
 }
 .recall-heading h2 {
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: 18px;
+  line-height: 1.2;
 }
 .recall-heading p {
   font-size: 12.5px;
 }
 .recall-close {
   gap: 8px;
-  color: var(--text-2);
 }
 .recall-body {
   display: grid;
-  gap: 16px;
+  gap: 18px;
   min-height: 0;
-  padding: 16px 20px 20px;
+  padding: 14px 20px 20px;
   overflow-y: auto;
 }
 .recall-lede {
-  color: var(--text-2);
+  max-width: 60ch;
+  color: var(--ink-2);
 }
 .recall-token {
   align-items: flex-end;
@@ -90,17 +68,17 @@
   align-items: center;
   gap: 10px;
 }
+/* Steps are numbered with balloons, the drawing's way of pointing at a part. */
 .recall-num {
   display: grid;
   place-items: center;
   flex: none;
   width: 20px;
   height: 20px;
+  border: 1px solid var(--ink);
   border-radius: 50%;
-  background: var(--text);
-  color: var(--surface);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 500;
 }
 .recall-choose {
   display: flex;
@@ -110,40 +88,35 @@
 }
 .recall-field {
   flex: 1;
-  min-width: 0;
 }
 .recall-field select {
   width: 100%;
 }
-.recall-plan-btn {
-  height: 34px;
-}
 .recall-hint {
-  font-size: 12px;
+  font-size: 11.5px;
 }
 .recall-result {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 .recall-result:empty {
   display: none;
 }
-
-/* plan and outcome */
 .recall-plan,
 .recall-outcome {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 .recall-plan-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
 }
 .recall-plan-head h3 {
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 13px;
 }
 .recall-key {
   display: flex;
@@ -151,68 +124,71 @@
   margin: 0 0 0 auto;
   padding: 0;
   list-style: none;
-  color: var(--text-3);
+  color: var(--ink-2);
   font-size: 11.5px;
 }
 .recall-key li {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
 }
 .recall-key i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 2px solid var(--text-3);
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
 }
 .recall-key i[data-tone="revert"] {
-  border-color: var(--recall);
-  background: var(--recall);
+  border-color: var(--stop);
+  background: var(--stop);
 }
 .recall-sentence {
-  color: var(--text-2);
+  font-size: 12.5px;
 }
 .recall-plan .recall-sentence {
   padding-left: 30px;
 }
+/* The trunk drawn upright: newest at the top, a node per transaction on it. */
 .recall-rows {
   position: relative;
   display: grid;
-  margin: 0;
-  padding: 2px 0 2px 30px;
+  margin: 2px 0 0;
+  padding: 0 0 0 30px;
   list-style: none;
 }
 .recall-rows::before {
   content: "";
   position: absolute;
-  top: 16px;
-  bottom: 16px;
-  left: 39px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--border-strong);
+  top: 10px;
+  bottom: 10px;
+  left: 38px;
+  width: 3px;
+  background: var(--ink);
 }
 .recall-rows li {
-  position: relative;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 7px 10px 7px 0;
-  border-radius: var(--r);
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--grid);
 }
 .recall-rows .node {
-  justify-self: center;
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--text-3);
-  border-radius: 50%;
-  background: var(--surface);
+  position: relative;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  margin-left: 2px;
+  border: 2px solid var(--ink);
+  background: var(--paper);
 }
-.recall-rows li[data-tone="revert"] .node,
+.recall-rows li[data-tone="revert"] .node {
+  border-color: var(--stop);
+  background: var(--stop);
+}
 .recall-rows li[data-tone="cascade"] .node {
-  border-color: var(--recall);
-  background: var(--recall);
+  border-color: var(--caution);
+  background: var(--caution);
 }
 .recall-rows li[data-tone="stay"] .node {
   border-color: var(--go);
@@ -223,83 +199,53 @@
 }
 .recall-rows .intent {
   overflow: hidden;
-  font-weight: 500;
+  font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .recall-rows li[data-tone="revert"] .intent,
 .recall-rows li[data-tone="cascade"] .intent {
-  text-decoration: line-through;
-  text-decoration-color: var(--recall);
-  text-decoration-thickness: 2px;
+  text-decoration: line-through 1.5px var(--ink);
 }
 .recall-rows .who {
   overflow: hidden;
-  color: var(--text-3);
-  font-size: 11px;
+  color: var(--ink-2);
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .recall-rows .role {
-  padding: 2px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--text-2);
   font-size: 11.5px;
-  font-weight: 500;
   white-space: nowrap;
 }
 .recall-rows li[data-tone="revert"] .role,
 .recall-rows li[data-tone="cascade"] .role {
-  border-color: transparent;
-  background: var(--recall-soft);
-  color: var(--recall-text);
+  font-weight: 600;
 }
 .recall-rows li[data-tone="stay"] .role {
-  border-color: transparent;
-  background: var(--go-soft);
-  color: var(--go-text);
+  color: var(--ink-2);
 }
 .recall-outcome-head {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px 14px;
-  border-radius: var(--r);
-  background: var(--go-soft);
-}
-.recall-outcome[data-tone="stop"] .recall-outcome-head {
-  background: var(--stop-soft);
-}
-.recall-outcome-icon {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--go);
-  color: #fff;
-}
-.recall-outcome[data-tone="stop"] .recall-outcome-icon {
-  background: var(--stop);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
 }
 .recall-outcome h3 {
+  margin-bottom: 2px;
   font-size: 14px;
-  font-weight: 600;
 }
 .recall-outcome dl {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 12px;
-  margin: 0;
-  font-size: 12.5px;
+  gap: 4px;
+  margin: 4px 0 0;
+  font-size: 12px;
 }
 .recall-outcome dl > div {
-  display: contents;
+  display: flex;
+  gap: 10px;
 }
 .recall-outcome dt {
-  color: var(--text-3);
+  min-width: 60px;
+  color: var(--ink-2);
 }
 .recall-outcome dd {
   margin: 0;
@@ -313,56 +259,49 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px 12px 20px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-2);
-  border-radius: 0 0 14px 14px;
-  font-size: 12.5px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
 }
+/* Work in progress is hatched on the Line; here the hatching moves. */
 .spinner {
   display: inline-block;
-  width: 12px;
-  height: 12px;
-  margin-right: 4px;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--recall);
-  border-radius: 50%;
-  vertical-align: -2px;
-  animation: spin 700ms linear infinite;
+  width: 26px;
+  height: 8px;
+  margin-right: 6px;
+  border: 1px solid var(--ink);
+  background: repeating-linear-gradient(45deg, var(--ink) 0 1px, transparent 1px 4px);
+  background-size: 5.66px 8px;
+  vertical-align: -1px;
+  animation: crawl 600ms linear infinite;
 }
-@keyframes spin {
+@keyframes crawl {
   to {
-    transform: rotate(360deg);
+    background-position: 5.66px 0;
   }
 }
-
 @media (max-width: 640px) {
-  .recall-scrim {
-    align-items: end;
-    padding: 0;
-  }
-  .recall {
-    width: 100%;
-    max-height: 92vh;
-    border-radius: 14px 14px 0 0;
+  .recall-head,
+  .recall-body,
+  .recall-foot {
+    padding-left: 14px;
+    padding-right: 14px;
   }
   .recall-choose {
     flex-direction: column;
     align-items: stretch;
     padding-left: 0;
   }
-  .recall-plan .recall-sentence,
+  .recall-key {
+    margin-left: 0;
+  }
   .recall-rows {
     padding-left: 0;
   }
   .recall-rows::before {
-    left: 9px;
+    left: 8px;
   }
-  .recall-key {
-    margin-left: 0;
-  }
-  .recall-foot {
-    flex-wrap: wrap;
-    border-radius: 0;
+  .recall-plan .recall-sentence {
+    padding-left: 0;
   }
 }

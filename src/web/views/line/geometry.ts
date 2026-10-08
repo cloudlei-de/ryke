@@ -10,7 +10,8 @@ export const ROW_H = 16;
 export const ROW_MAX = 34;
 export const AXIS_H = 26;
 export const MIN_BAR_W = 3;
-// Geist at the bars' 11 px label size advances about 6 px a character; labels are sized before drawing.
+// Plex Sans Condensed at the bars' 11 px label size advances about 5 px a character; 6 leaves the label a margin
+// before the band's end, since labels are sized before they are drawn.
 export const CHAR_W = 6;
 // A label needs this much of the working stretch to say anything (six characters and the padding).
 export const LABEL_MIN_W = 56;
@@ -127,6 +128,60 @@ export function axisTicks(w: TimeWindow, widthPx: number, tzOffsetMin: number): 
     out.push({ t, label: formatClock(t, step, tzOffsetMin) });
   }
   return out;
+}
+
+// How a labelled step divides into the finer lines printed between its labels. Each division is a round clock
+// value (2 s, 10 s, 1 min), so a reader can count lines the way they count minute lines on a graphic timetable.
+const DIVISIONS: Record<number, number> = {
+  1000: 2,
+  2000: 2,
+  5000: 5,
+  10_000: 5,
+  15_000: 3,
+  30_000: 3,
+  60_000: 6,
+  120_000: 4,
+  300_000: 5,
+  600_000: 5,
+  900_000: 3,
+  1_800_000: 3,
+  3_600_000: 4,
+};
+
+export function minorStep(stepMs: number): number {
+  return stepMs / (DIVISIONS[stepMs] ?? 1);
+}
+
+// The times of the fine lines in a window, on the viewer's clock like the labels, without the labelled ones.
+export function minorTicks(w: TimeWindow, widthPx: number, tzOffsetMin: number): number[] {
+  const span = w.end - w.start;
+  if (!(span > 0) || !(widthPx > 0)) return [];
+  const step = axisStep(span, widthPx);
+  const minor = minorStep(step);
+  const off = tzOffsetMin * 60_000;
+  const out: number[] = [];
+  for (let t = Math.ceil((w.start + off) / minor) * minor - off; t <= w.end && out.length < 1000; t += minor) {
+    if ((t + off) % step !== 0) out.push(t);
+  }
+  return out;
+}
+
+// "2 s", "1 min", "1.5 min": a span as the title block prints it. A value that rounds up to the next unit is
+// printed in it, so 59 960 ms reads "1 min", not "60 s".
+export function fmtSpan(ms: number): string {
+  if (!(ms > 0)) return "0 s";
+  const s = +(ms / 1000).toFixed(1);
+  if (s < 60) return `${s} s`;
+  const m = +(ms / 60_000).toFixed(1);
+  if (m < 60) return `${m} min`;
+  return `${+(ms / 3_600_000).toFixed(1)} h`;
+}
+
+// The title block's scale: what one fine line is worth, and how much time the sheet shows.
+export function scaleNote(w: TimeWindow, widthPx: number): string {
+  const span = w.end - w.start;
+  if (!(span > 0) || !(widthPx > 0)) return "";
+  return `${fmtSpan(minorStep(axisStep(span, widthPx)))} a line · ${fmtSpan(span)} shown`;
 }
 
 // ---------------------------------------------------------------- text
@@ -408,6 +463,37 @@ export function staleWaves(rows: readonly Row[], blocks: readonly TrunkBlock[]):
     }
   }
   return [...found.values()].sort((a, b) => a.x - b.x);
+}
+
+// The two ends of an attempt's path on a graphic timetable, as x positions on the trunk: the commit it set out from
+// (trunk's head when it began, which is its snapshot) and the commit it landed as. Each is null when that commit is
+// off the sheet or never happened, so the hovered bar draws only the ends there are.
+export function trainPath(bar: Pick<AttemptBar, "txn" | "mark">, start: number, ticks: readonly Tick[], blocks: readonly TrunkBlock[]): { from: number | null; to: number | null } {
+  let depart: Tick | null = null;
+  for (const k of ticks) if (k.at <= start && (!depart || k.at > depart.at || (k.at === depart.at && k.seq > depart.seq))) depart = k;
+  let from: number | null = null;
+  let to: number | null = null;
+  for (const b of blocks) {
+    for (const t of b.ticks) {
+      if (depart && t.seq === depart.seq) from = t.x;
+      if (bar.mark?.kind === "landed" && t.txn === bar.txn) to = t.x;
+    }
+  }
+  return { from, to };
+}
+
+// A train's size is written over its bracket unless it would run into the size written before it.
+export function blockLabels(blocks: readonly TrunkBlock[], minGap = 14): Set<string> {
+  const out = new Set<string>();
+  let last = -Infinity;
+  for (const b of blocks) {
+    if (b.ticks.length < 2) continue;
+    const mid = b.x + b.w / 2;
+    if (mid - last < minGap) continue;
+    out.add(b.key);
+    last = mid;
+  }
+  return out;
 }
 
 // A block counts as arriving for a moment after it lands; the CSS animation runs once, when the class first appears.

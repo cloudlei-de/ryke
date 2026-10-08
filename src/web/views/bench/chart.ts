@@ -218,7 +218,7 @@ export function headline(cells: readonly BenchCell[]): { agents: number; values:
 
 export const POLICY_NAME: Record<BenchPolicy, string> = { lock: "Global lock", queue: "Merge queue", ryke: "Ryke" };
 
-// Each policy's best throughput and where it was measured, for the cards over the charts.
+// Each policy's best throughput and where it was measured, for the summary table over the charts.
 export function peaks(cells: readonly BenchCell[]): Record<BenchPolicy, { agents: number; value: number } | null> {
   const out = { lock: null, queue: null, ryke: null } as Record<BenchPolicy, { agents: number; value: number } | null>;
   for (const c of cells) {

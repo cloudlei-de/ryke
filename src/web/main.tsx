@@ -1,10 +1,9 @@
-import "@fontsource-variable/geist";
-import "@fontsource-variable/geist-mono";
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import "./fonts/fonts.css";
 import { useLive } from "./live";
 import "./styles.css";
-import { Icon, Logo, THEME_ICON, useTheme, type IconName } from "./ui";
+import { Lamp, Logo, Patterns, THEME_TEXT, useTheme } from "./ui";
 import { BenchView } from "./views/bench";
 import { LineView } from "./views/line";
 import { ReplayView } from "./views/replay";
@@ -35,47 +34,60 @@ export function repoName(): string {
   return new URLSearchParams(location.search).get("repo") ?? "convert";
 }
 
-const THEME_LABEL = { system: "Theme: follows the system", light: "Theme: light", dark: "Theme: dark" };
+const THEME_TITLE = { system: "Print follows the system's light or dark setting", light: "Day print", dark: "Night print" };
 
 function App() {
   const route = useRoute();
   const repo = repoName();
   const live = useLive(repo, route.name !== "bench");
   const [theme, cycleTheme] = useTheme();
-  // A transaction is opened from the Line, so the Line tab stays current under it.
+  // A transaction is opened from the Line, so the Line's sheet stays current under it.
   const current = route.name === "txn" ? "line" : route.name;
-  const tab = (href: string, name: Route["name"], label: string, icon: IconName) => (
+  const tab = (href: string, name: Route["name"], no: number, label: string) => (
     <a href={href} aria-current={current === name ? (route.name === "txn" ? "location" : "page") : undefined}>
-      <Icon name={icon} size={15} className="tab-icon" />
-      {label}
+      <span className="tab-no">{no}</span>
+      <span className="tab-name">{label}</span>
     </a>
   );
   return (
     <div className="app">
-      <header className="topbar">
-        <a className="brand" href="#/" aria-label="Ryke, the Line">
+      <Patterns />
+      <header className="masthead">
+        <a className="mh-cell brand" href="#/" aria-label="Ryke, the Line">
           <Logo />
-          <span className="brand-name">Ryke</span>
-        </a>
-        <span className="crumb">
-          <span className="slash">/</span>
-          <Icon name="repo" size={15} />
-          <span>{repo}</span>
-        </span>
-        <nav className="tabs" aria-label="Views">
-          {tab("#/", "line", "Line", "git")}
-          {tab("#/replay", "replay", "Replay", "clock")}
-          {tab("#/bench", "bench", "Bench", "pulse")}
-        </nav>
-        <span className="spacer" />
-        {route.name !== "bench" && (
-          <span className="conn" title={live.connected ? "Receiving the op stream" : "Not connected to the op stream; retrying"}>
-            <span className="status-dot" data-live={String(live.connected)} />
-            <span className="conn-text">{live.connected ? "Live" : "Reconnecting"}</span>
+          <span>
+            <span className="brand-name">Ryke</span>
+            <span className="brand-sub">Git with transactions</span>
           </span>
+        </a>
+        <div className="mh-cell mh-sheet">
+          <span className="mh-label">Sheet</span>
+          <nav className="tabs mh-value" aria-label="Views">
+            {tab("#/", "line", 1, "Line")}
+            {tab("#/replay", "replay", 2, "Replay")}
+            {tab("#/bench", "bench", 3, "Bench")}
+          </nav>
+        </div>
+        <div className="mh-cell mh-repo-cell">
+          <span className="mh-label">Repo</span>
+          <span className="mh-value mh-repo">{repo}</span>
+        </div>
+        <span className="mh-fill" />
+        {/* The Line says on its own sheet whether it is live; a transaction's page and the Replay, which keeps adding
+            what the stream brings, say it here. The Bench opens no stream. */}
+        {(route.name === "txn" || route.name === "replay") && (
+          <div className="mh-cell mh-stream">
+            <span className="mh-label">Stream</span>
+            <span className="mh-value">
+              <Lamp tone={live.connected ? "go" : "stop"} live={live.connected} title={live.connected ? "Receiving the op stream" : "Not connected to the op stream; retrying"}>
+                {live.connected ? "Live" : "Reconnecting"}
+              </Lamp>
+            </span>
+          </div>
         )}
-        <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={cycleTheme} title={THEME_LABEL[theme]} aria-label={THEME_LABEL[theme]}>
-          <Icon name={THEME_ICON[theme]} size={16} />
+        <button type="button" className="mh-cell theme-btn" onClick={cycleTheme} title={`${THEME_TITLE[theme]}. Press for the next.`} aria-label={`Colour scheme: ${THEME_TITLE[theme]}`}>
+          <span className="mh-label">Print</span>
+          <span className="mh-value">{THEME_TEXT[theme]}</span>
         </button>
       </header>
       <main className="view" data-route={route.name}>

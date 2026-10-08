@@ -9,6 +9,8 @@ import type { Live } from "../src/web/live";
 import { axisTicks, opBounds, plotBox, replayWindow } from "../src/web/views/line/geometry";
 import { LineView } from "../src/web/views/line";
 import { HotFiles } from "../src/web/views/line/Side";
+import { Band, Path } from "../src/web/views/line/Timeline";
+import { AXIS_H, buildRows, layoutTrunk, type Scale } from "../src/web/views/line/geometry";
 import { ReplayView } from "../src/web/views/replay";
 import e2e from "./fixtures/ops/e2e-land.json";
 
@@ -100,11 +102,43 @@ describe("Line: the trunk", () => {
   });
 });
 
-describe("Line: the live pill", () => {
+describe("Line: the live lamp", () => {
   it("says Live while the socket is connected and Reconnecting when it is not", () => {
     const at = (connected: boolean) => render(createElement(LineView, { repo: "convert", state: fold([]), ops: [], mode: "live", connected }));
     expect(at(true)).toMatch(/data-tone="go"[^>]*><i class="dot" data-tone="go"><\/i>Live</);
     expect(at(false)).toMatch(/data-tone="stop"[^>]*><i class="dot" data-tone="stop"><\/i>Reconnecting</);
+  });
+});
+
+describe("Line: the counters", () => {
+  const t = Date.now() - 20_000;
+  it("are a ruled table whose lamps light only for a signal", () => {
+    const html = line([
+      op("txn.open", t, { attempt: 1, intent: "x" }, "t_1", "agent-01"),
+      op("txn.landed", t + 900, { sha: "b".repeat(40), seq: 1 }, "t_1", "agent-01"),
+      op("trunk.advanced", t + 900, { seq: 1, sha: "b".repeat(40), txns: [{ txn: "t_1", sha: "b".repeat(40), seq: 1 }], train: null }),
+    ]);
+    expect(html).toContain('<table class="c-table">');
+    expect(html).toContain('<td class="c-lamp"><i class="dot" data-tone="go"></i></td><th scope="row">Landed</th><td class="c-fig">1</td>');
+    expect(html).toContain('<td class="c-lamp"><i class="dot"></i></td><th scope="row">Aborted</th><td class="c-fig">0</td>');
+    expect(html).toContain('<td class="c-lamp"></td><th scope="row">In flight</th>');
+  });
+});
+
+describe("Line: the foot of the sheet", () => {
+  it("prints the key and the title block with trunk's head, the scale and the moment drawn", () => {
+    const t = Date.now() - 20_000;
+    const html = line([op("trunk.advanced", t, { seq: 3, sha: "d".repeat(40), txns: [], train: null })]);
+    expect(html).toContain('<span class="key-title">Key</span>');
+    expect(html).toMatch(/<dl class="title-block" aria-label="Title block">[\s\S]*<dt>Trunk head<\/dt><dd>seq 3 · <span class="mono">dddddddd<\/span>/);
+    expect(html).toMatch(/<dt>Scale<\/dt><dd>\d+(\.\d)? s a line · 1 min shown<\/dd>/);
+    expect(html).toContain("<dt>Drawn at</dt>");
+  });
+
+  it("says it is replayed in a replay", () => {
+    const html = render(createElement(LineView, { repo: "convert", state: fold([]), ops: [], mode: "replay", now: 1000 }));
+    expect(html).toContain("<dt>Replayed at</dt>");
+    expect(html).toContain("no commits yet");
   });
 });
 
@@ -135,6 +169,79 @@ describe("Line: what the screenshot checks count", () => {
   });
 });
 
+describe("Line: a band", () => {
+  const scale: Scale = { t0: 0, t1: 1000, x0: 0, x1: 1000 };
+  const band = (ops: Op[], now: number) => {
+    const [row] = buildRows(fold(ops), scale, now);
+    return render(createElement("svg", null, createElement(Band, { bar: row!.bars[0]!, y: 0, h: 20, label: true })));
+  };
+
+  it("is framed all round once it has ended, and open on the right while it runs", () => {
+    const ended = band([op("txn.open", 100, { attempt: 1, intent: "Add the Power category" }, "t_1", "a"), op("txn.landed", 400, { sha: "s", seq: 1 }, "t_1", "a")], 500);
+    expect(ended).toContain('d="M100.5 0.5H399.5V19.5H100.5Z"');
+    const running = band([op("txn.open", 100, { attempt: 1, intent: "Add the Power category" }, "t_1", "a")], 400);
+    expect(running).toContain('d="M400 0.5H100.5V19.5H400"');
+  });
+
+  it("writes the intent in its working stretch and ends in the mark of how it ended", () => {
+    const html = band([op("txn.open", 100, { attempt: 1, intent: "Add the Power category" }, "t_1", "a"), op("txn.landed", 400, { sha: "s", seq: 1 }, "t_1", "a")], 500);
+    expect(html).toContain(">Add the Power category</text>");
+    expect(html).toContain('class="m-switch"');
+  });
+
+  it("fills a human's stretch with the barrier stripes and a queued one with the hatch", () => {
+    const html = band([op("txn.open", 100, { attempt: 1, intent: "x" }, "t_1", "a"), op("txn.submitted", 200, {}, "t_1", "a"), op("txn.needs_human", 300, { reason: "scope_creep" }, "t_1", "a")], 400);
+    expect(html).toContain('class="part seg-queued" fill="url(#ryke-queue)"');
+    expect(html).toContain('class="part seg-human" fill="url(#ryke-human)"');
+  });
+});
+
+describe("Line: the hovered path", () => {
+  const scale: Scale = { t0: 0, t1: 1000, x0: 0, x1: 1000 };
+  const ops = [
+    op("trunk.advanced", 100, { seq: 1, sha: "a".repeat(40), txns: [], train: null }),
+    op("txn.open", 150, { attempt: 1, intent: "x" }, "t_1", "agent-01"),
+    op("txn.landed", 400, { sha: "b".repeat(40), seq: 2 }, "t_1", "agent-01"),
+    op("trunk.advanced", 400, { seq: 2, sha: "b".repeat(40), txns: [{ txn: "t_1", sha: "b".repeat(40), seq: 2 }], train: null }),
+  ];
+  const state = fold(ops);
+  const rows = buildRows(state, scale, 500);
+  const blocks = layoutTrunk(state.ticks, scale);
+  const path = (scrollTop: number) => render(createElement(Path, { hover: { bar: rows[0]!.bars[0]! }, state, rows, rowH: 34, blocks, scrollTop, width: 1000 }));
+
+  it("runs down from the commit it began from and back up into the commit it landed as", () => {
+    const html = path(0);
+    const trunkY = AXIS_H + 30;
+    expect(html).toContain(`<path class="path-depart" d="M100 ${trunkY + 4}L150 `);
+    expect(html).toContain(`<circle class="path-stop" cx="100" cy="${trunkY}" r="5">`);
+    expect(html).toMatch(new RegExp(`<path class="path-arrive" d="M400 [\\d.]+L400 ${trunkY + 4}"`));
+  });
+
+  it("meets the trunk where the sticky head is when the rows have scrolled", () => {
+    expect(path(120)).toContain(`<circle class="path-stop" cx="100" cy="${AXIS_H + 30 + 120}" r="5">`);
+  });
+
+  it("draws nothing for a bar no longer on the sheet", () => {
+    expect(render(createElement(Path, { hover: { bar: { ...rows[0]!.bars[0]!, key: "gone#1" } }, state, rows, rowH: 34, blocks, scrollTop: 0, width: 1000 }))).toBe("");
+  });
+});
+
+describe("Line: the culprit's tick", () => {
+  it("is drawn in --stop when its landing made others stale", () => {
+    const t = Date.now() - 20_000;
+    const html = line([
+      op("txn.open", t, { attempt: 1, intent: "x" }, "t_1", "agent-01"),
+      op("txn.open", t, { attempt: 1, intent: "y" }, "t_2", "agent-02"),
+      op("txn.landed", t + 900, { sha: "b".repeat(40), seq: 1 }, "t_2", "agent-02"),
+      op("trunk.advanced", t + 900, { seq: 1, sha: "b".repeat(40), txns: [{ txn: "t_2", sha: "b".repeat(40), seq: 1 }], train: null }),
+      op("txn.stale", t + 1000, { reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "t_2" }] }, "t_1", "agent-01"),
+    ]);
+    expect(html.match(/class="tick culprit"/g)).toHaveLength(1);
+    expect(html).toContain('<text class="wave-label"');
+    expect(html).toContain("1 stale</text>");
+  });
+});
+
 describe("Line: hot files", () => {
   const row = (path: string, value: number) => ({ path, value, hot: value >= 4, fraction: Math.min(1, value / 8) });
   const files = (heat: ReturnType<typeof row>[]) => render(createElement(HotFiles, { heat, leases: new Map(), error: null }));
@@ -154,6 +261,13 @@ describe("Line: hot files", () => {
   it("offers nothing more when every file is already shown", () => {
     const html = files([row("a.ts", 2), row("b.ts", 1)]);
     expect(html).not.toContain("Show all");
+  });
+
+  it("prints the heat as ink up to the hot mark and in --stop past it", () => {
+    const html = files([row("src/format.ts", 6), row("src/a.ts", 1)]);
+    expect(html.match(/class="heat-over"/g)).toHaveLength(1);
+    expect(html).toContain('<span class="heat-fill" style="width:50.00%"></span><span class="heat-over" style="left:50.00%;width:25.00%"></span>');
+    expect(html).toContain('<span class="heat-fill" style="width:12.50%"></span></span>');
   });
 
   it("marks a hot file and names its lease holder", () => {

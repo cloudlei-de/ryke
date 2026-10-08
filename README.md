@@ -45,15 +45,21 @@ and begin screening is off, so duplicates are not flagged at begin.
 
 ![The Line during a scripted swarm](docs/shots/line-mid-1440-light.png)
 
-The **Line** (`#/`) puts every agent's transactions on one time axis under trunk: grey while the agent
-works, striped while it waits for a train, blue under test, green when it lands. A red notch is a read
-that went stale; a guide drops from the landing that caused it, with a branch to every change it caught.
-Counters, the hot files and a feed of what just happened sit beside it; hover a bar for its story, click
-it for the **Transaction** (`#/t/:id`): each attempt, the read and write sets with the trunk delta of a
-stale path, the judge's verdict on each acceptance criterion, the tests and the verify screenshot.
-**Replay** (`#/replay`) draws the Line at any point of the op log at 1×, 4× or 16×, **Bench** (`#/bench`)
-compares the three landing policies, and **Recall…** plans and runs a recall. Light and dark follow the
-system, or the switch in the top bar. Every view, both sizes and both schemes: [docs/shots](docs/shots).
+The dashboard is printed like a railway's graphic timetable: paper, one ink, hairline rules, and colour
+only where a signal is lit. The **Line** (`#/`) draws every agent's transactions as bands on one time
+grid under trunk: outlined while the agent works, hatched while it waits for a train, blue under test,
+striped like a lowered barrier while a human decides, green when it lands, turning up toward trunk in a
+short diagonal. A red notch is a read that went stale; a guide drops from the commit that caused it, with
+a dotted leader to every change it caught. A cross is a failed verify, a buffer stop a rejection, a
+double bar a change that gave up, a strike a recall. Counters, the hot files and a log book of what just
+happened sit in the margin, the key and a title block along the foot. Hover a band for its story and the
+diagonal from the trunk commit it started from; click it for the **Transaction** (`#/t/:id`): each
+attempt, the read and write sets with the trunk delta of a stale path, the judge's verdict on each
+acceptance criterion as a reading on a scale, the tests and the verify screenshot. **Replay**
+(`#/replay`) draws the Line at any point of the op log at 1×, 4× or 16×, **Bench** (`#/bench`) compares
+the three landing policies, and **Recall…** plans and runs a recall. Day and night print follow the
+system, or the Print cell in the masthead. Every view, both sizes and both prints:
+[docs/shots](docs/shots).
 
 ## Real agents: Claude Code or Codex, on your own subscription or key
 

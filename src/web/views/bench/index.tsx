@@ -2,7 +2,6 @@
 // table of every cell. Charts are hand-written SVG sized to their container, so text stays at its real size.
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { BENCH_SYNTHETIC_NOTICE, parseBench, POLICIES, type BenchCell, type BenchPolicy, type BenchResults } from "../../../shared/bench";
-import { Icon } from "../../ui";
 import {
   abortCauses,
   abortSegments,
@@ -26,6 +25,7 @@ import {
   stackLayout,
   tableRows,
 } from "./chart";
+import { useMedia } from "../line/hooks";
 import "./bench.css";
 
 type Load = { status: "loading" } | { status: "error"; message: string } | { status: "ok"; data: BenchResults };
@@ -71,29 +71,17 @@ const PAD_X = 30; // keeps the end markers off the axis and leaves room for a cl
 const POLICY_LABEL_GAP = 15;
 const margins = (gutter: number) => ({ top: 18, right: gutter, bottom: 30, left: 44 });
 
-function useWide(): boolean {
-  const query = "(min-width: 960px)";
-  const [wide, setWide] = useState(() => matchMedia(query).matches);
-  useEffect(() => {
-    const mq = matchMedia(query);
-    const on = () => setWide(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return wide;
-}
-
-// Ryke is the story, so it is the one coloured line; the baselines share a grey and differ by dash and marker.
+// A printed chart has one ink: Ryke is the heavy line, the baselines are light and told apart by dash and marker.
 const LINE_STYLE: Record<BenchPolicy, { stroke: string; width: number; dash?: string }> = {
-  lock: { stroke: "var(--text-3)", width: 1.75, dash: "5 4" },
-  queue: { stroke: "var(--text-2)", width: 1.75 },
-  ryke: { stroke: "var(--run)", width: 2.75 },
+  lock: { stroke: "var(--ink-2)", width: 1.25, dash: "4 3" },
+  queue: { stroke: "var(--ink)", width: 1.25 },
+  ryke: { stroke: "var(--ink)", width: 2.5 },
 };
 
 function Marker({ policy, x, y }: { policy: BenchPolicy; x: number; y: number }) {
-  if (policy === "ryke") return <circle className="m-ryke" cx={x} cy={y} r={4} />;
-  if (policy === "queue") return <circle className="m-base" cx={x} cy={y} r={3.5} />;
-  return <rect className="m-base" x={x - 3.5} y={y - 3.5} width={7} height={7} />;
+  if (policy === "ryke") return <rect className="m-ryke" x={x - 3.5} y={y - 3.5} width={7} height={7} />;
+  if (policy === "queue") return <circle className="m-base" cx={x} cy={y} r={3.25} />;
+  return <rect className="m-base lock" x={x - 3} y={y - 3} width={6} height={6} />;
 }
 
 type LineProps = { cells: BenchCell[]; metric: (c: BenchCell) => number; unit: string; height: number; digits: number; gutter: number };
@@ -152,7 +140,7 @@ function LineSvg({ cells, metric, unit, width, height, digits, gutter }: LinePro
         const s = LINE_STYLE[p];
         const pts = series[p].map((pt) => ({ x: xs.x(pt.agents), y: y(pt.value) }));
         return pts.length === 0 ? null : (
-          <path key={p} d={linePath(pts)} fill="none" style={{ stroke: s.stroke, strokeWidth: s.width, strokeDasharray: s.dash }} strokeLinejoin="round" strokeLinecap="round" />
+          <path key={p} d={linePath(pts)} fill="none" style={{ stroke: s.stroke, strokeWidth: s.width, strokeDasharray: s.dash }} strokeLinejoin="miter" />
         );
       })}
       {POLICIES.map((p) =>
@@ -185,13 +173,13 @@ function LineSvg({ cells, metric, unit, width, height, digits, gutter }: LinePro
   );
 }
 
-// Fills that tell causes apart without hue: signal colours are for signals, and every abort is a stop.
+// Fills that tell causes apart without hue, in the one ink, the way a printed chart hatches its series.
 function Patterns({ id }: { id: string }) {
-  const line = { style: { stroke: "var(--stop)", strokeWidth: 1.4 } };
+  const line = { style: { stroke: "var(--ink)", strokeWidth: 1 } };
   return (
     <defs>
       <pattern id={`${id}-0`} width="4" height="4" patternUnits="userSpaceOnUse">
-        <rect width="4" height="4" style={{ fill: "var(--stop)" }} />
+        <rect width="4" height="4" style={{ fill: "var(--ink)" }} />
       </pattern>
       <pattern id={`${id}-1`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <line x1="0" y1="0" x2="0" y2="4" {...line} />
@@ -204,7 +192,7 @@ function Patterns({ id }: { id: string }) {
         <line x1="2.5" y1="0" x2="2.5" y2="5" {...line} />
       </pattern>
       <pattern id={`${id}-4`} width="5" height="5" patternUnits="userSpaceOnUse">
-        <circle cx="2.5" cy="2.5" r="1.1" style={{ fill: "var(--stop)" }} />
+        <circle cx="2.5" cy="2.5" r="1" style={{ fill: "var(--ink)" }} />
       </pattern>
     </defs>
   );
@@ -255,7 +243,7 @@ function AbortsChart({ cells, causes, height, gutter }: { cells: BenchCell[]; ca
             return (
               <g key={`${cell.policy}-${cell.agents}`}>
                 {stackLayout(segs, px, baseline, 2).map((s) => (
-                  <rect key={s.cause} x={cx} y={s.y} width={bars.width} height={s.h} fill={`url(#${id}-${causes.indexOf(s.cause)})`}>
+                  <rect key={s.cause} className="seg" x={cx} y={s.y} width={bars.width} height={s.h} fill={`url(#${id}-${causes.indexOf(s.cause)})`}>
                     <title>{`${cell.policy} · ${cell.agents} agents · ${causeLabel(s.cause)} ${s.value}`}</title>
                   </rect>
                 ))}
@@ -287,7 +275,7 @@ function PatternKey({ id, causes }: { id: string; causes: string[] }) {
       {causes.map((c, k) => (
         <li key={c}>
           <svg width="18" height="10" aria-hidden="true">
-            <rect width="18" height="10" fill={`url(#${id}-${k})`} />
+            <rect className="seg" x="0.5" y="0.5" width="17" height="9" fill={`url(#${id}-${k})`} />
           </svg>
           {causeLabel(c)}
         </li>
@@ -296,14 +284,23 @@ function PatternKey({ id, causes }: { id: string; causes: string[] }) {
   );
 }
 
+// A policy's line and marker as the charts draw it, so the table and the figures read alike.
+function PolicySwatch({ policy }: { policy: BenchPolicy }) {
+  const s = LINE_STYLE[policy];
+  return (
+    <svg className="policy-swatch" width="22" height="10" aria-hidden="true">
+      <line x1="0" x2="22" y1="5" y2="5" style={{ stroke: s.stroke, strokeWidth: s.width, strokeDasharray: s.dash }} />
+      <Marker policy={policy} x={11} y={5} />
+    </svg>
+  );
+}
+
 function LineKey() {
   return (
     <ul className="line-key" aria-label="Policies">
       {[...POLICIES].reverse().map((p) => (
         <li key={p} data-policy={p}>
-          <svg width="22" height="8" aria-hidden="true">
-            <line x1="1" x2="21" y1="4" y2="4" style={{ stroke: LINE_STYLE[p].stroke, strokeWidth: LINE_STYLE[p].width, strokeDasharray: LINE_STYLE[p].dash }} strokeLinecap="round" />
-          </svg>
+          <PolicySwatch policy={p} />
           {POLICY_NAME[p]}
         </li>
       ))}
@@ -311,14 +308,14 @@ function LineKey() {
   );
 }
 
-function Figure({ title, note, keyed, children }: { title: string; note: string; keyed?: boolean; children: ReactNode }) {
+function Figure({ no, title, note, keyed, children }: { no: number; title: string; note: string; keyed?: boolean; children: ReactNode }) {
   return (
-    <figure className="bench-fig card">
-      <figcaption className="card-head">
-        <div>
-          <h2>{title}</h2>
-          <p className="muted fig-note">{note}</p>
-        </div>
+    <figure className="bench-fig">
+      <figcaption className="sect-head">
+        <h2>
+          <span className="fig-no">Fig. {no}</span> {title}
+        </h2>
+        <span className="count fig-note">{note}</span>
         {keyed && <LineKey />}
       </figcaption>
       <div className="fig-body">{children}</div>
@@ -332,7 +329,7 @@ function Results({ data }: { data: BenchResults }) {
   const lead = useMemo(() => headline(data.cells), [data.cells]);
   const best = useMemo(() => peaks(data.cells), [data.cells]);
   const broken = rows.filter((r) => r.breakages > 0);
-  const wide = useWide();
+  const wide = useMedia("(min-width: 960px)");
   const landed = (c: BenchCell) => c.landedPerMinute;
   const wasted = (c: BenchCell) => c.wastedAgentSeconds;
   // The two small multiples share a column, so they share a gutter and their plots line up.
@@ -341,47 +338,55 @@ function Results({ data }: { data: BenchResults }) {
     <>
       {lead && (
         <section className="bench-lead" aria-label={`Landed per minute at ${lead.agents} agents`}>
-          {[...POLICIES].reverse().map((p) => {
-            const peak = best[p];
-            const x = p === "ryke" ? ratio(lead.values.ryke, lead.values.queue) : null;
-            return (
-              <div key={p} className="lead-card card" data-policy={p}>
-                <div className="lead-label">
-                  <span className="lead-swatch" aria-hidden="true" />
-                  {POLICY_NAME[p]}
-                </div>
-                <div className="lead-value">
-                  <span className="num">{fmtNum(lead.values[p], 1)}</span>
-                  <span className="lead-unit">landed / min at {lead.agents} agents</span>
-                </div>
-                <div className="lead-sub">
-                  {x && <span className="lead-ratio">{x} the merge queue</span>}
-                  {peak && (
-                    <span className="muted">
-                      peak {fmtNum(peak.value, 1)} at {peak.agents} agents
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          <header className="sect-head">
+            <h2>At {lead.agents} agents</h2>
+            <span className="count">the largest swarm every policy ran</span>
+          </header>
+          <table className="lead-table">
+            <thead>
+              <tr>
+                <th className="l">Policy</th>
+                <th>Landed / min</th>
+                <th>Against the merge queue</th>
+                <th>Peak</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...POLICIES].reverse().map((p) => {
+                const peak = best[p];
+                return (
+                  <tr key={p} data-policy={p}>
+                    <td className="l">
+                      <span className="policy" data-policy={p}>
+                        <PolicySwatch policy={p} />
+                        {POLICY_NAME[p]}
+                      </span>
+                    </td>
+                    <td className="lead-value">{fmtNum(lead.values[p], 1)}</td>
+                    <td>{p === "queue" ? "—" : (ratio(lead.values[p], lead.values.queue) ?? "—")}</td>
+                    <td className="muted">{peak ? `${fmtNum(peak.value, 1)} at ${peak.agents} agents` : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </section>
       )}
       <div className="bench-grid">
-        <Figure title="Throughput" note="Landed changes per minute, by number of agents" keyed>
+        <Figure no={1} title="Throughput" note="Landed changes per minute, by number of agents" keyed>
           <LineChart cells={data.cells} metric={landed} unit="landed/min" height={wide ? 400 : 300} digits={1} gutter={endGutter(data.cells, landed, 1)} />
         </Figure>
         <div className="bench-side">
-          <Figure title="Aborts" note="Attempts sent back, stacked by cause · bars: lock, queue, ryke">
+          <Figure no={2} title="Aborts" note="Attempts sent back, by cause · bars L, Q, R">
             <AbortsChart cells={data.cells} causes={causes} height={wide ? 178 : 220} gutter={sideGutter} />
           </Figure>
-          <Figure title="Wasted agent-seconds" note="Think time of attempts that did not land" keyed>
+          <Figure no={3} title="Wasted agent-seconds" note="Think time of attempts that did not land">
             <LineChart cells={data.cells} metric={wasted} unit="agent-s" height={wide ? 170 : 200} digits={0} gutter={sideGutter} />
           </Figure>
         </div>
       </div>
-      <section className="bench-table card" aria-label="Every cell">
-        <header className="card-head">
+      <section className="bench-table" aria-label="Every cell">
+        <header className="sect-head">
           <h2>Every cell</h2>
           <span className="count">{rows.length}</span>
         </header>
@@ -406,7 +411,7 @@ function Results({ data }: { data: BenchResults }) {
                 <tr key={r.key} className={[r.policy === "ryke" ? "ryke" : "", i > 0 && rows[i - 1]!.agents !== r.agents ? "group" : ""].join(" ").trim()}>
                   <td className="l">
                     <span className="policy" data-policy={r.policy}>
-                      <span className="lead-swatch" aria-hidden="true" />
+                      <PolicySwatch policy={r.policy} />
                       {POLICY_NAME[r.policy]}
                     </span>
                   </td>
@@ -450,8 +455,7 @@ export function BenchView() {
           </p>
         )}
       </header>
-      <aside className="callout bench-note" role="note">
-        <Icon name="info" size={15} />
+      <aside className="callout bench-note" data-tone="caution" role="note">
         <div>
           <p className="notice">{BENCH_SYNTHETIC_NOTICE}</p>
           {data && noteDetail(data.note, BENCH_SYNTHETIC_NOTICE) && <p>{noteDetail(data.note, BENCH_SYNTHETIC_NOTICE)}</p>}
@@ -460,12 +464,11 @@ export function BenchView() {
       {load.status === "loading" && <p className="muted bench-status">Loading the latest bench run.</p>}
       {load.status === "error" && (
         <p className="callout bench-status" data-tone="stop" role="alert">
-          <Icon name="alert" size={15} />
           Could not load the bench: {load.message}
         </p>
       )}
       {data && data.cells.length === 0 && (
-        <div className="bench-empty card">
+        <div className="bench-empty">
           <p className="bench-empty-title">No bench run yet</p>
           <p className="muted">
             Run <code>npm run bench -- --agents 10,50,100,200 --policy lock,queue,ryke --duration 300</code> and commit <code>bench/results/latest.json</code>.

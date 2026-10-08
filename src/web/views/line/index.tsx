@@ -3,17 +3,17 @@ import { heatAt, type LineState } from "../../../shared/reducers";
 import type { Op } from "../../../shared/types";
 import { simulationTag } from "../../agents";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
-import { Icon } from "../../ui";
+import { Lamp } from "../../ui";
 import { RecallButton } from "../recall";
-import { activityStart, AXIS_H, axisTicks, buildRows, demoResult, formatClock, heatRows, idleView, layoutTrunk, liveWindow, LIVE_MAX_MS, opBounds, plotBox, replayWindow, rowHeight, staleWaves, toX, type Scale } from "./geometry";
-import { useFiles, useNow, useSize } from "./hooks";
+import { activityStart, AXIS_H, axisTicks, buildRows, demoResult, formatClock, heatRows, idleView, layoutTrunk, liveWindow, LIVE_MAX_MS, minorTicks, opBounds, plotBox, replayWindow, rowHeight, scaleNote, shortSha, staleWaves, toX, type Scale } from "./geometry";
+import { useFiles, useMedia, useNow, useSize } from "./hooks";
 import "./line.css";
+import { Counters } from "./Counters";
 import { Activity, HotFiles } from "./Side";
-import { StatStrip } from "./StatStrip";
-import { ago, stats } from "./stats";
-import { Lanes, Legend, Patterns, TRUNK_H } from "./Timeline";
+import { ago, stats, type Stats } from "./stats";
+import { Lanes, Legend, TRUNK_H } from "./Timeline";
 
-// The 1 above is the border under the sticky axis and trunk. A phone has no screen height to share out, so its rows keep one comfortable height and the page scrolls.
+// A phone has no screen height to share out, so its rows keep one comfortable height and the page scrolls.
 const PHONE_ROW_H = 26;
 
 // Admin only: starts the scripted swarm inside the platform (PLAN.md §11.2). With no token stored it asks
@@ -65,11 +65,40 @@ function DemoButton({ repo }: { repo: string }) {
         </form>
       ) : (
         <button type="button" className="btn" disabled={phase === "busy"} onClick={() => (adminToken() ? void run() : setPhase("token"))}>
-          <Icon name="play" size={13} />
           {phase === "busy" ? "Starting…" : "Run demo"}
         </button>
       )}
     </div>
+  );
+}
+
+// The corner of the sheet that says what is drawn: trunk's head, the scale of the time grid, and the moment shown.
+function TitleBlock({ s, now, scale, mode, tz }: { s: Stats; now: number; scale: string; mode: "live" | "replay"; tz: number }) {
+  const age = s.head?.at != null ? ago(now - s.head.at) : null;
+  return (
+    <dl className="title-block" aria-label="Title block">
+      <div className="tb-head">
+        <dt>Trunk head</dt>
+        <dd>
+          {s.head ? (
+            <>
+              seq {s.head.seq} · <span className="mono">{shortSha(s.head.sha)}</span>
+              {age && <span className="muted"> · {age === "now" ? "just now" : `${age} ago`}</span>}
+            </>
+          ) : (
+            "no commits yet"
+          )}
+        </dd>
+      </div>
+      <div>
+        <dt>Scale</dt>
+        <dd>{scale || "—"}</dd>
+      </div>
+      <div>
+        <dt>{mode === "live" ? "Drawn at" : "Replayed at"}</dt>
+        <dd>{formatClock(now, 1000, tz)}</dd>
+      </div>
+    </dl>
   );
 }
 
@@ -78,6 +107,9 @@ function DemoButton({ repo }: { repo: string }) {
 export function LineView({ repo, state, ops, mode, now: nowProp, connected = true }: { repo: string; state: LineState; ops: Op[]; mode: "live" | "replay"; now?: number; connected?: boolean }) {
   const now = useNow(mode, nowProp, state.now);
   const [bodyRef, { width, height }] = useSize<HTMLDivElement>();
+  // At 1080 px and below the sidings take their own height and the page scrolls (line.css); only a panel that
+  // scrolls by itself has a height for the grid to fill.
+  const sheet = useMedia("(min-width: 1081px)");
   const files = useFiles(repo, state.head ? (mode === "live" ? state.head.sha : "replay") : null);
   const tzOffsetMin = -new Date().getTimezoneOffset();
 
@@ -93,40 +125,36 @@ export function LineView({ repo, state, ops, mode, now: nowProp, connected = tru
   const scale: Scale = { t0: win.start, t1: win.end, x0: plot.x0, x1: plot.x1 };
   const rows = buildRows(state, scale, now);
   const phone = width < 640;
-  const rowH = phone ? PHONE_ROW_H : rowHeight(rows.length, height - AXIS_H - TRUNK_H - 1);
+  // The 1 is the rule under the sticky axis and trunk.
+  const rowsH = height - AXIS_H - TRUNK_H - 1;
+  const rowH = phone ? PHONE_ROW_H : rowHeight(rows.length, rowsH);
   // A phone's plot is a third of a desktop's: its commits sit closer together.
   const blocks = layoutTrunk(state.ticks, scale, phone ? 6 : undefined);
   const waves = staleWaves(rows, blocks);
   const ticks = axisTicks(win, plot.x1 - plot.x0, tzOffsetMin).map((k) => ({ ...k, x: toX(scale, k.t) }));
+  const minor = minorTicks(win, plot.x1 - plot.x0, tzOffsetMin).map((t) => toX(scale, t));
   const simulation = simulationTag([...state.txns.values()].map((t) => t.model));
   const s = stats(state, now);
 
   return (
     <div className="line" data-mode={mode}>
-      <Patterns />
-      <div className="line-head">
+      <header className="line-head">
         <div className="line-title">
           <h1>{repo}</h1>
           {mode === "live" ? (
-            <span className="pill" data-tone={connected ? "go" : "stop"} title={connected ? "Receiving the op stream" : "The op stream is not connected; reconnecting"}>
-              <i className="dot" data-tone={connected ? "go" : "stop"} />
+            <Lamp tone={connected ? "go" : "stop"} live={connected} title={connected ? "Receiving the op stream" : "The op stream is not connected; reconnecting"}>
               {connected ? "Live" : "Reconnecting"}
-            </span>
+            </Lamp>
           ) : (
-            <span className="pill">
-              <Icon name="clock" size={12} />
-              Replay · {formatClock(now, 1000, tzOffsetMin)}
-            </span>
+            <span className="lamp">Replay · {formatClock(now, 1000, tzOffsetMin)}</span>
           )}
           {idle && (
-            <span className="pill" title="The timeline shows the last activity; Replay plays it back.">
-              <Icon name="clock" size={12} />
+            <span className="line-note" title="The timeline shows the last activity; Replay plays it back.">
               Quiet for {ago(now - idle.last)} · showing the last activity
             </span>
           )}
           {simulation && (
             <span className="tag sim-tag" title={simulation.title}>
-              <Icon name="info" size={12} />
               {simulation.text}
             </span>
           )}
@@ -136,39 +164,49 @@ export function LineView({ repo, state, ops, mode, now: nowProp, connected = tru
           {/* A recall acts on the live trunk, so the replay's historic state must not offer one. */}
           <RecallButton repo={repo} state={state} reason={mode === "replay" ? "Recall acts on the live trunk; open the Line view" : undefined} />
         </div>
-      </div>
-      <StatStrip s={s} now={now} />
+      </header>
       <div className="line-grid">
-        <section className="card timeline" aria-label="Timeline">
-          <header className="card-head">
-            <h2>Agents</h2>
-            <span className="count">{rows.length}</span>
-            <span className="spacer" />
-            <Legend />
+        <section className="timeline" aria-label="Timeline">
+          <header className="sect-head">
+            <h2>Sidings</h2>
+            <span className="count">
+              {rows.length} {rows.length === 1 ? "agent" : "agents"} against trunk
+            </span>
           </header>
           <div className="tl-body" ref={bodyRef}>
             <Lanes
               state={state}
               rows={rows}
               rowH={rowH}
+              fillH={sheet && !phone ? rowsH : 0}
               width={width}
               labelW={plot.labelW}
               x0={plot.x0}
               x1={plot.x1}
               ticks={ticks}
+              minor={minor}
               nowX={toX(scale, now)}
               nowLabel={mode === "live" ? "now" : formatClock(now, 1000, tzOffsetMin)}
               blocks={blocks}
               waves={waves}
               now={now}
+              scrollTop={bodyRef.current?.scrollTop ?? 0}
             />
           </div>
         </section>
         <aside className="line-side">
+          <Counters s={s} />
           <HotFiles heat={heatRows(files.files, heatAt(state, now))} leases={state.leases} error={files.error} />
           <Activity ops={ops} state={state} now={now} />
         </aside>
       </div>
+      <footer className="line-foot">
+        <div className="key">
+          <span className="key-title">Key</span>
+          <Legend />
+        </div>
+        <TitleBlock s={s} now={now} scale={scaleNote(win, plot.x1 - plot.x0)} mode={mode} tz={tzOffsetMin} />
+      </footer>
     </div>
   );
 }

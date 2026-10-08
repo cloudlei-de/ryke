@@ -1,14 +1,15 @@
 import { useState } from "react";
 import type { LineState } from "../../../shared/reducers";
 import type { Op } from "../../../shared/types";
-import { Icon, PathName } from "../../ui";
+import { PathName, Swatch } from "../../ui";
 import { feed, rawOps, type FeedItem, type Part } from "./activity";
-import { formatHeat, HEAT_HOT_AT, tickerLine, txnHref, type HeatRow } from "./geometry";
+import { formatClock, formatHeat, HEAT_HOT_AT, tickerLine, txnHref, type HeatRow } from "./geometry";
 import { ago } from "./stats";
 
 // ------------------------------------------------------------------ hot files
 
 const SHOWN = 6;
+const pct = (f: number) => `${(f * 100).toFixed(2)}%`;
 
 export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: LineState["leases"]; error: string | null }) {
   const [all, setAll] = useState(false);
@@ -17,8 +18,8 @@ export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: Lin
   const rows = all ? heat : warm.slice(0, SHOWN);
   const hidden = heat.length - rows.length;
   return (
-    <section className="card hot-files" aria-label="Heat map">
-      <header className="card-head">
+    <section className="hot-files" aria-label="Heat map">
+      <header className="sect-head">
         <h2>Hot files</h2>
         <span className="count">{hot > 0 ? `${hot} hot · ${heat.length} files` : `${heat.length} files`}</span>
       </header>
@@ -30,13 +31,18 @@ export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: Lin
             const lease = leases.get(h.path);
             return (
               <li key={h.path} data-hot={String(h.hot)} data-cold={String(h.value === 0)} title={`${h.path} · heat ${h.value.toFixed(2)}${h.hot ? " · hot" : ""}${lease ? ` · leased by ${lease.txn}` : ""}`}>
-                <span className="heat-name">
-                  {h.hot ? <Icon name="flame" size={13} className="heat-icon" /> : <Icon name="file" size={13} className="heat-icon cold" />}
-                  <PathName path={h.path} className="path" />
-                  {lease && <Icon name="lock" size={12} className="heat-lock" title={`leased by ${lease.txn}`} />}
-                </span>
-                <span className="heat-track" style={{ ["--hot-at" as string]: `${HEAT_HOT_AT * 100}%` }}>
-                  <span className="heat-fill" style={{ width: `${h.fraction * 100}%` }} />
+                <PathName path={h.path} className="heat-name" />
+                {lease ? (
+                  <span className="heat-lease" title={`leased by ${lease.txn}`}>
+                    leased<span className="sr-only"> by {lease.txn}</span>
+                  </span>
+                ) : (
+                  <span />
+                )}
+                {/* A measured scale: ink up to the hot mark, the signal past it. */}
+                <span className="heat-track" style={{ ["--hot-at" as string]: pct(HEAT_HOT_AT) }}>
+                  <span className="heat-fill" style={{ width: pct(Math.min(h.fraction, HEAT_HOT_AT)) }} />
+                  {h.fraction > HEAT_HOT_AT && <span className="heat-over" style={{ left: pct(HEAT_HOT_AT), width: pct(h.fraction - HEAT_HOT_AT) }} />}
                 </span>
                 <span className="heat-val num">{formatHeat(h.value)}</span>
               </li>
@@ -47,7 +53,6 @@ export function HotFiles({ heat, leases, error }: { heat: HeatRow[]; leases: Lin
       {(hidden > 0 || all) && (
         <button type="button" className="more" onClick={() => setAll((v) => !v)} aria-expanded={all}>
           {all ? "Show only warm files" : `Show all ${heat.length} files`}
-          <Icon name="chevron" size={13} className={all ? "flip" : undefined} />
         </button>
       )}
     </section>
@@ -74,11 +79,14 @@ function Words({ parts }: { parts: Part[] }) {
   );
 }
 
-function Item({ it, now }: { it: FeedItem; now: number }) {
+function Item({ it, now, tz }: { it: FeedItem; now: number; tz: number }) {
   return (
     <li className="feed-item" data-tone={it.tone ?? undefined}>
-      <span className="feed-icon">
-        <Icon name={it.icon} size={13} />
+      <time className="feed-time" title={`${ago(now - it.at)}${ago(now - it.at) === "now" ? "" : " ago"}`}>
+        {formatClock(it.at, 1000, tz)}
+      </time>
+      <span className="feed-mark">
+        <Swatch mark={it.mark} width={18} />
       </span>
       <div className="feed-text">
         <p className="feed-line">
@@ -96,20 +104,19 @@ function Item({ it, now }: { it: FeedItem; now: number }) {
           </p>
         )}
       </div>
-      <time className="feed-time num" title={new Date(it.at).toLocaleTimeString()}>
-        {ago(now - it.at)}
-      </time>
     </li>
   );
 }
 
+// The op log as a log book: clock time, the mark the Line draws for it, and what happened in words.
 export function Activity({ ops, state, now }: { ops: Op[]; state: LineState; now: number }) {
   const [raw, setRaw] = useState(false);
   const items = raw ? [] : feed(ops, state.seq, state);
   const lines = raw ? rawOps(ops, state.seq) : [];
+  const tz = -new Date().getTimezoneOffset();
   return (
-    <section className="card activity" aria-label="Activity">
-      <header className="card-head">
+    <section className="activity" aria-label="Activity">
+      <header className="sect-head">
         <h2>Activity</h2>
         <span className="spacer" />
         <div className="seg" role="group" aria-label="Show">
@@ -130,7 +137,7 @@ export function Activity({ ops, state, now }: { ops: Op[]; state: LineState; now
               const l = tickerLine(o);
               return (
                 <li key={o.seq}>
-                  <span className="op-seq num">{l.seq}</span>
+                  <span className="op-seq">{l.seq}</span>
                   <span className="op-kind" data-tone={l.signal ?? undefined}>
                     {l.kind}
                   </span>
@@ -148,7 +155,7 @@ export function Activity({ ops, state, now }: { ops: Op[]; state: LineState; now
       ) : (
         <ol className="feed" aria-live="off">
           {items.map((it) => (
-            <Item key={it.seq} it={it} now={now} />
+            <Item key={it.seq} it={it} now={now} tz={tz} />
           ))}
         </ol>
       )}

@@ -1,8 +1,9 @@
 # Progress
 
-Current: 2026-10-08 (UTC evening). PR cloudlei-de/ryke#1 merged (d4a7845). Since: the dashboard redesigned
-from scratch (DECISIONS 2026-10-08 · M4), then agents on the person's own subscription or API key, for
-Claude Code and Codex (DECISIONS 2026-10-08 · M8, this commit).
+Current: 2026-10-08 (UTC night). PR cloudlei-de/ryke#1 merged (d4a7845). Since: the dashboard redesigned
+from scratch (DECISIONS 2026-10-08 · M4), agents on the person's own subscription or API key, for Claude
+Code and Codex (DECISIONS 2026-10-08 · M8), then the dashboard redrawn as a printed graphic timetable
+(DECISIONS 2026-10-08 · M4, the last five entries).
 
 | Milestone | State | Verifier evidence (commit) |
 |---|---|---|
@@ -10,7 +11,7 @@ Claude Code and Codex (DECISIONS 2026-10-08 · M8, this commit).
 | M1 Ledger core | ACCEPTED | `npm run e2e:api` (35f5d87, fresh clone): begin 201 → clone/commit/push → reads `{"recorded":1}` → submit `ready` → wait `verifying` then `landed` (seq 1); 401 without/with a wrong token; 404 unknown txn |
 | M2 Landing | ACCEPTED | `npm run e2e:land` (35f5d87): train of 2 lands at seq 1–2; third stale on src/format.ts with the digits = 2 → 3 delta; train of 4 bisected in 3 probes isolating "broken by design", 3 landed; trunk 89 tests green. Runner DO fake-container suite 516 tests. Real container build: BLOCKERS (proxy TLS, API token) |
 | M3 Demo + scripted swarm | ACCEPTED | `npm run e2e:swarm` (016c31e, lead run alone): 36 landed (all landable; not landed: dup-speed/dup-kmh G3, kelvin-first, tamper-routes G5 protected), 0 max_attempts, 9 t-precision stale aborts all landed after retry, trunk 723 tests green, preview 26 categories. History: f3eb9c3 36 (verifier), then 34, 34; b76a574 33 (3 max_attempts: retries re-ran v1, fixed in 89c8702); 89c8702 34 (t-share parked by the gate, fixed in 016c31e) |
-| M4 Dashboard | ACCEPTED (redesign) | `npm run shots` after the redesign (main checkout, Geist loaded): 40 files, 0 console/page errors; Line shows trains as capsules, stale notches with a guide from the culprit's commit, hot rows, the scripted-agents tag, and after the recall struck-through targets and the revert commit; recall dialog: 2 targets recalled, 1 cascaded and re-queued, 3 revalidated. Measured: 30 agents fit at 1440x900 (17 px rows, no scroll). Before the redesign: e03e2e8, committed in 5acdac4 |
+| M4 Dashboard | ACCEPTED (graphic timetable redesign) | `npm run shots` after the timetable redesign (IBM Plex loaded): PASS, 40 files, 0 console/page errors, 341 s; the Line fits 1440x900, shows trains as bracketed ticks, stale notches with a guide from the culprit's red tick, hot rows, the scripted-agents stamp, and after the recall struck-through bands and the revert commit's diamond; recall dialog: 2 targets recalled, 1 cascaded and re-queued, 3 revalidated. Before it: the neutral-panel redesign (f1a9e33) and e03e2e8 (5acdac4) |
 | M5 Jev + contention | ACCEPTED | judge+heat 207, jev 137 tests; jev-calibration.md at HEAD: 84/89 (94 %), holdout 24/27, all 39 reference patches land; `npm run e2e:contention` PASS at cce3e9f (bench/results/contention/latest.json): scripted leg 279 lease grants, 0 waits, hot-file aborts off 25 / on 27 reported not asserted; bench leg at 50 agents, leases off / on: hot-file stale aborts 185 / 86 (asserted ≥ 20 % fewer), lease waits 0 / 27, landed/min 55 / 64.5; ablation at 8e3bfdd leases on vs off 67 vs 42.5 and 73 vs 38.5 landed/min |
 | M6 Recall | ACCEPTED | `npm run e2e:recall` (35f5d87): both G6 targets recalled, cascade 1 re-queued and landed at seq 40, 3 dependents revalidated, trunk green |
 | M7 Bench | ACCEPTED (lead check of committed results) | bench/results/latest.md at 1e10234 (code of 8e3bfdd, pipelining on): ryke 24.5/61.5/75.5/43.5 vs queue 23/23/18.5/22 vs lock 6.5/5.5/5.5/6 at 10/50/100/200, 0 breakages in 12 cells; C1 ablation: pipelining on vs off 67 vs 58 (50), 73 vs 55.5 (100), at 200 28.5/44.5/53 vs 36/36.5/37.5 over three runs |
@@ -99,3 +100,11 @@ Claude Code and Codex (DECISIONS 2026-10-08 · M8, this commit).
   check runs in the job's allow-listed env and a Codex job checks again before exec, repo settings lose
   credential env and key helpers, stub jobs get stand-in keys, Codex skips scaffolding paths. Gate: vitest
   34 files 3227, node 2104, 0 fail; e2e:codex and e2e:claude PASS.
+- night UTC: the dashboard redrawn as a printed graphic timetable (Felix's brief: light, printed, precise, nothing
+  that looks AI-made). Paper and one ink, signal colours only for signals, IBM Plex vendored, marks instead of
+  icons and pills, counters as a ruled table, key and title block at the foot, hovered bands draw their path to
+  trunk; web-contrast now also fails on radii, shadows, tints, shading gradients, words in --caution or --run and
+  system faces. A review (stream lamp on Replay, blinking failure lamps, two states told by colour alone, diff
+  signs at 4.3:1 on a tint, the delta cap, a grid that never shrank at 641–1080 px, test holes) fixed before the
+  commit. Gate: `npm run check` clean; vitest 34 files 3307, node 2085, 0 fail (an earlier run right after the
+  shots timed out once in recall-exec at 30 s under load, as before); `npm run shots` PASS, 40 files, 0 errors.

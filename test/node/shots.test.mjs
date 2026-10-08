@@ -191,7 +191,7 @@ describe("the Line checks", () => {
 
   // The selectors are classes of the dashboard's components; if one is renamed the run would wait out its timeout.
   const source = (f) => readFileSync(new URL(`../../src/web/${f}`, import.meta.url), "utf8");
-  const text = [source("views/line/index.tsx"), source("views/line/Timeline.tsx"), source("views/line/Side.tsx"), source("views/recall/index.tsx"), source("views/txn/parts.tsx")].join("\n");
+  const text = [source("ui.tsx"), source("views/line/index.tsx"), source("views/line/Timeline.tsx"), source("views/line/Side.tsx"), source("views/recall/index.tsx"), source("views/txn/parts.tsx")].join("\n");
   for (const token of ["line-head", "timeline", "block-box", "m-stale", "data-hot", "sim-tag", "strike", "tick recall", "recall-outcome", "recall-plan-btn", "Plan recall", "data-tone", "txn-id", "txn-diff", "txn-shot", "txn-picker"]) {
     it(`finds ${token} in the dashboard's source`, () => assert.ok(text.includes(token), token));
   }
