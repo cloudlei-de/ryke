@@ -8,10 +8,10 @@ index 103e7a4..c0d6de1 100644
  - Seed: length, mass and temperature converters.
 +- Add a category search box to the header.
 diff --git a/src/ui/layout.ts b/src/ui/layout.ts
-index 19d4873..dcb4dfd 100644
+index 19d4873..1cea374 100644
 --- a/src/ui/layout.ts
 +++ b/src/ui/layout.ts
-@@ -21,6 +21,20 @@ export function layout({ title, body }: Page): string {
+@@ -21,6 +21,22 @@ export function layout({ title, body }: Page): string {
      <a href="/">Categories</a>
      <a href="/api/convert?c=length&amp;from=km&amp;to=m&amp;v=1">API</a>
    </nav>
@@ -24,7 +24,9 @@ index 19d4873..dcb4dfd 100644
 +      input.addEventListener("input", function () {
 +        var q = input.value.trim().toLowerCase();
 +        document.querySelectorAll(".tile").forEach(function (tile) {
-+          tile.hidden = q !== "" && tile.textContent.toLowerCase().indexOf(q) === -1;
++          // The name only: the tile text also holds "3 units", which would make "units" or "3" match.
++          var name = tile.querySelector("strong").textContent.toLowerCase();
++          tile.hidden = q !== "" && name.indexOf(q) === -1;
 +        });
 +      });
 +    })();
@@ -34,29 +36,138 @@ index 19d4873..dcb4dfd 100644
    <h1>${escapeHtml(title)}</h1>
 diff --git a/test/search.test.ts b/test/search.test.ts
 new file mode 100644
-index 0000000..a8033cf
+index 0000000..9bf5613
 --- /dev/null
 +++ b/test/search.test.ts
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,131 @@
 +import assert from "node:assert/strict";
 +import { test } from "node:test";
++import vm from "node:vm";
 +import worker from "../src/index.ts";
 +
 +async function html(path: string): Promise<string> {
 +  return (await worker.fetch(new Request(`http://localhost${path}`))).text();
 +}
 +
-+for (const path of ["/", "/c/length", "/nope"]) {
-+  test(`${path} has the search box in the header`, async () => {
-+    const page = await html(path);
-+    const header = page.slice(page.indexOf("<header"), page.indexOf("</header>"));
-+    assert.ok(header.includes('id="search"'));
-+    assert.ok(header.includes('type="search"'));
-+  });
++function header(page: string): string {
++  return page.slice(page.indexOf("<header"), page.indexOf("</header>"));
 +}
 +
-+test("the filter script targets the search box and the tiles", async () => {
-+  const page = await html("/");
-+  assert.ok(page.includes('document.getElementById("search")'));
-+  assert.ok(page.includes('querySelectorAll(".tile")'));
++type Tile = { name: string; hidden: boolean; textContent: string; querySelector(selector: string): { textContent: string } | null };
++
++// There is no DOM in the demo, so the script the page ships runs against the few members it uses. A tile's
++// textContent holds the unit count line as well as the name, like the real markup does.
++function openPage(page: string, names: string[]) {
++  const script = /<script>([\s\S]*?)<\/script>/.exec(header(page))?.[1];
++  assert.ok(script, "the header carries the filter script");
++  let onInput: (() => void) | undefined;
++  const input = {
++    value: "",
++    addEventListener(type: string, listener: () => void) {
++      if (type === "input") onInput = listener;
++    },
++  };
++  const tiles: Tile[] = names.map((name) => ({
++    name,
++    hidden: false,
++    textContent: `\n  ${name}\n  3 units\n`,
++    querySelector: (selector) => (selector === "strong" ? { textContent: name } : null),
++  }));
++  const document = {
++    getElementById: (id: string) => (id === "search" ? input : null),
++    querySelectorAll: (selector: string) => (selector === ".tile" ? tiles : []),
++  };
++  vm.runInNewContext(script, { document });
++  return {
++    type(text: string) {
++      assert.ok(onInput, "the script listens for input events on the search box");
++      input.value = text;
++      onInput();
++    },
++    visible: () => tiles.filter((t) => !t.hidden).map((t) => t.name),
++  };
++}
++
++const names = ["Length", "Mass", "Temperature"];
++const home = await html("/");
++
++test("every page has a search input in the header: home, converter and not-found pages", async () => {
++  for (const path of ["/", "/c/length", "/nope"]) {
++    const head = header(await html(path));
++    assert.ok(head.includes('id="search"'), `${path}: no search input`);
++    assert.ok(head.includes('type="search"'), `${path}: the input is not a search field`);
++    assert.ok(head.includes("<script>"), `${path}: no filter script`);
++  }
++});
++
++test("typing on the home page hides the tiles whose name does not contain the text", () => {
++  const tileNames = [...home.matchAll(/<div class="tile"[\s\S]*?<strong>(.*?)<\/strong>/g)].map((m) => m[1]!);
++  assert.ok(tileNames.includes("Mass") && tileNames.includes("Length"), "the home page has its tiles");
++  const page = openPage(home, tileNames);
++  page.type("mass");
++  const left = page.visible();
++  assert.ok(left.includes("Mass"));
++  assert.ok(!left.includes("Length") && !left.includes("Temperature"));
++  for (const name of tileNames) assert.equal(left.includes(name), name.toLowerCase().includes("mass"), name);
++});
++
++test("typing keeps the tiles that match and hides the rest", () => {
++  const page = openPage(home, names);
++  for (const [typed, expected] of [
++    ["mass", ["Mass"]],
++    ["temp", ["Temperature"]],
++    ["e", ["Length", "Temperature"]],
++    ["Length", ["Length"]],
++  ] as const) {
++    page.type(typed);
++    assert.deepEqual(page.visible(), expected, typed);
++  }
++});
++
++test("text that matches no category name hides every tile", () => {
++  const page = openPage(home, names);
++  page.type("zzz");
++  assert.deepEqual(page.visible(), []);
++});
++
++test("clearing the search box shows every tile again, also when it holds only spaces", () => {
++  const page = openPage(home, names);
++  for (const cleared of ["", "   "]) {
++    page.type("mass");
++    assert.deepEqual(page.visible(), ["Mass"]);
++    page.type(cleared);
++    assert.deepEqual(page.visible(), names, JSON.stringify(cleared));
++  }
++});
++
++test("tiles hidden by one text are shown again when the text changes to match them", () => {
++  const page = openPage(home, names);
++  page.type("ma");
++  assert.deepEqual(page.visible(), ["Mass"]);
++  page.type("m");
++  assert.deepEqual(page.visible(), ["Mass", "Temperature"]);
++  page.type("l");
++  assert.deepEqual(page.visible(), ["Length"]);
++});
++
++test("the filter ignores letter case and the spaces around the text", () => {
++  const page = openPage(home, names);
++  for (const typed of ["MASS", "  mass ", "mAsS"]) {
++    page.type(typed);
++    assert.deepEqual(page.visible(), ["Mass"], JSON.stringify(typed));
++  }
++});
++
++test("the filter matches the category name, not the unit count line of the tile", () => {
++  const page = openPage(home, names);
++  for (const typed of ["units", "3", "3 units"]) {
++    page.type(typed);
++    assert.deepEqual(page.visible(), [], typed);
++  }
++});
++
++test("typing on a page without tiles does nothing and does not throw", async () => {
++  const page = openPage(await html("/c/length"), []);
++  page.type("mass");
++  assert.deepEqual(page.visible(), []);
 +});
