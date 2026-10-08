@@ -9,7 +9,7 @@ import { activityStart, AXIS_H, axisTicks, buildRows, demoResult, formatClock, h
 import { useFiles, useNow, useSize } from "./hooks";
 import "./line.css";
 import { Activity, HotFiles } from "./Side";
-import { StatStrip } from "./Stats";
+import { StatStrip } from "./StatStrip";
 import { ago, stats } from "./stats";
 import { Lanes, Legend, Patterns, TRUNK_H } from "./Timeline";
 
