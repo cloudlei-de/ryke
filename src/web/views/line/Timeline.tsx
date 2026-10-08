@@ -91,6 +91,16 @@ export function Legend() {
 
 function Trunk({ blocks, head, waves, width, labelW, x0, now }: { blocks: TrunkBlock[]; head: LineState["head"]; waves: Wave[]; width: number; labelW: number; x0: number; now: number }) {
   const culprits = new Map(waves.map((w) => [w.culprit, w]));
+  // "9 stale" under a dot needs about 48 px; a label that would run into the one before it is left to the dot's title.
+  const labelled = new Set<string>();
+  let lastLabel = -Infinity;
+  for (const w of waves) {
+    if (w.x - lastLabel < 52) continue;
+    labelled.add(w.culprit);
+    lastLabel = w.x;
+  }
+  // A phone's commits sit closer together (layoutTrunk's gap), so its dots are smaller.
+  const r = labelW < 120 ? 3 : 4;
   return (
     <svg className="trunk" width={width} height={TRUNK_H} role="group" aria-label={head ? `Trunk head ${shortSha(head.sha)}, seq ${head.seq}` : "Trunk, no commits yet"}>
       <text className="trunk-name" x={labelW < 120 ? 8 : 16} y={25}>
@@ -117,7 +127,7 @@ function Trunk({ blocks, head, waves, width, labelW, x0, now }: { blocks: TrunkB
               <>
                 <title>{wave ? `${t.title} · made ${wave.victims.length} stale` : t.title}</title>
                 {wave && <circle className="dot-ring" cx={t.x} cy={LINE_Y} r={7.5} />}
-                <circle className={t.txn ? "tick" : t.recall ? "tick recall" : "tick seed"} cx={t.x} cy={LINE_Y} r={4} />
+                <circle className={t.txn ? "tick" : t.recall ? "tick recall" : "tick seed"} cx={t.x} cy={LINE_Y} r={r} />
                 <circle className="dot-hit" cx={t.x} cy={LINE_Y} r={7} />
               </>
             );
@@ -133,9 +143,11 @@ function Trunk({ blocks, head, waves, width, labelW, x0, now }: { blocks: TrunkB
                 {wave && (
                   <>
                     <line className="wave" x1={t.x} x2={t.x} y1={LINE_Y + 8} y2={TRUNK_H} />
-                    <text className="wave-label" x={t.x + 6} y={LINE_Y + 19}>
-                      {wave.victims.length} stale
-                    </text>
+                    {labelled.has(wave.culprit) && (
+                      <text className="wave-label" x={t.x + 6} y={LINE_Y + 19}>
+                        {wave.victims.length} stale
+                      </text>
+                    )}
                   </>
                 )}
               </g>

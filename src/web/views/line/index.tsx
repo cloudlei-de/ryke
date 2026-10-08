@@ -5,12 +5,12 @@ import { simulationTag } from "../../agents";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
 import { Icon } from "../../ui";
 import { RecallButton } from "../recall";
-import { activityStart, AXIS_H, axisTicks, buildRows, demoResult, formatClock, heatRows, layoutTrunk, liveWindow, LIVE_MAX_MS, opBounds, plotBox, replayWindow, rowHeight, staleWaves, toX, type Scale } from "./geometry";
+import { activityStart, AXIS_H, axisTicks, buildRows, demoResult, formatClock, heatRows, idleView, layoutTrunk, liveWindow, LIVE_MAX_MS, opBounds, plotBox, replayWindow, rowHeight, staleWaves, toX, type Scale } from "./geometry";
 import { useFiles, useNow, useSize } from "./hooks";
 import "./line.css";
 import { Activity, HotFiles } from "./Side";
 import { StatStrip } from "./Stats";
-import { stats } from "./stats";
+import { ago, stats } from "./stats";
 import { Lanes, Legend, Patterns, TRUNK_H } from "./Timeline";
 
 // The 1 above is the border under the sticky axis and trunk. A phone has no screen height to share out, so its rows keep one comfortable height and the page scrolls.
@@ -82,9 +82,10 @@ export function LineView({ repo, state, ops, mode, now: nowProp, connected = tru
   const tzOffsetMin = -new Date().getTimezoneOffset();
 
   const plot = plotBox(width);
+  const idle = mode === "live" ? idleView(state, now) : null;
   const win =
     mode === "live"
-      ? liveWindow(now, activityStart(state, now - LIVE_MAX_MS))
+      ? (idle?.window ?? liveWindow(now, activityStart(state, now - LIVE_MAX_MS)))
       : (() => {
           const { first, last } = opBounds(ops);
           return replayWindow(first, last, now);
@@ -93,7 +94,8 @@ export function LineView({ repo, state, ops, mode, now: nowProp, connected = tru
   const rows = buildRows(state, scale, now);
   const phone = width < 640;
   const rowH = phone ? PHONE_ROW_H : rowHeight(rows.length, height - AXIS_H - TRUNK_H - 1);
-  const blocks = layoutTrunk(state.ticks, scale);
+  // A phone's plot is a third of a desktop's: its commits sit closer together.
+  const blocks = layoutTrunk(state.ticks, scale, phone ? 6 : undefined);
   const waves = staleWaves(rows, blocks);
   const ticks = axisTicks(win, plot.x1 - plot.x0, tzOffsetMin).map((k) => ({ ...k, x: toX(scale, k.t) }));
   const simulation = simulationTag([...state.txns.values()].map((t) => t.model));
@@ -114,6 +116,12 @@ export function LineView({ repo, state, ops, mode, now: nowProp, connected = tru
             <span className="pill">
               <Icon name="clock" size={12} />
               Replay · {formatClock(now, 1000, tzOffsetMin)}
+            </span>
+          )}
+          {idle && (
+            <span className="pill" title="The timeline shows the last activity; Replay plays it back.">
+              <Icon name="clock" size={12} />
+              Quiet for {ago(now - idle.last)} · showing the last activity
             </span>
           )}
           {simulation && (

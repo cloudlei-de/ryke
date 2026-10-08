@@ -21,12 +21,14 @@ import {
   formatHeat,
   heatFraction,
   heatRows,
+  idleView,
   isArriving,
   kindSignal,
   laneBox,
   layoutBar,
   layoutTrunk,
   liveWindow,
+  LIVE_MAX_MS,
   MIN_BAR_W,
   LABEL_MIN_W,
   opBounds,
@@ -42,6 +44,7 @@ import {
   staleLabel,
   staleWaves,
   stateLabel,
+  TRUNK_PUSH_MAX,
   tickerLine,
   tipFor,
   toX,
@@ -662,8 +665,28 @@ describe("layoutTrunk", () => {
     const blocks = layoutTrunk([tk(1, 100, "a"), tk(2, 100, "a"), tk(3, 102, "b"), tk(4, 600, "c")], scale);
     expect(blocks.map((b) => b.train)).toEqual(["a", "b", "c"]);
     expect(blocks[0]!.x).toBe(100);
-    expect(blocks[1]!.x).toBe(100 + DOT_GAP + BLOCK_GAP); // right of block a's last dot
+    // right of block a's last dot would be 100 + DOT_GAP + BLOCK_GAP = 121, more than TRUNK_PUSH_MAX past its time
+    expect(blocks[1]!.x).toBe(102 + TRUNK_PUSH_MAX);
     expect(blocks[2]!.x).toBe(600); // far enough away to stay on its time
+  });
+
+  it("pushes a block clear of the one before when that keeps it near its time", () => {
+    const blocks = layoutTrunk([tk(1, 100, "a"), tk(2, 105, "b")], scale);
+    expect(blocks[1]!.x).toBe(100 + BLOCK_GAP);
+  });
+
+  it("never draws a commit more than TRUNK_PUSH_MAX right of its time, however crowded the trunk, and never reorders", () => {
+    const ticks = Array.from({ length: 40 }, (_, i) => tk(i + 1, 500 + i, null));
+    const blocks = layoutTrunk(ticks, scale);
+    blocks.forEach((b, i) => {
+      expect(b.x - (500 + i)).toBeLessThanOrEqual(TRUNK_PUSH_MAX);
+      if (i > 0) expect(b.x).toBeGreaterThanOrEqual(blocks[i - 1]!.x);
+    });
+  });
+
+  it("spaces a train's dots by the gap it is given", () => {
+    const [b] = layoutTrunk([tk(1, 100, "t"), tk(2, 100, "t"), tk(3, 100, "t")], scale, 6);
+    expect(b!.ticks.map((t) => t.x)).toEqual([100, 106, 112]);
   });
 
   it("sorts by time even if the ticks arrive out of order", () => {
@@ -1120,5 +1143,25 @@ describe("the recorded e2e-land scenario", () => {
     const rows = buildRows(early, sc, early.now);
     expect(rows.flatMap((r) => r.bars).filter((b) => b.mark !== null)).toEqual([]);
     expect(layoutTrunk(early.ticks, sc)).toHaveLength(1);
+  });
+});
+
+describe("idleView", () => {
+  const MIN = 60_000;
+  it("is null while something is on screen, and for a repo with nothing yet", () => {
+    expect(idleView(fold([]), 10 * MIN)).toBeNull();
+    const busy = fold([open("t1", "a", 0)]); // still running: always on screen
+    expect(idleView(busy, 60 * MIN)).toBeNull();
+    const recent = fold([open("t1", "a", 0), move("txn.landed", "t1", "a", 5 * MIN, { sha: "s", seq: 1 })]);
+    expect(idleView(recent, 9 * MIN)).toBeNull();
+  });
+
+  it("frames the last activity as if now were its last op once the repo has been quiet past the live window", () => {
+    const s = fold([open("t1", "a", 0), move("txn.landed", "t1", "a", 3 * MIN, { sha: "s", seq: 1 })]);
+    const idle = idleView(s, 3 * MIN + LIVE_MAX_MS + 1)!;
+    expect(idle.last).toBe(3 * MIN);
+    expect(idle.window).toEqual(liveWindow(3 * MIN, 0));
+    expect(idle.window.start).toBeLessThanOrEqual(0);
+    expect(idle.window.end).toBeGreaterThan(3 * MIN);
   });
 });

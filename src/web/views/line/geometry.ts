@@ -16,6 +16,9 @@ export const CHAR_W = 6;
 export const LABEL_MIN_W = 56;
 export const DOT_GAP = 9;
 export const BLOCK_GAP = 12;
+// How far right of its time a crowded commit may be pushed. Past it, dots overlap instead: a commit drawn after
+// "now", or far from the bars that landed it, would tell the time wrong.
+export const TRUNK_PUSH_MAX = 16;
 export const SWARM_CMD = "npm run swarm -- --mode scripted --agents 12 --fresh";
 
 // ---------------------------------------------------------------- time axis
@@ -74,6 +77,14 @@ export function liveWindow(now: number, first: number | null): TimeWindow {
   }
   const end = now + LIVE_MAX_MS * RIGHT_MARGIN;
   return { start: end - LIVE_MAX_MS, end };
+}
+
+// A repo nobody has touched for longer than the live window would show empty rows. It shows its last activity
+// instead, framed as if "now" were its last op, and says how long it has been quiet. null while anything is on screen.
+export function idleView(state: LineState, now: number): { window: TimeWindow; last: number } | null {
+  if (state.txns.size === 0 || activityStart(state, now - LIVE_MAX_MS) !== null) return null;
+  const last = state.now;
+  return { window: liveWindow(last, activityStart(state, last - LIVE_MAX_MS)), last };
 }
 
 // Replay: fit the whole recording once, so scrubbing moves a cursor instead of rescaling the picture.
@@ -330,8 +341,9 @@ export type TrunkTick = { key: string; x: number; seq: number; sha: string; txn:
 export type TrunkBlock = { key: string; train: string | null; at: number; x: number; w: number; ticks: TrunkTick[] };
 
 // Commits of one train land at the same instant, so on a time axis they would be one dot. A train is
-// drawn as a capsule of evenly spaced dots; blocks that would collide are pushed right, never reordered.
-export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] {
+// drawn as a capsule of `gap`-spaced dots; blocks that would collide are pushed right, never reordered, and never
+// more than TRUNK_PUSH_MAX past their time. A narrow plot passes a smaller gap.
+export function layoutTrunk(ticks: readonly Tick[], scale: Scale, gap = DOT_GAP): TrunkBlock[] {
   const groups = new Map<string, Tick[]>();
   for (const k of [...ticks].sort((a, b) => a.at - b.at || a.seq - b.seq)) {
     if (k.at < scale.t0 || k.at > scale.t1) continue;
@@ -342,10 +354,15 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
   }
   const blocks: TrunkBlock[] = [];
   let cursor = -Infinity;
+  let prev = -Infinity;
+  const space = gap + (BLOCK_GAP - DOT_GAP);
   for (const [key, g] of groups) {
-    const w = (g.length - 1) * DOT_GAP;
-    const x = Math.min(Math.max(toX(scale, g[0]!.at), cursor + BLOCK_GAP), Math.max(scale.x1 - w, scale.x0));
+    const w = (g.length - 1) * gap;
+    const t = toX(scale, g[0]!.at);
+    const pushed = Math.max(prev, Math.min(Math.max(t, cursor + space), t + TRUNK_PUSH_MAX));
+    const x = Math.min(pushed, Math.max(scale.x1 - w, scale.x0));
     cursor = x + w;
+    prev = x;
     blocks.push({
       key,
       train: g[0]!.train,
@@ -354,7 +371,7 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
       w,
       ticks: g.map((k, i) => ({
         key: `${k.seq}:${k.sha}`,
-        x: x + i * DOT_GAP,
+        x: x + i * gap,
         seq: k.seq,
         sha: k.sha,
         txn: k.txn,

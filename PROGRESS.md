@@ -84,4 +84,6 @@ redesigned from scratch at Felix's request (71b64a1 … this commit; DECISIONS 2
   a5c0e10, 36 landed, 23 speculative trains all confirmed. Gate at a5c0e10: vitest 3095, node 1896.
 - 16:50 UTC dashboard redesign (Felix: "komplett neu designed"): new design system, all five views rebuilt, a review
   (shots checks matched the legend, stale guide at the notches' mean, 30 agents did not fit, hidden trunk links)
-  fixed in 2906ff1. Gate with the recall reason labels: vitest 3207, node 1914; `npm run shots` PASS, 40 files, 0 errors.
+  fixed in 2906ff1. Then an idle live Line shows its last activity and trunk commits drift at most 16 px. Gate at
+  that commit: vitest 3212, node 1914 (run alone; run beside shots, recall-exec timed out at 30 s under load);
+  `npm run shots` PASS, 40 files, 0 errors.
