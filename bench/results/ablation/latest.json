@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-08T05:50:41.738Z",
+  "generatedAt": "2026-10-08T10:16:26.042Z",
   "durationSeconds": 120,
   "synthetic": true,
   "note": "Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1 (median think 6 s), seed 7, 4-vCPU VM, Jev off (the tests are the only gate for every policy).",
@@ -7,65 +7,143 @@
     {
       "policy": "ryke",
       "agents": 50,
-      "landed": 112,
-      "landedPerMinute": 56,
-      "p50": 18.79,
-      "p95": 40.53,
+      "landed": 134,
+      "landedPerMinute": 67,
+      "p50": 16.35,
+      "p95": 37.03,
       "aborts": {
-        "stale_read": 106,
-        "failed_verify": 5,
-        "max_attempts": 13
+        "stale_read": 118,
+        "failed_verify": 3,
+        "max_attempts": 9
       },
-      "verifyRunsPerLanded": 0.31,
-      "wastedAgentSeconds": 576.9,
+      "verifyRunsPerLanded": 0.33,
+      "wastedAgentSeconds": 712.6,
       "trunkBreakages": 0
     },
     {
       "policy": "ryke-nolease",
       "agents": 50,
-      "landed": 92,
-      "landedPerMinute": 46,
-      "p50": 24.92,
-      "p95": 60.63,
+      "landed": 85,
+      "landedPerMinute": 42.5,
+      "p50": 23.54,
+      "p95": 58.01,
       "aborts": {
-        "stale_read": 245,
-        "failed_verify": 7,
+        "stale_read": 260,
+        "failed_verify": 6,
         "max_attempts": 56
       },
-      "verifyRunsPerLanded": 0.4,
-      "wastedAgentSeconds": 1308.8,
+      "verifyRunsPerLanded": 0.51,
+      "wastedAgentSeconds": 1297.6,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nopipe",
+      "agents": 50,
+      "landed": 116,
+      "landedPerMinute": 58,
+      "p50": 19.66,
+      "p95": 47.74,
+      "aborts": {
+        "stale_read": 106,
+        "failed_verify": 3,
+        "max_attempts": 12
+      },
+      "verifyRunsPerLanded": 0.27,
+      "wastedAgentSeconds": 622,
       "trunkBreakages": 0
     },
     {
       "policy": "ryke",
       "agents": 100,
-      "landed": 128,
-      "landedPerMinute": 64,
-      "p50": 25.5,
-      "p95": 60.36,
+      "landed": 146,
+      "landedPerMinute": 73,
+      "p50": 27.64,
+      "p95": 59.68,
       "aborts": {
-        "stale_read": 246,
-        "failed_verify": 2,
-        "max_attempts": 37
+        "stale_read": 317,
+        "max_attempts": 46
       },
-      "verifyRunsPerLanded": 0.2,
-      "wastedAgentSeconds": 1370.9,
+      "verifyRunsPerLanded": 0.18,
+      "wastedAgentSeconds": 1783.4,
       "trunkBreakages": 0
     },
     {
       "policy": "ryke-nolease",
       "agents": 100,
-      "landed": 62,
-      "landedPerMinute": 31,
-      "p50": 35.66,
-      "p95": 69.82,
+      "landed": 77,
+      "landedPerMinute": 38.5,
+      "p50": 37.78,
+      "p95": 70.35,
       "aborts": {
-        "stale_read": 502,
-        "failed_verify": 5,
-        "max_attempts": 133
+        "stale_read": 462,
+        "failed_verify": 3,
+        "max_attempts": 122
       },
-      "verifyRunsPerLanded": 0.4,
-      "wastedAgentSeconds": 2571.1,
+      "verifyRunsPerLanded": 0.34,
+      "wastedAgentSeconds": 2433.5,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nopipe",
+      "agents": 100,
+      "landed": 111,
+      "landedPerMinute": 55.5,
+      "p50": 32.16,
+      "p95": 69.12,
+      "aborts": {
+        "stale_read": 271,
+        "failed_verify": 2,
+        "max_attempts": 45
+      },
+      "verifyRunsPerLanded": 0.2,
+      "wastedAgentSeconds": 1465,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke",
+      "agents": 200,
+      "landed": 57,
+      "landedPerMinute": 28.5,
+      "p50": 68.44,
+      "p95": 110,
+      "aborts": {
+        "stale_read": 318,
+        "failed_verify": 3,
+        "max_attempts": 32
+      },
+      "verifyRunsPerLanded": 0.46,
+      "wastedAgentSeconds": 1758.5,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nolease",
+      "agents": 200,
+      "landed": 35,
+      "landedPerMinute": 17.5,
+      "p50": 78.39,
+      "p95": 98.88,
+      "aborts": {
+        "stale_read": 510,
+        "failed_verify": 1,
+        "max_attempts": 109
+      },
+      "verifyRunsPerLanded": 0.37,
+      "wastedAgentSeconds": 2544.4,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nopipe",
+      "agents": 200,
+      "landed": 72,
+      "landedPerMinute": 36,
+      "p50": 57.02,
+      "p95": 105.58,
+      "aborts": {
+        "stale_read": 416,
+        "max_attempts": 77
+      },
+      "verifyRunsPerLanded": 0.15,
+      "wastedAgentSeconds": 2161.4,
       "trunkBreakages": 0
     }
   ]
