@@ -1,14 +1,15 @@
 # Progress
 
-Current: 2026-10-08 08:45 CEST (06:45 UTC). Verification wave at 35f5d87 done; two re-runs at f3eb9c3
-after the fresh-clone Jev fix (243152d) are in flight (M3 e2e:swarm, §14 quickstart). Then the PR.
+Current: 2026-10-08 09:45 CEST (07:45 UTC). M3 margin fixed (89c8702 retry variant, 016c31e share/favorites tests):
+e2e:swarm lands 36 of 36 landable. Fresh-clone quickstart re-verify and a review of both commits in
+flight. Then the PR.
 
 | Milestone | State | Verifier evidence (commit) |
 |---|---|---|
 | M0 Foundations | ACCEPTED | fresh clone `npm ci && npm run check && npm test` (35f5d87): vitest 31 files 3033 tests, node:test 1636 tests, 0 fail; store-contract suite included; gate4 at 243152d: vitest 3041, node 1636 |
 | M1 Ledger core | ACCEPTED | `npm run e2e:api` (35f5d87, fresh clone): begin 201 → clone/commit/push → reads `{"recorded":1}` → submit `ready` → wait `verifying` then `landed` (seq 1); 401 without/with a wrong token; 404 unknown txn |
 | M2 Landing | ACCEPTED | `npm run e2e:land` (35f5d87): train of 2 lands at seq 1–2; third stale on src/format.ts with the digits = 2 → 3 delta; train of 4 bisected in 3 probes isolating "broken by design", 3 landed; trunk 89 tests green. Runner DO fake-container suite 516 tests. Real container build: BLOCKERS (proxy TLS, API token) |
-| M3 Demo + scripted swarm | re-run pending | 35f5d87 run as written FAILED (0 landed: Jev key never reached the Worker); with the key forwarded: 34 landed, G3 rejected/warned, G5 protected, 9 t-precision stale aborts all landed, trunk 684 tests, preview 25 categories. Fixed in 243152d + f3eb9c3, re-run at f3eb9c3 in flight |
+| M3 Demo + scripted swarm | ACCEPTED | `npm run e2e:swarm` (016c31e, lead run alone): 36 landed (all landable; not landed: dup-speed/dup-kmh G3, kelvin-first, tamper-routes G5 protected), 0 max_attempts, 9 t-precision stale aborts all landed after retry, trunk 723 tests green, preview 26 categories. History: f3eb9c3 36 (verifier), then 34, 34; b76a574 33 (3 max_attempts: retries re-ran v1, fixed in 89c8702); 89c8702 34 (t-share parked by the gate, fixed in 016c31e) |
 | M4 Dashboard | ACCEPTED | `npm run shots` (35f5d87): 40 files, 0 console/page errors; Line shows trains (×2 ×2 ×8 …), stale notches, heat (format.ts 8.5 hot); recall dialog shows 2 struck targets and 4 dependents |
 | M5 Jev + contention | ACCEPTED (contention evidence from the bench ablation) | judge+heat 207, jev 137 tests; jev-calibration.md 94 % overall (holdout within noise); e2e:contention PASS (hot-file stale aborts 24 on vs 28 off, but 0 lease waits: weak); bench ablation: leases on vs off 56 vs 46 and 64 vs 31 landed/min, stale aborts 106 vs 245 and 246 vs 502 |
 | M6 Recall | ACCEPTED | `npm run e2e:recall` (35f5d87): both G6 targets recalled, cascade 1 re-queued and landed at seq 40, 3 dependents revalidated, trunk green |
@@ -43,8 +44,10 @@ after the fresh-clone Jev fix (243152d) are in flight (M3 e2e:swarm, §14 quicks
   measurement of the lease effect (see M5 row).
 - At 200 bench agents Ryke's throughput falls to 38.5/min: 464 of 466 stale aborts hit changes already
   ready, waiting for the one train at a time (README says so).
-- e2e:swarm has zero margin (exactly 34 landed in five runs): live Jev parks sloppy-a (and sometimes
-  t-search/t-dark) in needs_human; cat-typography sometimes hits max_attempts.
+- The scripted swarm's landed count depends on live Jev and on timing: 33–36 across runs before
+  89c8702/016c31e. The causes found (sloppy-a, t-search, t-dark, t-share test names the gate could not
+  read; retries re-running v1) are fixed; one category can still run out of attempts when three
+  hot-file writers land inside its lifetime.
 
 ## Review round 1 (2026-10-08 early morning), all fixed with failing tests first
 - [x] A approval survives retry → gate skipped (both reviews)
@@ -74,3 +77,6 @@ after the fresh-clone Jev fix (243152d) are in flight (M3 e2e:swarm, §14 quicks
   G3 rewording (harness/jev-cases.json); the fresh-clone quickstart sent everything to needs_human
   (recorded Jev); the dashboard froze after `--fresh`. All fixed or being committed; see DECISIONS.
 - 06:30 cccc842 gated in a clean worktree: vitest 2647/2647, swarm suite 36/36, other node suites green.
+- 07:45 UTC M3 margin: readers-first train ordering rejected (DECISIONS: v1 category tests pin the old
+  precision, t-precision would fail its train). Real causes in the per-agent log of a 33-landed run: retries
+  re-ran v1 (89c8702) and the gate could not read t-share's tests (016c31e). e2e:swarm at 016c31e: 36 landed.
