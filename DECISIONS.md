@@ -37,3 +37,14 @@
 - 2026-10-08 · M6 · recall that fails verify reverts every dependent too (second pass) and otherwise leaves trunk untouched · §8.4 "re-queue the failing dependents' intents too"
 - 2026-10-08 · M6 · recall holds the lander (no train forms while it runs) and executes synchronously inside the Ledger RPC · trunk writes stay serialised and the API answers with the outcome
 - 2026-10-08 · M3 · preview responses carry `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals` · agent-written preview code runs on the dashboard origin and must not read the admin token in localStorage; the demo's client scripts already tolerate a storage-less origin
+- 2026-10-08 · M1 · an agent may abort from any non-terminal state except verifying (§4.2 draws abort only from open) · an agent that gives up after a stale or failed outcome, or while waiting, must be able to say so
+- 2026-10-08 · M1 · a protected write moves open → submitted → rejected rather than open → rejected · the write set is only known after submit computes it from git
+- 2026-10-08 · M1 · retry sets no alarm (§5.1 lists retry) · a retried transaction is open; only submit makes work schedulable
+- 2026-10-08 · M1 · without an explicit head, submit reads the fork's head from the store, never the last push event · production ingest is asynchronous and can deliver events late or out of order
+- 2026-10-08 · M1 · begin reserves its txn id and intent in screenCandidates, so concurrent near-identical begins see each other in the duplicate screen · review found the race
+- 2026-10-08 · M2 · bisection budget is 2n+2 probes, not log₂(trainMax)+1 depth · two culprits in a train of 8 need more than 4 probes; the budget still bounds the work and leftovers are requeued
+- 2026-10-08 · M2 · verify jobs get a read token; recall runs as three jobs (revert to a scratch ref, verify read-only, CAS push) · agent-written tests must never run beside a credential that can push to trunk
+- 2026-10-08 · M2 · a member whose train errors 3 times fails with `land_error`; a push whose outcome was lost is reconciled by comparing trunk's head with the candidate · otherwise a broken runner loops a train forever or wedges the trunk index
+- 2026-10-08 · M2 · `ready → landed` is legal when a train the watchdog gave up on pushes after all; the watchdog never ends a train on a failed status lookup before 30 min · trunk has the commit, so the Ledger must record it
+- 2026-10-08 · M6 · union paths do not taint recall dependents, and a revert conflict confined to union files is resolved by removing only the target's own lines · otherwise recalling one category drags every later category with it
+- 2026-10-08 · M3 · scripted agents run local tests through a limiter (`--verify-slots`, default half the CPUs) and retry idempotent API calls · twelve parallel `node --test` runs starved the 4-vCPU VM
