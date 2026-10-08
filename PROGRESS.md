@@ -1,21 +1,20 @@
 # Progress
 
-Current: 2026-10-08 06:50 CEST (04:50 UTC). Everything is built; review round 2 (5 reviewers) is being
-fixed. Pushed through cccc842; the combined gate (`npm run check && npm test`) is running on the rest.
-No milestone is marked accepted until a verifier re-runs its Accept commands.
+Current: 2026-10-08 08:45 CEST (06:45 UTC). Verification wave at 35f5d87 done; two re-runs at f3eb9c3
+after the fresh-clone Jev fix (243152d) are in flight (M3 e2e:swarm, §14 quickstart). Then the PR.
 
-| Milestone | State | Evidence so far (implementer or lead runs; verifiers still to come) |
+| Milestone | State | Verifier evidence (commit) |
 |---|---|---|
-| M0 Foundations | built | npm test green at cccc842's gate: vitest 27 files 2647 tests; node suites green |
-| M1 Ledger core | built | `npm run e2e:api` PASS: create → begin → clone/commit/push → reads `{"recorded":1}` → submit `ready` → wait `landed` seq 1; 401 without/with a wrong token; 404 unknown txn |
-| M2 Landing | built | `npm run e2e:land` PASS (train of 2, stale with delta, bisection 3 probes isolates "broken by design", trunk 89 tests) |
-| M3 Demo + scripted swarm | built | `npm run e2e:swarm` (Jev live) PASS: 34 landed (threshold 34, zero margin), G3 judged (dup-speed and dup-kmh rejected duplicate_of, dup-velocity warned), G5 protected, t-precision 9 stale aborts all landed after retry, trunk 672 tests, preview 200 with 25 categories |
-| M4 Dashboard | built + review fixes | `npm run shots` PASS earlier (40 files, 0 console errors, 502 s); rerun needed after the UI fixes and the bench |
-| M5 Jev + contention | built | jev-calibration.md 94 % overall (holdout gain within noise); lease ablation on the bench (bench/results/ablation, 15d4267): leases on vs off at 50 agents 56 vs 46 landed/min, stale_read aborts 106 vs 245; at 100 agents 64 vs 31, 246 vs 502; 0 breakages. `npm run e2e:contention` (scripted swarm) PASS but weak: 0 lease waits, hot-file stale aborts 30 vs 33 |
-| M6 Recall | built | `npm run e2e:recall` PASS (2 G6 targets, 1 cascade re-queued and landed, trunk green) |
-| M7 Bench | measured, committed 485c763 | ryke 58/68/38.5 vs queue 24/19/24.5 vs lock 5.5/5.5/6.5 landed/min at 50/100/200; queue wins at 10 (25.5 vs 22); 0 trunk breakages in all 12 cells |
-| M8 Claude mode | built + review fixes | `npm run e2e:claude` PASS (7 landed incl. retries, tamper rejected, trunk 207 tests); claude-mode suite 283 |
-| M9 Production + docs | built | `npm run e2e:deploy` PASS (config checks; image build blocked by the VM proxy, BLOCKERS) |
+| M0 Foundations | ACCEPTED | fresh clone `npm ci && npm run check && npm test` (35f5d87): vitest 31 files 3033 tests, node:test 1636 tests, 0 fail; store-contract suite included; gate4 at 243152d: vitest 3041, node 1636 |
+| M1 Ledger core | ACCEPTED | `npm run e2e:api` (35f5d87, fresh clone): begin 201 → clone/commit/push → reads `{"recorded":1}` → submit `ready` → wait `verifying` then `landed` (seq 1); 401 without/with a wrong token; 404 unknown txn |
+| M2 Landing | ACCEPTED | `npm run e2e:land` (35f5d87): train of 2 lands at seq 1–2; third stale on src/format.ts with the digits = 2 → 3 delta; train of 4 bisected in 3 probes isolating "broken by design", 3 landed; trunk 89 tests green. Runner DO fake-container suite 516 tests. Real container build: BLOCKERS (proxy TLS, API token) |
+| M3 Demo + scripted swarm | re-run pending | 35f5d87 run as written FAILED (0 landed: Jev key never reached the Worker); with the key forwarded: 34 landed, G3 rejected/warned, G5 protected, 9 t-precision stale aborts all landed, trunk 684 tests, preview 25 categories. Fixed in 243152d + f3eb9c3, re-run at f3eb9c3 in flight |
+| M4 Dashboard | ACCEPTED | `npm run shots` (35f5d87): 40 files, 0 console/page errors; Line shows trains (×2 ×2 ×8 …), stale notches, heat (format.ts 8.5 hot); recall dialog shows 2 struck targets and 4 dependents |
+| M5 Jev + contention | ACCEPTED (contention evidence from the bench ablation) | judge+heat 207, jev 137 tests; jev-calibration.md 94 % overall (holdout within noise); e2e:contention PASS (hot-file stale aborts 24 on vs 28 off, but 0 lease waits: weak); bench ablation: leases on vs off 56 vs 46 and 64 vs 31 landed/min, stale aborts 106 vs 245 and 246 vs 502 |
+| M6 Recall | ACCEPTED | `npm run e2e:recall` (35f5d87): both G6 targets recalled, cascade 1 re-queued and landed at seq 40, 3 dependents revalidated, trunk green |
+| M7 Bench | ACCEPTED (lead check of committed results) | bench/results/latest.md (485c763): ryke 58/68/38.5 vs queue 24/19/24.5 vs lock 5.5/5.5/6.5 at 50/100/200; queue wins at 10; 0 breakages in all 12 cells |
+| M8 Claude mode | ACCEPTED | `npm run e2e:claude` (35f5d87): 7 landed, tamper rejected protected, 5 categories landed on retry, trunk 207 tests; BLOCKERS has the real smoke command |
+| M9 Production + docs | config + docs ACCEPTED; quickstart re-run pending; PR todo | e2e:deploy PASS with `--containers-rollout=none` (image build blocked, BLOCKERS); wrangler production env complete; how-it-works 1500 prose words with §4.3 example and one diagram; deploy.md token list identical to PLAN; README sections present |
 
 ## How things fit (for after compaction)
 - Worker: `src/worker/index.ts` → api.ts (Hono, /api), mcp.ts (/mcp), /internal/events. service.ts shared by both.
