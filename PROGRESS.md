@@ -34,8 +34,22 @@ Commits on feat/ryke-mvp: 6e5e37b core, 75ca247 demo+verify+e2e:land, 9efcb71 re
 3. Bench (M7) implementer; claude mode (M8) implementer; e2e:recall; npm run shots.
 4. Verifiers per milestone, reviewers per area; then M9 wrangler production config + docs + PR.
 
-## Known issues
-- none yet
+## Known issues (review round 1, 2026-10-08 ~07:30) — fixing now, failing tests first
+- [ ] A approval survives retry → gate skipped (both reviews)
+- [ ] B recall plans before waiting for in-flight train; C recall lock persisted in meta (restart wedges lander)
+- [ ] D agent can create ryke.json (V1 exempts created) when seed had none
+- [ ] E submit without head trusts push-event head; use store.info(fork)
+- [ ] F LAND.create failure loops every 200 ms (backoff)
+- [ ] G recall error paths: no recall.done, partial requeue lost
+- [ ] H policy patterns not normalised (./test/**, test/), verify null → "null"
+- [ ] I watchdog ends live train on lookup error; trunk moved but commitTrain missed → reconcile by store head
+- [ ] J verify gets a WRITE token; revert runs verify where a write remote is configured → split revert into prepare/verify/push jobs, verify read-only
+- [ ] K jobResult treats timeouts as results; push job cancelled on timeout; repeated train errors loop forever
+- [ ] L tamper regex misses {skip:true}/{todo:true}/test.todo(; skipped tests not counted
+- [ ] M landed txns get evidence of the failing whole-train verify
+- [ ] N recall taints through union paths; union-file revert conflicts should drop only the target's lines
+- [ ] O test gaps: pushed-candidate asserts, rebuild_failed, unresolved, approved member, push-then-commit-fail, replay memo, recall conflict/cas/503/in-flight, revert.mjs real git, ingest out-of-order, e2e:recall
+- [ ] P candidate refs leak on non-landed trains; Jev re-asked after removal; DECISIONS for bisect budget, abort states, open→submitted→rejected, retry no alarm
 
 ## Log
 - 05:00 vitest: 10 files, 523 tests passed (policy 56, validate 52, trains 111, heat 57, recall 76, diff 56,

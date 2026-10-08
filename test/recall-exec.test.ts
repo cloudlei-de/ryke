@@ -2,7 +2,7 @@
 // on a real trunk through the runner, conflicts cascade, cascaded intents come back as new work.
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { AUTH, beginTxn, commitToFork, err, landAlone, newRepo, ok, opsOf, store, type TestRepo } from "./helpers";
+import { AUTH, beginTxn, commitToFork, err, gitHelper, landAlone, newRepo, ok, opsOf, store, type TestRepo } from "./helpers";
 
 async function landChange(t: TestRepo, agent: string, model: string, reads: string[], files: Record<string, string | null>) {
   const b = ok(await t.L.begin({ agent, model, intent: `${agent} changes ${Object.keys(files).join(" ")}` }));
@@ -81,6 +81,46 @@ describe("recall", () => {
     expect((await store.info(t.name)).head).toBe(before);
     expect(ok(await t.L.status(target)).txn.state).toBe("landed");
     expect((await opsOf(t, "recall.done"))[0]!.data).toMatchObject({ outcome: "verify_failed" });
+  });
+
+  it("waits for the train in flight and recalls what it landed too", async () => {
+    const t = await newRepo();
+    const first = await landChange(t, "agent-13", "sloppy-v0", ["src/a.ts"], { "src/a.ts": "export const a = 5;\n" });
+    const b = ok(await t.L.begin({ agent: "agent-13", model: "sloppy-v0", intent: "agent-13 changes src/z.ts" }));
+    ok(await t.L.reads(b.txn, ["src/b.ts"]));
+    const sha = await commitToFork(b, { "src/z.ts": "z\n" });
+    expect(ok(await t.L.submit(b.txn, { head: sha })).state).toBe("ready");
+    const train = ok(await t.L.formTrain()).train!;
+    const recall = t.L.recall({ agent: "agent-13" }, false);
+    await new Promise((r) => setTimeout(r, 400));
+    // the train lands while the recall waits for the lander
+    const trunkToken = await store.token(t.name, "write", 600);
+    await gitHelper("/push", { from: b, sha, to: { remote: (await store.info(t.name)).remote, token: trunkToken } });
+    ok(await t.L.commitTrain(train, sha, [{ txn: b.txn, sha, paths: ["src/z.ts"] }]));
+    ok(await t.L.trainDone(train, "landed"));
+    const res = ok(await recall);
+    expect(res.outcome).toBe("pass");
+    expect(res.plan.targets).toEqual([first, b.txn]);
+    expect(ok(await t.L.status(b.txn)).txn.state).toBe("recalled");
+    expect(await store.readFile(t.name, res.head!, "src/z.ts")).toBeNull();
+  });
+
+  it("reverts a target's registry line without cascading through the union path", async () => {
+    const t = await newRepo();
+    const target = await landChange(t, "agent-13", "sloppy-v0", ["src/registry.ts"], {
+      "src/registry.ts": "export { a } from './a.ts';\nexport { bad } from './bad.ts';\n",
+      "src/bad.ts": "export const bad = 1;\n",
+    });
+    const later = await landChange(t, "agent-01", "m", ["src/registry.ts"], {
+      "src/registry.ts": "export { a } from './a.ts';\nexport { bad } from './bad.ts';\nexport { good } from './good.ts';\n",
+      "src/good.ts": "export const good = 1;\n",
+    });
+    const res = ok(await t.L.recall({ model: "sloppy-v0" }, false));
+    expect(res).toMatchObject({ outcome: "pass", cascade: [], plan: { dependents: [] } });
+    expect(ok(await t.L.status(later)).txn.state).toBe("landed");
+    expect(ok(await t.L.status(target)).txn.state).toBe("recalled");
+    expect(await store.readFile(t.name, res.head!, "src/registry.ts")).toBe("export { a } from './a.ts';\nexport { good } from './good.ts';\n");
+    expect(await store.readFile(t.name, res.head!, "src/bad.ts")).toBeNull();
   });
 
   it.each([

@@ -109,3 +109,25 @@ describe("parsePolicy", () => {
     expect(() => parsePolicy(text)).toThrow(PolicyError);
   });
 });
+
+describe("parsePolicy pattern normalisation", () => {
+  it.each([
+    ["./test/**", "test/**"],
+    ["test/", "test/**"],
+    ["/src/payments/", "src/payments/**"],
+    ["src\\registry.ts", "src/registry.ts"],
+    ["./ryke.json", "ryke.json"],
+    ["CHANGELOG.md", "CHANGELOG.md"],
+  ])("%s → %s", (pattern, expected) => {
+    expect(parsePolicy(JSON.stringify({ protected: [pattern] })).protected[0]).toBe(expected);
+    expect(matchesAny(parsePolicy(JSON.stringify({ union: [pattern] })).union, expected.replace("/**", "/x.ts"))).toBe(true);
+  });
+
+  it.each([["./"], ["/"], ["../x"], ["a/../../b"]])("rejects pattern %j", (pattern) => {
+    expect(() => parsePolicy(JSON.stringify({ protected: [pattern] }))).toThrow(PolicyError);
+  });
+
+  it.each([[null], [""], ["   "], [7]])("rejects verify %j", (verify) => {
+    expect(() => parsePolicy(JSON.stringify({ verify }))).toThrow(PolicyError);
+  });
+});

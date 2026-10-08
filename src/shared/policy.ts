@@ -61,11 +61,23 @@ export function matchesAny(patterns: readonly string[], path: string): boolean {
   return patterns.some((p) => matchGlob(p, path));
 }
 
+// Patterns are matched against normalised paths, so they are normalised too: `./test/**` and
+// `test/` must protect test/, not silently match nothing.
+function normalizePattern(p: string, key: string): string {
+  const dir = /[\\/]$/.test(p);
+  const trimmed = p.replace(/^(\.\/|\/)+/, "").replace(/[\\/]+$/, "");
+  if (trimmed === "" || trimmed === ".") throw new PolicyError(`${key} has an empty pattern`);
+  const segs = trimmed.replaceAll("\\", "/").split("/").filter((s) => s !== "" && s !== ".");
+  if (segs.includes("..")) throw new PolicyError(`${key} pattern escapes the repo: ${p}`);
+  const norm = segs.join("/");
+  return dir ? `${norm}/**` : norm;
+}
+
 function stringList(v: unknown, key: string): string[] {
   if (v === undefined) return [];
   if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || x === ""))
     throw new PolicyError(`${key} must be a list of non-empty strings`);
-  return v as string[];
+  return (v as string[]).map((p) => normalizePattern(p, key));
 }
 
 export function parsePolicy(text: string | null): Policy {
@@ -84,11 +96,15 @@ export function parsePolicy(text: string | null): Policy {
   const policy: Policy = {
     protected: protectedPaths,
     union: stringList(o.union, "union"),
-    verify: o.verify === undefined ? DEFAULT_POLICY.verify : String(o.verify),
+    verify: DEFAULT_POLICY.verify,
     verifyTimeoutSeconds: DEFAULT_POLICY.verifyTimeoutSeconds,
     human: stringList(o.human, "human"),
     trainMax: DEFAULT_POLICY.trainMax,
   };
+  if (o.verify !== undefined) {
+    if (typeof o.verify !== "string" || o.verify.trim() === "") throw new PolicyError("verify must be a non-empty command");
+    policy.verify = o.verify;
+  }
   if (o.verifyTimeoutSeconds !== undefined) {
     const n = o.verifyTimeoutSeconds;
     if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) throw new PolicyError("verifyTimeoutSeconds must be positive");

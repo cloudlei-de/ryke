@@ -36,7 +36,12 @@ export function validate(input: ValidateInput): ValidateResult {
 
   // V1: new files under a protected glob are fine, so an agent can add a test; changing or
   // deleting one that existed at the snapshot is how an agent would weaken the verifier.
-  const protectedPaths = [...writes].filter((p) => !created.has(p) && matchesAny(policy.protected, p)).sort(byPath);
+  // A literal protected path (ryke.json above all) is protected even when it is new: creating the
+  // policy file in a repo that had none would let one transaction rewrite every rule.
+  const literal = new Set(policy.protected.filter((p) => !p.includes("*")));
+  const protectedPaths = [...writes]
+    .filter((p) => matchesAny(policy.protected, p) && (!created.has(p) || literal.has(p)))
+    .sort(byPath);
   if (protectedPaths.length > 0) return { ok: false, kind: "protected", paths: protectedPaths };
 
   // V2 + V3 + V4: reads count as well as writes, because a read of a file that changed underneath

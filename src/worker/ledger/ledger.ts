@@ -120,8 +120,9 @@ export type RepoSummary = {
 };
 type RevertJob = {
   ok: boolean;
-  pass: boolean;
-  outcome: "pushed" | "verified" | "verify_failed" | "conflict" | "cas_rejected";
+  pass?: boolean;
+  outcome: "prepared" | "pushed" | "verified" | "verify_failed" | "conflict" | "cas_rejected";
+  base?: string;
   head?: string;
   commits: { sha: string; txn: string | null; paths: string[] }[];
   cascade: string[];
@@ -144,7 +145,8 @@ export type Screen = { reject?: { other: string; value: number }; warnings: Warn
 const LEGAL: Record<TxnState, readonly TxnState[]> = {
   open: ["submitted", "aborted", "rejected"],
   submitted: ["ready", "stale", "rejected", "aborted"],
-  ready: ["verifying", "stale", "aborted"],
+  // ready → landed only when a train the watchdog gave up on pushes after all (commitTrain).
+  ready: ["verifying", "stale", "aborted", "landed"],
   verifying: ["landed", "failed", "needs_human", "stale", "ready", "aborted"],
   stale: ["open", "aborted"],
   failed: ["open", "aborted"],
@@ -160,6 +162,13 @@ const TRUNK_TOKEN_TTL = 4 * 3600;
 const SCHEDULE_MS = 200;
 const WATCHDOG_MS = 5000;
 const STUCK_TRAIN_MS = 120_000;
+const GIVE_UP_TRAIN_MS = 30 * 60_000;
+const MAX_LAND_ERRORS = 3;
+
+// 0.5 s, 1 s, 2 s … capped at 30 s between attempts to start a Land workflow.
+export function createBackoffMs(failures: number): number {
+  return Math.min(30_000, 500 * 2 ** Math.max(0, failures - 1));
+}
 const MAX_READS_BATCH = 500;
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -203,6 +212,10 @@ export class Ledger extends DurableObject<Env> {
   private trunkWaiters: (() => void)[] = [];
   private policyCache: Policy | null = null;
   private trunkAccess: { remote: string; token: string; expires: number } | null = null;
+  private reserved = new Map<string, { intent: string; until: number }>();
+  // In memory on purpose: the recall runs inside one RPC, so a restart that kills it also clears the
+  // hold instead of blocking the lander forever.
+  private recalling: string | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -508,6 +521,11 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // Every fork this repo created, so deleting the repo can delete them too.
+  async forks(): Promise<Res<string[]>> {
+    return this.run(() => this.sql.exec<{ fork: string }>("SELECT fork FROM txn WHERE fork != ''").toArray().map((r) => r.fork));
+  }
+
   async reset(): Promise<Res<{ reset: true }>> {
     return this.run(async () => {
       for (const ws of this.ctx.getWebSockets()) ws.close(1012, "repo reset");
@@ -552,14 +570,16 @@ export class Ledger extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- agent operations
 
-  async begin(input: BeginInput, screen: Screen = { warnings: [] }): Promise<Res<BeginResult>> {
+  async begin(input: BeginInput, screen: Screen = { warnings: [] }, reservedId?: string): Promise<Res<BeginResult>> {
     return this.run(async () => {
       const repo = this.repo();
+      if (reservedId !== undefined && !this.reserved.has(reservedId)) fail(409, `reservation ${reservedId} is unknown or expired`);
       if (typeof input?.agent !== "string" || input.agent.trim() === "") fail(422, "agent is required");
       if (typeof input.intent !== "string" || input.intent.trim() === "") fail(422, "intent is required");
       if (input.model !== undefined && input.model !== null && typeof input.model !== "string") fail(422, "model must be a string");
       const criteria = input.criteria === undefined ? [] : strings(input.criteria, "criteria");
-      const id = newId("t_");
+      const id = reservedId ?? newId("t_");
+      this.reserved.delete(id);
       const fork = `${repo}--${id}`;
       const now = this.now();
       const insert = (snapshot: string, snapshotSeq: number) =>
@@ -619,11 +639,16 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Candidates for the duplicate/conflict screen at begin (§7.3): live work plus the last 30 minutes of landings.
-  async screenCandidates(): Promise<Res<{ id: string; intent: string; footprint: string[] }[]>> {
+  // Candidates for the duplicate/conflict screen at begin (§7.3): live work, the last 30 minutes of
+  // landings, and begins still being screened. The caller's own begin is reserved here, so two
+  // near-identical intents racing through the screen still see each other.
+  async screenCandidates(intent?: string): Promise<Res<{ txn: string; candidates: { id: string; intent: string; footprint: string[] }[] }>> {
     return this.run(() => {
       this.repo();
-      const since = this.now() - 30 * 60_000;
-      return this.sql
+      const now = this.now();
+      for (const [id, r] of this.reserved) if (r.until < now) this.reserved.delete(id);
+      const since = now - 30 * 60_000;
+      const candidates = this.sql
         .exec<TxnRow>(
           "SELECT * FROM txn WHERE state IN ('open','submitted','ready','verifying') OR (state = 'landed' AND updated_at >= ?)",
           since,
@@ -634,6 +659,10 @@ export class Ledger extends DurableObject<Env> {
           intent: r.intent,
           footprint: [...new Set([...this.access(r.id, r.attempt, "read"), ...this.access(r.id, r.attempt, "write")])].sort(),
         }));
+      for (const [id, r] of this.reserved) candidates.push({ id, intent: r.intent, footprint: [] });
+      const txn = newId("t_");
+      if (typeof intent === "string") this.reserved.set(txn, { intent, until: now + 60_000 });
+      return { txn, candidates };
     });
   }
 
@@ -698,7 +727,9 @@ export class Ledger extends DurableObject<Env> {
             return { state: r.state, reason: r.reason };
           fail(409, `transaction ${txnId} is ${r.state}; only open transactions can be submitted`);
         }
-        const head = (body.head as string | undefined) ?? r.head ?? (await this.store.info(r.fork)).head;
+        // Push events can arrive late or out of order (production ingest is asynchronous), so without
+        // an explicit head the fork itself says what was pushed.
+        const head = (body.head as string | undefined) ?? (await this.store.info(r.fork)).head;
         if (!head || head === r.snapshot) {
           r = this.transition(this.row(txnId), "rejected", { reason: "empty", set: { head } });
           return { state: r.state, reason: r.reason };
@@ -804,7 +835,8 @@ export class Ledger extends DurableObject<Env> {
         r = this.transition(r, "open", {
           reason: null,
           set: { attempt: r.attempt + 1, snapshot: head.sha, snapshot_seq: head.seq, head: null, train: null, submitted_at: null, skips: 0 },
-          detail: { created: [], stale: [], conflicts: [], failures: null, previous: { attempt: r.attempt, state: r.state, reason: r.reason } },
+          // A human approved the code they saw; a new attempt is new code and goes through the gate again.
+          detail: { created: [], stale: [], conflicts: [], failures: null, approved: false, previous: { attempt: r.attempt, state: r.state, reason: r.reason } },
           data: { attempt: r.attempt + 1, snapshot: head.sha, snapshotSeq: head.seq, intent: r.intent, model: r.model, retry: true },
         });
         return { snapshot: head.sha, attempt: r.attempt, delta, failures, trunk, remote: info.remote, token };
@@ -999,7 +1031,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private async startTrain(manual: boolean): Promise<TrainParams | null> {
-    if (this.meta("train") || this.meta("recall")) return null;
+    if (this.meta("train") || this.recalling) return null;
     const policy = this.policy();
     const ready = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE state = 'ready' ORDER BY submitted_at, id").toArray();
     if (ready.length === 0) return null;
@@ -1053,8 +1085,12 @@ export class Ledger extends DurableObject<Env> {
     if (!manual) {
       try {
         await this.env.LAND.create({ id: trainId, params });
+        this.setMeta("create_failures", null);
       } catch (e) {
-        this.endTrain(trainId, "error", train, { error: (e as Error).message });
+        // Without a backoff an unavailable Workflows binding re-forms the same train every 200 ms.
+        const failures = Number(this.meta("create_failures") ?? 0) + 1;
+        this.setMeta("create_failures", String(failures));
+        this.endTrain(trainId, "error", train, { error: (e as Error).message }, createBackoffMs(failures));
         return null;
       }
       await this.ctx.storage.setAlarm(this.now() + WATCHDOG_MS);
@@ -1068,27 +1104,33 @@ export class Ledger extends DurableObject<Env> {
       this.setMeta("train", null);
       return;
     }
-    if (this.now() - t.updated_at < STUCK_TRAIN_MS) return;
+    const idle = this.now() - t.updated_at;
+    if (idle < STUCK_TRAIN_MS) return;
     let status = "unknown";
     try {
       status = (await (await this.env.LAND.get(trainId)).status()).status;
     } catch {
-      status = "missing";
+      // A failed lookup is not evidence the train died; ending it early could double-land members.
+      if (idle < GIVE_UP_TRAIN_MS) return;
     }
-    if (["running", "queued", "waiting", "paused", "waitingForPause"].includes(status)) return;
+    if (["running", "queued", "waiting", "paused", "waitingForPause", "unknown"].includes(status) && idle < GIVE_UP_TRAIN_MS) return;
     this.endTrain(trainId, "error", JSON.parse(t.txns) as string[], { error: `land workflow ${status}` });
   }
 
   // Requeues whatever the train still holds and frees the lander for the next train.
-  private endTrain(trainId: string, outcome: string, members: string[], extra: Record<string, unknown> = {}): void {
+  private endTrain(trainId: string, outcome: string, members: string[], extra: Record<string, unknown> = {}, nextInMs = SCHEDULE_MS): void {
     for (const id of members) {
       const r = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE id = ?", id).toArray()[0];
-      if (r?.state === "verifying" && r.train === trainId) this.transition(r, "ready", { set: { train: null }, data: { train: trainId, requeued: true } });
+      if (r?.state !== "verifying" || r.train !== trainId) continue;
+      const errors = ((this.detailOf(r).landErrors as number | undefined) ?? 0) + (outcome === "error" ? 1 : 0);
+      if (errors >= MAX_LAND_ERRORS)
+        this.transition(r, "failed", { reason: "land_error", set: { train: null }, detail: { landErrors: errors }, data: { train: trainId, error: extra.error ?? null } });
+      else this.transition(r, "ready", { set: { train: null }, detail: { landErrors: errors }, data: { train: trainId, requeued: true } });
     }
     this.sql.exec("UPDATE train SET state = ?, updated_at = ?, detail = ? WHERE id = ?", outcome, this.now(), JSON.stringify(extra), trainId);
     if (this.meta("train") === trainId) this.setMeta("train", null);
     this.op("train.done", null, { train: trainId, outcome, ...extra });
-    this.scheduleSoon();
+    this.scheduleSoon(nextInMs);
   }
 
   // ---------------------------------------------------------------- Land Workflow callbacks
@@ -1193,8 +1235,11 @@ export class Ledger extends DurableObject<Env> {
           this.sql.exec("INSERT OR IGNORE INTO changed (seq, path) VALUES (?, ?)", seq, p);
           changedPaths.add(p);
         }
-        const r = this.member(trainId, c.txn);
-        if (r) this.transition(r, "landed", { reason: null, set: { landed_seq: seq, commit_sha: c.sha }, data: { train: trainId, sha: c.sha, seq } });
+        // Trunk has this commit, so its transaction landed even if the watchdog had already given its
+        // train up and requeued it (ready) or another train has since picked it up (verifying).
+        const r = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE id = ?", c.txn).toArray()[0];
+        if (r && (r.state === "verifying" || r.state === "ready"))
+          this.transition(r, "landed", { reason: null, set: { landed_seq: seq, commit_sha: c.sha, train: trainId }, data: { train: trainId, sha: c.sha, seq } });
         landed.push({ txn: c.txn, sha: c.sha, seq });
       }
       this.sql.exec("UPDATE train SET state = 'landed', updated_at = ? WHERE id = ?", now, trainId);
@@ -1261,29 +1306,42 @@ export class Ledger extends DurableObject<Env> {
     return this.run(() =>
       this.locked("__recall", async () => {
         if (typeof selector !== "object" || selector === null || Array.isArray(selector)) fail(422, "selector must be an object");
-        const landed = this.landed();
-        let plan: RecallPlan;
-        try {
-          plan = planRecall(landed, selector as RecallSelector);
-        } catch (e) {
-          if (e instanceof RecallError) fail(422, e.message);
-          throw e;
+        const plan = () => {
+          try {
+            return planRecall(this.landed(), selector as RecallSelector, { union: this.policy().union });
+          } catch (e) {
+            if (e instanceof RecallError) fail(422, e.message);
+            throw e;
+          }
+        };
+        if (dryRun) {
+          const p = plan();
+          return { dryRun: true, plan: { targets: p.targets, dependents: p.dependents, order: p.order } };
         }
-        const summary = { targets: plan.targets, dependents: plan.dependents, order: plan.order };
-        if (dryRun) return { dryRun: true, plan: summary };
-        if (plan.targets.length === 0) fail(422, "the selector matches no landed transaction");
-        // Recall writes trunk, so it waits for the lander and holds it like a train.
-        for (const until = this.now() + 120_000; this.meta("train"); ) {
-          if (this.now() > until) fail(409, "a train is still landing; try again");
-          await new Promise((r) => setTimeout(r, 250));
-        }
-        const id = newId("rc_");
-        this.setMeta("recall", id);
-        this.op("recall.planned", null, { recall: id, selector: selector as RecallSelector, ...summary });
+        plan(); // reject a bad selector before taking the lander
+        // Recall writes trunk, so it holds the lander like a train: no new train forms from here on,
+        // and the plan is made only after the train in flight has landed what it was landing.
+        this.recalling = "pending";
         try {
-          return await this.executeRecall(id, plan, landed);
+          for (const until = this.now() + 15 * 60_000; this.meta("train"); ) {
+            if (this.now() > until) fail(409, "a train is still landing; try again");
+            await new Promise((r) => setTimeout(r, 250));
+          }
+          const landed = this.landed();
+          const p = plan();
+          if (p.targets.length === 0) fail(422, "the selector matches no landed transaction");
+          const id = newId("rc_");
+          this.recalling = id;
+          this.op("recall.planned", null, { recall: id, selector: selector as RecallSelector, targets: p.targets, dependents: p.dependents, order: p.order });
+          try {
+            return await this.executeRecall(id, p, landed);
+          } catch (e) {
+            // A recall.planned without recall.done would leave the dashboard animating forever.
+            this.op("recall.done", null, { recall: id, outcome: "error", error: (e as Error).message });
+            throw e;
+          }
         } finally {
-          this.setMeta("recall", null);
+          this.recalling = null;
           this.scheduleSoon();
         }
       }),
@@ -1296,26 +1354,43 @@ export class Ledger extends DurableObject<Env> {
     const seqs = Object.fromEntries(landed.map((l) => [l.id, l.landedSeq]));
     const commits = Object.fromEntries(landed.map((l) => [l.id, l.commit]));
     const firstTarget = (dep: string) => plan.targets.find((t) => seqs[t]! < seqs[dep]!) ?? plan.targets[0]!;
-    const revert = async (order: string[]) => {
-      const trunk = authRemote(this.env, (await this.store.info(repo)).remote, await this.store.token(repo, "write", 3600));
+    const runner = runnerFor(this.env);
+    const token = async (scope: "read" | "write") => authRemote(this.env, (await this.store.info(repo)).remote, await this.store.token(repo, scope, 3600));
+    const jobMs = (policy.verifyTimeoutSeconds + 120) * 1000;
+    const done = <T>(job: { state: string; exitCode?: number; result?: unknown }, what: string): T => {
+      const r = job.result as ({ ok?: boolean; error?: string } & T) | undefined;
+      if (job.state !== "done" || !r || r.ok === false) fail(503, `${what} job failed (exit ${job.exitCode}): ${r?.error ?? "no result"}`);
+      return r;
+    };
+    const ref = `refs/ryke/recall/${id}`;
+    // Revert (write token, no repo code runs), then verify with a read-only token: agent-written tests
+    // never run next to a credential that could push to trunk.
+    const revert = async (order: string[]): Promise<RevertJob> => {
       const script = {
         recall: id,
         order,
         commits,
         seqs,
+        union: policy.union,
         cascadeCandidates: plan.cascadeCandidates,
         targetOf: Object.fromEntries(order.map((t) => [t, plan.targets.includes(t) ? t : firstTarget(t)])),
       };
-      const job = await runToCompletion(
-        runnerFor(this.env),
+      const prepared = done<RevertJob>(
+        await runToCompletion(runner, "revert", { trunk: await token("write"), plan: JSON.stringify(script), ref }, {}, jobMs),
         "revert",
-        { trunk, plan: JSON.stringify(script), verify: policy.verify, timeout: String(policy.verifyTimeoutSeconds), push: "true" },
-        {},
-        (policy.verifyTimeoutSeconds + 120) * 1000,
       );
-      const r = job.result as RevertJob | undefined;
-      if (!r || r.ok === false) fail(503, `revert job failed: ${(r as { error?: string } | undefined)?.error ?? job.exitCode}`);
-      return r;
+      if (prepared.outcome !== "prepared" || !prepared.head || prepared.head === prepared.base) return prepared;
+      const verified = done<{ pass: boolean; tests: NonNullable<RevertJob["tests"]> }>(
+        await runToCompletion(
+          runner,
+          "verify",
+          { remote: await token("read"), ref: prepared.head, command: policy.verify, timeout: String(policy.verifyTimeoutSeconds) },
+          {},
+          jobMs,
+        ),
+        "verify",
+      );
+      return { ...prepared, pass: verified.pass, outcome: verified.pass ? "verified" : "verify_failed", tests: verified.tests };
     };
     let forced = false;
     let result = await revert(plan.order);
@@ -1323,6 +1398,20 @@ export class Ledger extends DurableObject<Env> {
     if (result.outcome === "verify_failed" && plan.dependents.length > 0) {
       forced = true;
       result = await revert([...plan.targets, ...plan.dependents].sort((a, b) => seqs[b]! - seqs[a]!));
+    }
+    if (result.outcome === "verified") {
+      const pushed = done<{ pushed: boolean }>(
+        await runToCompletion(
+          runner,
+          "land",
+          { mode: "push", trunk: await token("write"), candidate: result.head!, notes: "[]", cleanup: JSON.stringify([ref]) },
+          {},
+          jobMs,
+          { cancelOnTimeout: false },
+        ),
+        "push",
+      );
+      result = { ...result, outcome: pushed.pushed ? "pushed" : "cas_rejected" };
     }
     const summary = { targets: plan.targets, dependents: plan.dependents, order: plan.order };
     if (result.outcome !== "pushed") {
@@ -1351,11 +1440,19 @@ export class Ledger extends DurableObject<Env> {
     for (const wake of this.trunkWaiters.splice(0)) wake();
     // Cascaded work is not lost: each intent comes back as a new transaction for the same agent.
     const requeued: RecallResult["requeued"] = [];
+    const requeueErrors: { from: string; error: string }[] = [];
     for (const from of cascade) {
       const r = this.row(from);
       const txn = newId("t_");
       const fork = `${repo}--${txn}`;
-      const f = await this.openFork(fork);
+      // One unreachable fork must not lose the other cascaded intents.
+      let f: Awaited<ReturnType<Ledger["openFork"]>>;
+      try {
+        f = await this.openFork(fork);
+      } catch (e) {
+        requeueErrors.push({ from, error: (e as Error).message });
+        continue;
+      }
       const at = this.now();
       this.sql.exec(
         `INSERT INTO txn (id, agent, model, intent, criteria, state, attempt, snapshot, snapshot_seq, fork, created_at, updated_at, detail)
@@ -1383,6 +1480,7 @@ export class Ledger extends DurableObject<Env> {
       cascade,
       forced,
       requeued: requeued.map((q) => ({ from: q.from, txn: q.txn })),
+      requeueErrors,
       head: result.head,
     });
     return { dryRun: false, recall: id, plan: summary, outcome: "pass", head: result.head, cascade, requeued, failures: [] };

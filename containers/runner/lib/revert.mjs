@@ -1,11 +1,11 @@
-// Recall execution (PLAN.md §8.3): revert every target newest first on the current trunk. When a
+// Recall's git work (PLAN.md §8.3): revert every target newest first on the current trunk. When a
 // revert conflicts, revert the newest dependent that wrote a conflicting path first (it joins the
-// cascade) and try again. Then run the verify command and, if it passes, push (compare-and-swap).
-import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+// cascade) and try again. The result goes to a scratch ref; the Ledger then verifies it with a
+// read-only token and pushes it with the same compare-and-swap job the lander uses, so no
+// repo-controlled code ever runs next to a write credential.
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { git, main } from "./common.mjs";
-import { summarizeTests } from "./testsum.mjs";
 
 // The newest not-yet-reverted dependent that wrote one of the conflicting paths after `target`.
 export function pickCascade(candidates, target, paths, reverted, seqs) {
@@ -15,53 +15,66 @@ export function pickCascade(candidates, target, paths, reverted, seqs) {
   return options[0] ?? null;
 }
 
-function runCommand(cwd, command, timeoutSeconds) {
-  return new Promise((done) => {
-    const env = { ...process.env, NO_COLOR: "1" };
-    delete env.NODE_TEST_CONTEXT;
-    const child = spawn("bash", ["-c", command], { cwd, env, detached: true });
-    let out = "";
-    const take = (b) => {
-      out = (out + b).slice(-2_000_000);
-    };
-    child.stdout.on("data", take);
-    child.stderr.on("data", take);
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {}
-    }, timeoutSeconds * 1000);
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      done({ exitCode: code ?? (signal ? 128 + 9 : 1), out, timedOut });
-    });
+// Union paths took concurrent additions; reverting a commit there means removing only the lines
+// that commit added, wherever later additions put them.
+export function withoutAddedLines(current, added) {
+  const lines = current.split("\n");
+  for (const line of added) {
+    const i = lines.indexOf(line);
+    if (i >= 0) lines.splice(i, 1);
+  }
+  return lines.join("\n");
+}
+
+function isUnion(patterns, path) {
+  return patterns.some((p) => {
+    const re = new RegExp(`^${p.split("**").map((part) => part.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")}$`);
+    return re.test(path);
   });
+}
+
+async function revertUnion(dir, sha, paths) {
+  for (const path of paths) {
+    const diff = (await git(dir, ["diff", "-U0", `${sha}~1`, sha, "--", path])).stdout;
+    const added = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1));
+    // Start from the current trunk's version: the working file holds the failed revert's markers.
+    const current = (await git(dir, ["show", `HEAD:${path}`])).stdout;
+    await writeFile(join(dir, path), withoutAddedLines(current, added));
+    await git(dir, ["add", "--", path]);
+  }
 }
 
 async function revertOne(dir, plan, id, target, reverted, cascade, depth = 0) {
   if (depth > 50) throw new Error("cascade too deep");
   const sha = plan.commits[id];
   const res = await git(dir, ["revert", "--no-commit", sha], { allowFail: true });
-  if (res.code === 0) {
-    const status = await git(dir, ["status", "--porcelain"]);
-    if (status.stdout.trim() === "") return; // already reverted by an earlier commit
-    await git(dir, ["commit", "-q", "-m", `Revert ${id}\n\nRyke-Recall: ${plan.recall}\nRyke-Reverts: ${id}\nRyke-Commit: ${sha}`]);
-    reverted.add(id);
+  if (res.code !== 0) {
+    const paths = (await git(dir, ["diff", "--name-only", "--diff-filter=U"])).stdout.trim().split("\n").filter(Boolean);
+    const union = plan.union ?? [];
+    if (paths.length > 0 && paths.every((p) => isUnion(union, p))) {
+      await revertUnion(dir, sha, paths);
+    } else {
+      await git(dir, ["revert", "--abort"], { allowFail: true });
+      await git(dir, ["reset", "-q", "--hard"]);
+      const pick = pickCascade(plan.cascadeCandidates, target, paths, reverted, plan.seqs ?? {});
+      if (!pick) throw Object.assign(new Error(`reverting ${id} conflicts on ${paths.join(", ")} and no dependent explains it`), { conflict: { txn: id, paths } });
+      await revertOne(dir, plan, pick, target, reverted, cascade, depth + 1);
+      if (!cascade.includes(pick)) cascade.push(pick);
+      await revertOne(dir, plan, id, target, reverted, cascade, depth + 1);
+      return;
+    }
+  }
+  const status = await git(dir, ["status", "--porcelain"]);
+  if (status.stdout.trim() === "") {
+    await git(dir, ["revert", "--quit"], { allowFail: true });
+    reverted.add(id); // already undone by an earlier revert
     return;
   }
-  const paths = (await git(dir, ["diff", "--name-only", "--diff-filter=U"])).stdout.trim().split("\n").filter(Boolean);
-  await git(dir, ["revert", "--abort"], { allowFail: true });
-  await git(dir, ["reset", "-q", "--hard"]);
-  const pick = pickCascade(plan.cascadeCandidates, target, paths, reverted, plan.seqs ?? {});
-  if (!pick) throw Object.assign(new Error(`reverting ${id} conflicts on ${paths.join(", ")} and no dependent explains it`), { conflict: { txn: id, paths } });
-  await revertOne(dir, plan, pick, target, reverted, cascade, depth + 1);
-  if (!cascade.includes(pick)) cascade.push(pick);
-  await revertOne(dir, plan, id, target, reverted, cascade, depth + 1);
+  await git(dir, ["commit", "-q", "-m", `Revert ${id}\n\nRyke-Recall: ${plan.recall}\nRyke-Reverts: ${id}\nRyke-Commit: ${sha}`]);
+  reverted.add(id);
 }
 
-async function recall(a) {
+async function prepare(a) {
   const plan = JSON.parse(a.plan);
   const dir = resolve("recall");
   await mkdir(dir, { recursive: true });
@@ -73,31 +86,24 @@ async function recall(a) {
   const reverted = new Set();
   const cascade = [];
   try {
-    // Forced dependents (a second pass after a failed verify) are reverted along with the targets.
     for (const id of plan.order) {
       if (reverted.has(id)) continue;
-      const target = plan.targetOf?.[id] ?? id;
-      await revertOne(dir, plan, id, target, reverted, cascade);
+      await revertOne(dir, plan, id, plan.targetOf?.[id] ?? id, reverted, cascade);
     }
   } catch (e) {
-    if (e.conflict) return { ok: true, pass: false, outcome: "conflict", conflict: e.conflict, base };
+    if (e.conflict) return { ok: true, outcome: "conflict", conflict: e.conflict, base };
     throw e;
   }
   const head = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
   const commits = [];
-  for (const line of (await git(dir, ["log", "--format=%H", "--reverse", `${base}..${head}`])).stdout.trim().split("\n").filter(Boolean)) {
-    const msg = (await git(dir, ["log", "-1", "--format=%B", line])).stdout;
+  for (const sha of (await git(dir, ["log", "--format=%H", "--reverse", `${base}..${head}`])).stdout.trim().split("\n").filter(Boolean)) {
+    const msg = (await git(dir, ["log", "-1", "--format=%B", sha])).stdout;
     const txn = /Ryke-Reverts: (\S+)/.exec(msg)?.[1] ?? null;
-    const paths = (await git(dir, ["diff", "--name-only", "--no-renames", `${line}~1`, line])).stdout.trim().split("\n").filter(Boolean);
-    commits.push({ sha: line, txn, paths });
+    const paths = (await git(dir, ["diff", "--name-only", "--no-renames", `${sha}~1`, sha])).stdout.trim().split("\n").filter(Boolean);
+    commits.push({ sha, txn, paths });
   }
-  const run = await runCommand(dir, a.verify ?? "true", Number(a.timeout ?? 120));
-  const tests = summarizeTests(run.out, { exitCode: run.exitCode, timedOut: run.timedOut, timeoutSeconds: Number(a.timeout ?? 120) });
-  const pass = run.exitCode === 0 && !run.timedOut && tests.failed === 0;
-  if (!pass || a.push !== "true") return { ok: true, pass, outcome: pass ? "verified" : "verify_failed", base, head, commits, cascade, tests };
-  const pushed = await git(dir, ["push", "--porcelain", "trunk", `${head}:refs/heads/main`], { allowFail: true });
-  if (pushed.code !== 0) return { ok: true, pass, outcome: "cas_rejected", base, head, commits, cascade, tests };
-  return { ok: true, pass, outcome: "pushed", base, head, commits, cascade, tests };
+  if (head !== base) await git(dir, ["push", "-q", "--force", "trunk", `${head}:${a.ref}`]);
+  return { ok: true, outcome: "prepared", base, head, commits, cascade };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(recall);
+if (import.meta.url === `file://${process.argv[1]}`) main(prepare);

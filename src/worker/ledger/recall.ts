@@ -1,3 +1,4 @@
+import { matchesAny } from "../../shared/policy";
 // Recall planning (PLAN.md §8). Pure: the Ledger feeds it the landed transactions and executes the
 // plan through the Runner; nothing here touches git.
 
@@ -23,7 +24,12 @@ export class RecallError extends Error {
   override name = "RecallError";
 }
 
-export function planRecall(landed: LandedTxn[], selector: RecallSelector): RecallPlan {
+// Union paths (registries, changelogs) take concurrent additions by design, so touching one does not
+// make a transaction depend on another; without this, recalling one category would drag along
+// every later category that appended a registry line.
+export function planRecall(landed: LandedTxn[], selector: RecallSelector, opts: { union?: string[] } = {}): RecallPlan {
+  const union = opts.union ?? [];
+  const counts = (p: string) => !matchesAny(union, p);
   // Copy before sorting: callers pass Ledger rows in whatever order they were read.
   const sorted = [...landed].sort((a, b) => a.landedSeq - b.landedSeq);
   const isTarget = selectTargets(sorted, selector);
@@ -38,11 +44,11 @@ export function planRecall(landed: LandedTxn[], selector: RecallSelector): Recal
     const first = sorted.indexOf(targets[0]!);
     for (const x of sorted.slice(first)) {
       if (isTarget(x)) {
-        for (const p of x.writes) tainted.add(p);
+        for (const p of x.writes) if (counts(p)) tainted.add(p);
       } else if (x.reads.some((p) => tainted.has(p)) || x.writes.some((p) => tainted.has(p))) {
         // A read-only dependent still counts: it validated against content the revert removes.
         dependents.push(x);
-        for (const p of x.writes) tainted.add(p);
+        for (const p of x.writes) if (counts(p)) tainted.add(p);
       }
     }
   }
@@ -54,7 +60,7 @@ export function planRecall(landed: LandedTxn[], selector: RecallSelector): Recal
     // wants to peel dependents off in.
     for (const d of [...dependents].reverse()) {
       if (d.landedSeq <= t.landedSeq) continue;
-      for (const p of new Set(d.writes)) (byPath[p] ??= []).push(d.id);
+      for (const p of new Set(d.writes)) if (counts(p)) (byPath[p] ??= []).push(d.id);
     }
     cascadeCandidates[t.id] = byPath;
   }

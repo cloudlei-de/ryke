@@ -480,3 +480,17 @@ describe("nextCascade", () => {
     expect(nextCascade(two, "T2", ["a"], new Set(["D2"]))).toBeNull();
   });
 });
+
+describe("planRecall with union paths", () => {
+  const t = (id: string, seq: number, reads: string[], writes: string[], model = "m"): LandedTxn => ({ id, agent: "a", model, landedSeq: seq, commit: `c${seq}`, reads, writes });
+  it("does not make later writers of a union path dependents", () => {
+    const landed = [
+      t("T", 1, ["src/registry.ts"], ["src/registry.ts", "src/units/x.ts"], "bad"),
+      t("A", 2, ["src/registry.ts"], ["src/registry.ts", "src/units/y.ts"]),
+      t("B", 3, ["src/units/x.ts"], ["src/units/z.ts"]),
+    ];
+    expect(planRecall(landed, { model: "bad" }, { union: ["src/registry.ts"] })).toMatchObject({ targets: ["T"], dependents: ["B"] });
+    expect(planRecall(landed, { model: "bad" }).dependents).toEqual(["A", "B"]);
+    expect(planRecall(landed, { model: "bad" }, { union: ["src/registry.ts"] }).cascadeCandidates.T).toEqual({ "src/units/z.ts": ["B"] });
+  });
+});

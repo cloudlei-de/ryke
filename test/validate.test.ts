@@ -340,3 +340,16 @@ describe("validate", () => {
     expect([...changed]).toEqual([["src/b.ts", 2]]);
   });
 });
+
+describe("V1 for literal protected paths", () => {
+  const policy = { ...DEFAULT_POLICY, protected: ["test/**", "ryke.json"] };
+  it.each([
+    ["creating ryke.json in a repo that had none", ["ryke.json"], ["ryke.json"], ["ryke.json"]],
+    ["creating a new test under the protected glob", ["test/new.test.ts"], ["test/new.test.ts"], []],
+    ["modifying ryke.json", ["ryke.json"], [], ["ryke.json"]],
+  ])("%s", (_name, writes, created, rejected) => {
+    const r = validate({ reads: [], writes, created, changedSinceSnapshot: new Map(), policy });
+    if (rejected.length) expect(r).toEqual({ ok: false, kind: "protected", paths: rejected });
+    else expect(r.ok).toBe(true);
+  });
+});

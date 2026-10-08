@@ -1,3 +1,4 @@
+import { ContainerRunner } from "./container";
 import { ProcessRunner } from "./process";
 
 // "seed" pushes a demo app into an empty trunk; "swarm" exists only in process mode (PLAN.md §11.2).
@@ -14,7 +15,7 @@ export interface Runner {
 export class RunnerError extends Error {}
 
 export function runnerFor(env: Env): Runner {
-  return new ProcessRunner(env.RYKE_RUNNER_URL);
+  return env.RYKE_RUNNER === "container" ? new ContainerRunner(env) : new ProcessRunner(env.RYKE_RUNNER_URL);
 }
 
 // Polls a job to its end. Land steps and repo seeding are short, so polling beats callbacks here.
@@ -24,15 +25,16 @@ export async function runToCompletion(
   args: Record<string, string>,
   env: Record<string, string>,
   timeoutMs: number,
-  pollMs = 150,
+  opts: { pollMs?: number; cancelOnTimeout?: boolean } = {},
 ): Promise<JobStatus & { id: string }> {
+  const { pollMs = 150, cancelOnTimeout = true } = opts;
   const id = await runner.start(kind, args, env);
   const until = Date.now() + timeoutMs;
   for (;;) {
     const s = await runner.status(id);
     if (s.state === "done" || s.state === "failed") return { ...s, id };
     if (Date.now() > until) {
-      await runner.cancel(id);
+      if (cancelOnTimeout) await runner.cancel(id);
       return { state: "failed", exitCode: 124, result: { error: `${kind} timed out after ${timeoutMs} ms` }, id };
     }
     await new Promise((r) => setTimeout(r, pollMs));

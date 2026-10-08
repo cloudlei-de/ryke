@@ -22,10 +22,13 @@ export function commitMessage(t) {
   ].join("\n");
 }
 
-// Added test names, and whether the change sneaks a .only( or skip( into test/ (§9.3 hard check).
+// .only( / .skip( / .todo( calls, node:test's { skip | todo | only } options, and bracket access.
+const TAMPER = [/\.(?:only|skip|todo)\s*\(/, /\bskip\s*\(/, /\b(?:skip|todo|only)\s*:\s*(?:true|["'`])/, /\[\s*["'`](?:only|skip|todo)["'`]\s*\]/];
+
+// Added test names, and whether the change sneaks a focus or skip into test/ (§9.3 hard check).
 export function scanTestDiff(patch) {
   const added = patch.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
-  const tamper = added.some((l) => /\.only\s*\(|\bskip\s*\(|\.skip\s*\(/.test(l));
+  const tamper = added.some((l) => TAMPER.some((re) => re.test(l)));
   const newTests = [];
   for (const l of added) {
     const m = l.match(/\b(?:test|it|describe)\s*\(\s*(["'`])(.+?)\1/);
@@ -113,10 +116,20 @@ async function push(a) {
   return { ok: true, pushed: true, notesPushed };
 }
 
+// Scratch refs of a train that did not land (a landed train deletes them in push).
+async function cleanup(a) {
+  const dir = resolve("cleanup");
+  await repo(dir, []);
+  const refs = JSON.parse(a.refs ?? "[]");
+  for (const ref of refs) await git(dir, ["push", "-q", a.trunk, `:${ref}`], { allowFail: true });
+  return { ok: true, deleted: refs.length };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   main(async (a) => {
     if (a.mode === "prepare") return prepare(a);
     if (a.mode === "push") return push(a);
+    if (a.mode === "cleanup") return cleanup(a);
     throw new Error(`unknown --mode ${a.mode}`);
   });
 }

@@ -142,6 +142,14 @@ describe("land.mjs push", () => {
     assert.equal(await git(trunk, "rev-parse", "main"), p.candidate);
   });
 
+  it("deletes scratch refs of a train that did not land", async () => {
+    const { trunk, base, fork } = await scenario();
+    const x = await fork("x", { "src/x.ts": "x\n" });
+    await land({ mode: "prepare", trunk, base, ref: "refs/ryke/candidates/t6/0", union: [], txns: [x] });
+    assert.deepEqual(await land({ mode: "cleanup", trunk, refs: ["refs/ryke/candidates/t6/0"] }), { ok: true, deleted: 1 });
+    await assert.rejects(git(trunk, "rev-parse", "--verify", "refs/ryke/candidates/t6/0"));
+  });
+
   it("rejects an unknown mode", async () => {
     const r = await land({ mode: "nope" });
     assert.deepEqual(r, { ok: false, error: "unknown --mode nope" });
@@ -164,6 +172,13 @@ describe("land.mjs helpers", () => {
     ["+it.skip('x')", true],
     ["+  t.skip()", true],
     ["+test('ok', () => {})", false],
+    ["+test(\"converts kelvin\", { skip: true }, () => {})", true],
+    ["+test('x', { todo: true }, () => {})", true],
+    ["+test('x', { only: true }, () => {})", true],
+    ["+test('x', { skip: 'later' }, () => {})", true],
+    ["+test.todo('x')", true],
+    ["+test[\"skip\"]('x', () => {})", true],
+    ["+const skipped = false; // skipping nothing", false],
     ["-test.only('removed')", false],
     ["+++ b/test/only.ts", false],
   ]) {

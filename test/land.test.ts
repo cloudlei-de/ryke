@@ -15,12 +15,22 @@ type Fake = {
   culprits?: string[];
   cas?: boolean;
   gate?: Record<string, GateResult["decision"]>;
-  calls: { prepare: string[][]; verify: string[]; push: string[]; gate: string[] };
+  failRebuild?: boolean;
+  head?: string | null;
+  calls: { prepare: string[][]; verify: string[]; push: string[]; gate: string[]; cleanup: string[][] };
+  candidates?: Map<string, string[]>;
 };
 
 function fakeDeps(f: Fake): LandDeps {
   const candidates = new Map<string, string[]>();
+  f.candidates = candidates;
   return {
+    async trunkHead() {
+      return f.head ?? null;
+    },
+    async cleanup(refs: string[]) {
+      f.calls.cleanup.push(refs);
+    },
     async prepare(txns: TrainTxn[], ref: string): Promise<Prepared> {
       f.calls.prepare.push(txns.map((t) => t.id));
       const applied = txns.filter((t) => !f.conflicts?.includes(t.id));
@@ -35,6 +45,7 @@ function fakeDeps(f: Fake): LandDeps {
     async verify(candidate: string): Promise<Verified> {
       f.calls.verify.push(candidate);
       const bad = (candidates.get(candidate) ?? []).filter((id) => f.culprits?.includes(id));
+      if (f.failRebuild && f.calls.verify.length > 1) bad.push("rebuild");
       return {
         pass: bad.length === 0,
         exitCode: bad.length ? 1 : 0,
@@ -76,7 +87,8 @@ async function train(n: number): Promise<{ t: TestRepo; ids: string[]; params: T
   return { t, ids, params: formed.params! };
 }
 
-const fake = (over: Partial<Fake> = {}): Fake => ({ calls: { prepare: [], verify: [], push: [], gate: [] }, ...over });
+const fake = (over: Partial<Fake> = {}): Fake => ({ calls: { prepare: [], verify: [], push: [], gate: [], cleanup: [] }, ...over });
+const pushedMembers = (f: Fake) => f.candidates!.get(f.calls.push[0]!);
 const states = async (t: TestRepo, ids: string[]) => Promise.all(ids.map(async (id) => ok(await t.L.status(id)).txn.state));
 
 describe("landTrain", () => {
@@ -122,6 +134,8 @@ describe("landTrain", () => {
     const f = fake({ culprits: [ids[0]!, ids[3]!] });
     expect((await landTrain(env, params, steps, () => fakeDeps(f))).outcome).toBe("landed");
     expect(await states(t, ids)).toEqual(["failed", "landed", "landed", "failed"]);
+    expect(pushedMembers(f)).toEqual([ids[1], ids[2]]);
+    expect(ok(await t.L.summary()).seq).toBe(2);
   });
 
   it("fails a single-member train without bisecting", async () => {
@@ -149,6 +163,9 @@ describe("landTrain", () => {
     expect(await states(t, ids)).toEqual(["needs_human", "landed", "failed"]);
     expect(f.calls.prepare).toEqual([ids, [ids[1]]]);
     expect(f.calls.verify).toHaveLength(2);
+    expect(pushedMembers(f)).toEqual([ids[1]]);
+    expect(ok(await t.L.summary()).seq).toBe(1);
+    expect(f.calls.gate).toHaveLength(3);
     expect(ok(await t.L.status(ids[0]!)).txn.reason).toBe("fake_needs_human");
   });
 
@@ -161,6 +178,91 @@ describe("landTrain", () => {
     expect((await landTrain(env, params, steps, () => deps)).outcome).toBe("error");
     expect(await states(t, ids)).toEqual(["ready", "ready"]);
     expect((await opsOf(t, "train.done")).at(-1)!.data).toMatchObject({ outcome: "error", error: "runner down" });
+  });
+
+  it("requeues the rest when the rebuilt candidate fails, and cleans up the scratch refs", async () => {
+    const { t, ids, params } = await train(3);
+    const f = fake({ gate: { "intent 0": "needs_human" }, failRebuild: true });
+    expect((await landTrain(env, params, steps, () => fakeDeps(f))).outcome).toBe("rebuild_failed");
+    expect(await states(t, ids)).toEqual(["needs_human", "ready", "ready"]);
+    expect(f.calls.push).toEqual([]);
+    expect(f.calls.cleanup).toEqual([[`refs/ryke/candidates/${params.trainId}/0`, `refs/ryke/candidates/${params.trainId}/1`]]);
+  });
+
+  it("lands an approved member without asking the judge again", async () => {
+    const { t, ids, params } = await train(1);
+    params.txns[0]!.approved = true;
+    const f = fake();
+    const deps = fakeDeps(f);
+    const real = await import("../src/worker/judge");
+    const policy = ok(await t.L.summary()).policy;
+    deps.gate = (input) => real.evidenceGate({ ...env, RYKE_JEV: "recorded" }, input, policy);
+    expect((await landTrain(env, params, steps, () => deps)).outcome).toBe("landed");
+    expect(ok(await t.L.status(ids[0]!)).txn.state).toBe("landed");
+  });
+
+  it("records a landing whose push succeeded even when the next step failed", async () => {
+    const { t, ids, params } = await train(2);
+    const f = fake();
+    const deps = fakeDeps(f);
+    const push = deps.push;
+    deps.push = async (candidate, notes, cleanup) => {
+      await push(candidate, notes, cleanup);
+      f.head = candidate;
+      throw new Error("runner went away after the push");
+    };
+    expect((await landTrain(env, params, steps, () => deps)).outcome).toBe("landed");
+    expect(await states(t, ids)).toEqual(["landed", "landed"]);
+    expect(ok(await t.L.summary()).seq).toBe(2);
+  });
+
+  it("does not record a landing when the trunk does not have the candidate", async () => {
+    const { t, ids, params } = await train(1);
+    const f = fake({ head: "f".repeat(40) });
+    const deps = fakeDeps(f);
+    deps.push = async () => {
+      throw new Error("push failed");
+    };
+    expect((await landTrain(env, params, steps, () => deps)).outcome).toBe("error");
+    expect(await states(t, ids)).toEqual(["ready"]);
+  });
+
+  it("names steps deterministically, so a Workflow replay returns cached results", async () => {
+    const { t, params } = await train(3);
+    const cache = new Map<string, unknown>();
+    const names: string[][] = [[], []];
+    const memo = (run: number): StepLike => ({
+      async do(name, fn) {
+        names[run]!.push(name);
+        if (cache.has(name)) return cache.get(name) as never;
+        const v = await fn();
+        cache.set(name, v);
+        return v;
+      },
+    });
+    const f = fake({ culprits: [params.txns[1]!.id] });
+    expect((await landTrain(env, params, memo(0), () => fakeDeps(f))).outcome).toBe("landed");
+    const verifies = f.calls.verify.length;
+    expect((await landTrain(env, params, memo(1), () => fakeDeps(f))).outcome).toBe("landed");
+    expect(names[1]).toEqual(names[0]);
+    expect(f.calls.verify.length).toBe(verifies);
+    expect(ok(await t.L.summary()).seq).toBe(2);
+  });
+
+  it("fails a member whose trains keep erroring instead of requeueing it forever", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t, "agent-x", "keeps breaking the runner");
+    ok(await t.L.reads(b.txn, ["src/a.ts"]));
+    ok(await t.L.submit(b.txn, { head: await commitToFork(b, { "src/x.ts": "x\n" }) }));
+    for (let i = 0; i < 3; i++) {
+      const formed = ok(await t.L.formTrain());
+      const deps = fakeDeps(fake());
+      deps.verify = async () => {
+        throw new Error("runner down");
+      };
+      await landTrain(env, formed.params!, steps, () => deps);
+    }
+    expect(ok(await t.L.status(b.txn)).txn).toMatchObject({ state: "failed", reason: "land_error" });
   });
 
   it("revalidates ready transactions after a landing (the stale path)", async () => {

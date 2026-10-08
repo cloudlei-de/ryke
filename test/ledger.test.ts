@@ -1,8 +1,13 @@
 // The Ledger state machine (PLAN.md §4.2) against a real local store: every legal transition, every
 // illegal one answered with 409, idempotent push ingest and submit, stale warnings, leases, trains.
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { beginTxn, commitToFork, err, errorText, landAlone, newRepo, ok, opsOf, opsPage, store, type TestRepo } from "./helpers";
+import { beginTxn, commitToFork, err, errorText, gitHelper, landAlone, newRepo, ok, opsOf, opsPage, store, type TestRepo } from "./helpers";
+
+// A second commit on top of `base` in the transaction's fork, as an agent pushing twice would.
+async function gitHelperCommitOn(b: { remote: string; token: string }, base: string, files: Record<string, string | null>) {
+  return (await gitHelper<{ sha: string }>("/commit", { remote: b.remote, token: b.token, base, files })).sha;
+}
 
 async function readyTxn(t: TestRepo, files: Record<string, string | null>, reads: string[] = [], agent = "agent-01") {
   const b = await beginTxn(t, agent);
@@ -491,5 +496,112 @@ describe("op log and stream", () => {
   it("refuses a second init", async () => {
     const t = await newRepo();
     expect(err(await t.L.init(t.name, t.head, null))).toBe(409);
+  });
+});
+
+describe("review fixes", () => {
+  it("does not carry an approval over to a later attempt", async () => {
+    const t = await newRepo();
+    const h = await readyTxn(t, { "src/p.ts": "p\n" }, ["src/a.ts"]);
+    const train = ok(await t.L.formTrain()).train!;
+    ok(await t.L.trainOutcome(train, h.b.txn, "needs_human", "human_path"));
+    ok(await t.L.trainDone(train, "judged"));
+    // while a human looks, trunk changes what h read
+    const a = await readyTxn(t, { "src/a.ts": "a9\n" }, ["src/b.ts"], "agent-a");
+    await landAlone(t, a.b.txn, a.b, a.sha, ["src/a.ts"]);
+    ok(await t.L.approve(h.b.txn));
+    await runDurableObjectAlarm(t.L);
+    expect(ok(await t.L.status(h.b.txn)).txn.state).toBe("stale");
+    // the retry is new code the human never saw
+    const r = ok(await t.L.retry(h.b.txn));
+    const sha = await commitToFork({ ...h.b, snapshot: r.snapshot }, { "src/p.ts": "p2\n" }, { force: true, from: r.trunk });
+    ok(await t.L.reads(h.b.txn, ["src/b.ts"]));
+    expect(ok(await t.L.submit(h.b.txn, { head: sha })).state).toBe("ready");
+    const next = ok(await t.L.formTrain());
+    expect(next.params!.txns.find((x) => x.id === h.b.txn)!.approved).toBe(false);
+  });
+
+  it("takes the head from the fork, not from a push event that may be late", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t);
+    const first = await commitToFork(b, { "src/one.ts": "1\n" });
+    ok(await t.L.onPush(`${t.name}--${b.txn}`, "refs/heads/main", first));
+    const second = await gitHelperCommitOn(b, first, { "src/two.ts": "2\n" });
+    expect(ok(await t.L.submit(b.txn)).state).toBe("ready");
+    const d = ok(await t.L.detail(b.txn));
+    expect(d.txn.head).toBe(second);
+    expect(d.attempts[0]!.writes).toEqual(["src/one.ts", "src/two.ts"]);
+  });
+
+  it("aborts after the third stale attempt", async () => {
+    const t = await newRepo();
+    const victim = await beginTxn(t, "agent-v");
+    let snapshot = victim.snapshot;
+    let trunk = victim.trunk;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      ok(await t.L.reads(victim.txn, ["src/a.ts"]));
+      const mover = await readyTxn(t, { "src/a.ts": `a${attempt}0\n` }, ["src/b.ts"], `mover-${attempt}`);
+      await landAlone(t, mover.b.txn, mover.b, mover.sha, ["src/a.ts"]);
+      const head = await commitToFork({ ...victim, snapshot }, { [`src/v${attempt}.ts`]: "v\n" }, { force: true, from: trunk });
+      const s = ok(await t.L.submit(victim.txn, { head }));
+      if (attempt < 3) {
+        expect(s.state).toBe("stale");
+        const r = ok(await t.L.retry(victim.txn));
+        snapshot = r.snapshot;
+        trunk = r.trunk;
+      } else expect(s).toMatchObject({ state: "aborted", reason: "max_attempts" });
+    }
+    expect((await opsOf(t, "txn.aborted")).at(-1)!.data).toMatchObject({ cause: { state: "stale", reason: "stale_read" } });
+  });
+
+  it("answers 409 for every operation on terminal and in-flight states", async () => {
+    const t = await newRepo();
+    const landed = await readyTxn(t, { "src/l.ts": "l\n" }, ["src/b.ts"]);
+    await landAlone(t, landed.b.txn, landed.b, landed.sha, ["src/l.ts"]);
+    for (const op of [t.L.retry(landed.b.txn), t.L.approve(landed.b.txn), t.L.reject(landed.b.txn), t.L.abort(landed.b.txn, "x"), t.L.reads(landed.b.txn, ["a"])])
+      expect(err(await op)).toBe(409);
+    const v = await readyTxn(t, { "src/v.ts": "v\n" }, ["src/b.ts"], "agent-v");
+    const train = ok(await t.L.formTrain()).train!;
+    for (const op of [t.L.retry(v.b.txn), t.L.approve(v.b.txn), t.L.reject(v.b.txn), t.L.abort(v.b.txn, "x"), t.L.reads(v.b.txn, ["a"]), t.L.submit(v.b.txn, { head: "e".repeat(40) })])
+      expect(err(await op)).toBe(409);
+    ok(await t.L.trainOutcome(train, v.b.txn, "needs_human", "x"));
+    for (const op of [t.L.retry(v.b.txn), t.L.reads(v.b.txn, ["a"]), t.L.intendWrite(v.b.txn, "a")]) expect(err(await op)).toBe(409);
+  });
+
+  it("answers 404 for an unknown train", async () => {
+    const t = await newRepo();
+    for (const op of [t.L.commitTrain("tr_nope", "a".repeat(40), []), t.L.trainDone("tr_nope", "x"), t.L.trainOutcome("tr_nope", "t_x", "failed", null), t.L.trainProbe("tr_nope", [], true)])
+      expect(err(await op)).toBe(404);
+  });
+
+  it("lands members a watchdog already requeued when their train pushes after all", async () => {
+    const t = await newRepo();
+    const x = await readyTxn(t, { "src/x.ts": "x\n" }, ["src/b.ts"]);
+    const train = ok(await t.L.formTrain()).train!;
+    ok(await t.L.trainDone(train, "error", { error: "watchdog" }));
+    expect(ok(await t.L.status(x.b.txn)).txn.state).toBe("ready");
+    ok(await t.L.commitTrain(train, x.sha, [{ txn: x.b.txn, sha: x.sha, paths: ["src/x.ts"] }]));
+    expect(ok(await t.L.status(x.b.txn)).txn).toMatchObject({ state: "landed", landedSeq: 1 });
+  });
+
+  it("expires leases on the alarm", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t);
+    ok(await t.L.intendWrite(b.txn, "src/a.ts"));
+    await runInDurableObject(t.L, async (_o, state) => {
+      state.storage.sql.exec("UPDATE lease SET expires = 1");
+      await state.storage.setAlarm(Date.now());
+    });
+    await runDurableObjectAlarm(t.L);
+    expect((await opsOf(t, "lease.released")).at(-1)!.data).toMatchObject({ path: "src/a.ts", txn: b.txn, expired: true });
+  });
+
+  it("wakes a long-poll with changed: true on a transition", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t);
+    const w = t.L.wait(b.txn, 20_000);
+    await new Promise((r) => setTimeout(r, 300));
+    ok(await t.L.abort(b.txn, "bye"));
+    expect(ok(await w)).toMatchObject({ changed: true, txn: { state: "aborted" } });
   });
 });

@@ -29,11 +29,15 @@ export async function txnLedger(env: Env, txn: string): Promise<DurableObjectStu
 export async function begin(env: Env, repo: string, input: Parameters<Ledger["begin"]>[0]) {
   const L = ledger(env, repo);
   let screen: Screen = { warnings: [] };
+  let reserved: string | undefined;
   if (typeof input?.intent === "string" && input.intent.trim() !== "") {
-    const candidates = await L.screenCandidates();
-    if (candidates.ok) screen = await screenIntent(env, input.intent, candidates.value);
+    const c = await L.screenCandidates(input.intent);
+    if (c.ok) {
+      reserved = c.value.txn;
+      screen = await screenIntent(env, input.intent, c.value.candidates);
+    }
   }
-  const res = await L.begin(input, screen);
+  const res = await L.begin(input, screen, reserved);
   if (res.ok) {
     await ledger(env, "__index").indexPut(res.value.txn, repo);
     knownTxns.set(res.value.txn, repo);
