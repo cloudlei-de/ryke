@@ -3,6 +3,7 @@ import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 import type { Res } from "./ledger/ledger";
 import { begin, ledger, txnLedger } from "./service";
+import { normalizePath } from "../shared/policy";
 import { storeFor } from "./store/store";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -58,8 +59,10 @@ export function mcpServer(env: Env): McpServer {
       if (!status.ok) return result(status);
       const recorded = await stub.reads(txn, [path]);
       if (!recorded.ok) return result(recorded);
-      const content = await storeFor(env).readFile(status.value.txn.repo, status.value.txn.snapshot, path);
-      return result({ ok: true, value: { path, content, staleWarnings: recorded.value.staleWarnings } });
+      // reads() accepted the path, so it normalises; read the file under the same name it was recorded as.
+      const clean = normalizePath(path);
+      const content = await storeFor(env).readFile(status.value.txn.repo, status.value.txn.snapshot, clean);
+      return result({ ok: true, value: { path: clean, content, staleWarnings: recorded.value.staleWarnings } });
     },
   );
 

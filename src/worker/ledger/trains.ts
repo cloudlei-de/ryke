@@ -1,7 +1,8 @@
 import { matchesAny } from "../../shared/policy";
 import type { Policy } from "../../shared/types";
 
-export type TrainCandidate = { id: string; submittedAt: number; footprint: string[]; skips: number };
+// `writes` ⊆ `footprint`; when absent every footprint path counts as written (the strict §5.2 rule).
+export type TrainCandidate = { id: string; submittedAt: number; footprint: string[]; writes?: string[]; skips: number };
 
 // A transaction skipped this often goes first in the next train, so a busy path cannot starve it (§5.2).
 export const FAIRNESS_SKIPS = 3;
@@ -23,14 +24,20 @@ export function selectTrain(
 
   const train: string[] = [];
   const skipped: string[] = [];
-  // Union paths are expected to be edited concurrently (git merges them, verify judges them), so
-  // they never occupy a slot and never collide.
-  const taken = new Set<string>();
+  // Members must not see each other's writes: a member may not touch a path another member writes,
+  // nor write a path another member touches. Two members that only read the same path are fine,
+  // since neither changes what the other read. Union paths are expected to be edited concurrently
+  // (git merges them, verify judges them), so they never collide.
+  const touched = new Set<string>();
+  const written = new Set<string>();
   for (const c of considered) {
     const paths = c.footprint.filter((p) => !matchesAny(policy.union, p));
-    if (train.length < policy.trainMax && paths.every((p) => !taken.has(p))) {
+    const writes = (c.writes ?? c.footprint).filter((p) => !matchesAny(policy.union, p));
+    const clash = paths.some((p) => written.has(p)) || writes.some((p) => touched.has(p));
+    if (train.length < policy.trainMax && !clash) {
       train.push(c.id);
-      for (const p of paths) taken.add(p);
+      for (const p of paths) touched.add(p);
+      for (const p of writes) written.add(p);
     } else {
       skipped.push(c.id);
     }

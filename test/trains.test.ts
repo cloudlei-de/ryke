@@ -519,3 +519,28 @@ describe("bisection planner (§5.3 step 4)", () => {
     });
   });
 });
+
+describe("selectTrain with separate write sets", () => {
+  const c = (id: string, at: number, reads: string[], writes: string[], skips = 0) => ({ id, submittedAt: at, footprint: [...new Set([...reads, ...writes])], writes, skips });
+  const policy = { union: ["src/registry.ts"], trainMax: 8 };
+
+  it.each([
+    ["two readers of a hot file share a train", [c("a", 1, ["src/format.ts"], ["src/a.ts"]), c("b", 2, ["src/format.ts"], ["src/b.ts"])], ["a", "b"]],
+    ["a writer and a later reader of the same file do not", [c("w", 1, ["src/format.ts"], ["src/format.ts"]), c("r", 2, ["src/format.ts"], ["src/r.ts"])], ["w"]],
+    ["a reader and a later writer of the same file do not", [c("r", 1, ["src/format.ts"], ["src/r.ts"]), c("w", 2, [], ["src/format.ts"])], ["r"]],
+    ["two writers of one file do not", [c("x", 1, [], ["src/x.ts"]), c("y", 2, [], ["src/x.ts"])], ["x"]],
+    ["union writes never clash", [c("x", 1, ["src/registry.ts"], ["src/registry.ts", "src/x.ts"]), c("y", 2, ["src/registry.ts"], ["src/registry.ts", "src/y.ts"])], ["x", "y"]],
+    [
+      "a reader blocked by an earlier writer leaves room for a later independent one",
+      [c("w", 1, [], ["src/format.ts"]), c("r", 2, ["src/format.ts"], ["src/r.ts"]), c("z", 3, ["src/b.ts"], ["src/z.ts"])],
+      ["w", "z"],
+    ],
+  ])("%s", (_name, ready, train) => {
+    expect(selectTrain(ready, policy).train).toEqual(train);
+  });
+
+  it("treats a candidate without writes as writing its whole footprint", () => {
+    const strict = { id: "s", submittedAt: 1, footprint: ["src/format.ts"], skips: 0 };
+    expect(selectTrain([strict, c("r", 2, ["src/format.ts"], ["src/r.ts"])], policy).train).toEqual(["s"]);
+  });
+});

@@ -125,7 +125,9 @@ export async function http(
 
 // Opens a transaction through POST /api/repos/:repo/txns, which (unlike Ledger.begin) also registers
 // it in the txn → repo index, so /api/txns/:id and the MCP tools can find it.
-export async function apiBegin(repo: string, agent = "agent-01", intent = "change something", extra: Record<string, unknown> = {}): Promise<BeginResult> {
+// The default intent is random: begin screens each intent against the live ones with a trigram
+// prefilter, and unrelated random text never reaches the judge, so no warnings or extra ops appear.
+export async function apiBegin(repo: string, agent = "agent-01", intent = Math.random().toString(36).slice(2, 14), extra: Record<string, unknown> = {}): Promise<BeginResult> {
   const r = await http("POST", `/api/repos/${repo}/txns`, { body: { agent, intent, model: "test-model", ...extra } });
   if (r.status !== 201) throw new Error(`begin over HTTP: ${r.status} ${r.text}`);
   return r.body as BeginResult;
@@ -141,4 +143,11 @@ export async function landOnTrunk(t: TestRepo, files: Record<string, string>, ag
   ok(await t.L.submit(b.txn, { head: sha }));
   await landAlone(t, b.txn, b, sha, paths);
   return { txn: b.txn, sha };
+}
+
+// Builds a fixture on first use and reuses it, for tables of tests that only read or are refused:
+// each row then skips a fork and a ledger init.
+export function lazy<T>(make: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => (pending ??= make());
 }

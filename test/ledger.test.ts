@@ -312,7 +312,8 @@ describe("trains", () => {
   it("forms no train while one is in flight and gives skipped transactions priority after 3 skips", async () => {
     const t = await newRepo();
     const blocker = await readyTxn(t, { "src/x.ts": "x\n" }, ["src/a.ts"], "agent-1");
-    const starved = await readyTxn(t, { "src/y.ts": "y\n" }, ["src/a.ts"], "agent-2");
+    // starved reads what blocker writes, so the two can never share a train.
+    const starved = await readyTxn(t, { "src/y.ts": "y\n" }, ["src/x.ts"], "agent-2");
     for (let i = 0; i < 3; i++) {
       const tr = ok(await t.L.formTrain()).train!;
       expect((await opsOf(t, "train.formed")).at(-1)!.data.txns).toEqual([blocker.b.txn]);

@@ -1,7 +1,8 @@
 import { Hono, type Context } from "hono";
 import latestBench from "../../bench/results/latest.json";
 import type { Res } from "./ledger/ledger";
-import { begin, createRepo, deleteRepo, ledger, txnLedger } from "./service";
+import { runnerFor, RunnerError } from "./runner/runner";
+import { begin, createRepo, deleteRepo, ledger, txnLedger, validRepoName } from "./service";
 import { storeFor, StoreError } from "./store/store";
 
 type App = { Bindings: Env };
@@ -42,7 +43,7 @@ api.get("/bench", (c) => c.json(latestBench));
 api.post("/repos", async (c) => {
   const b = await body(c);
   if (!b) return c.json({ error: "body must be a JSON object" }, 422);
-  if (b.fresh === true && typeof b.name === "string") await deleteRepo(c.env, b.name);
+  if (b.fresh === true && validRepoName(b.name)) await deleteRepo(c.env, b.name);
   return respond(c, await createRepo(c.env, b.name, b.seedFrom), 201);
 });
 
@@ -78,6 +79,31 @@ api.post("/repos/:repo/recall", async (c) => {
   return respond(c, res);
 });
 
+// The dashboard's "Run demo" button (PLAN.md §11.2): runs harness/swarm.mjs as a runner job that
+// talks to this very API, so the demo drives the platform the way any outside agent would.
+api.post("/demo/:repo/start", async (c) => {
+  const b = await body(c);
+  if (!b) return c.json({ error: "body must be a JSON object" }, 422);
+  const repo = c.req.param("repo");
+  const { mode, agents, speed = 4 } = b;
+  if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(repo)) return c.json({ error: "repo must match [a-z0-9][a-z0-9-]{0,40}" }, 422);
+  if (mode !== "scripted" && mode !== "claude") return c.json({ error: "mode must be scripted or claude" }, 422);
+  if (typeof agents !== "number" || !Number.isInteger(agents) || agents < 1 || agents > 50) return c.json({ error: "agents must be an integer from 1 to 50" }, 422);
+  if (typeof speed !== "number" || !Number.isFinite(speed) || speed <= 0) return c.json({ error: "speed must be a number greater than 0" }, 422);
+  try {
+    const job = await runnerFor(c.env).start(
+      "swarm",
+      { repo, mode, agents: String(agents), speed: String(speed) },
+      { RYKE_API_URL: new URL(c.req.url).origin, RYKE_TOKEN: c.env.RYKE_TOKEN },
+    );
+    return c.json({ job }, 202);
+  } catch (e) {
+    // Container mode has no swarm job kind; the runner being down is the other way this fails.
+    if (e instanceof RunnerError) return c.json({ error: e.message }, 503);
+    throw e;
+  }
+});
+
 api.get("/repos/:repo/files", async (c) => {
   const repo = c.req.param("repo");
   const summary = await ledger(c.env, repo).summary();
@@ -104,7 +130,7 @@ function txnRoute(method: "get" | "post", path: string, handler: TxnHandler) {
     if (!b) return c.json({ error: "body must be a JSON object" }, 422);
     const stub = await txnLedger(c.env, id);
     if (!stub) return c.json({ error: `unknown transaction ${id}` }, 404);
-    return respond(c, await handler(stub, id, { ...b, ...c.req.query() }));
+    return respond(c, await handler(stub, id, method === "get" ? c.req.query() : b));
   });
 }
 

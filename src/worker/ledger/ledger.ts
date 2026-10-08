@@ -1007,7 +1007,13 @@ export class Ledger extends DurableObject<Env> {
       ready.map((r) => [r.id, [...new Set([...this.access(r.id, r.attempt, "read"), ...this.access(r.id, r.attempt, "write")])]]),
     );
     const { train, skipped } = selectTrain(
-      ready.map((r) => ({ id: r.id, submittedAt: r.submitted_at ?? r.updated_at, footprint: footprints.get(r.id)!, skips: r.skips })),
+      ready.map((r) => ({
+        id: r.id,
+        submittedAt: r.submitted_at ?? r.updated_at,
+        footprint: footprints.get(r.id)!,
+        writes: this.access(r.id, r.attempt, "write"),
+        skips: r.skips,
+      })),
       policy,
     );
     if (train.length === 0) return null;

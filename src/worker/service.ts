@@ -52,12 +52,11 @@ export function authRemote(env: Env, remote: string, token: string): string {
 }
 
 export async function createRepo(env: Env, name: unknown, seedFrom: unknown): Promise<Res<{ repo: string; head: string }>> {
-  if (typeof name !== "string" || !REPO_NAME.test(name)) return { ok: false, status: 422, error: "name must match [a-z0-9][a-z0-9-]{0,40}" };
-  if (name === "__index") return { ok: false, status: 422, error: "reserved name" };
+  if (!validRepoName(name)) return { ok: false, status: 422, error: "name must match [a-z0-9][a-z0-9-]{0,40}" };
   if (seedFrom !== undefined && (typeof seedFrom !== "string" || !/^[a-z0-9-]+$/.test(seedFrom)))
     return { ok: false, status: 422, error: "seedFrom must name a directory under demo/" };
-  const store = storeFor(env);
   try {
+    const store = storeFor(env);
     const ref = await store.create(name, { description: "Ryke trunk" });
     const token = await store.token(name, "write", 600);
     const job = await runToCompletion(runnerFor(env), "seed", { remote: authRemote(env, ref.remote, token), seed: (seedFrom as string) ?? "" }, {}, 120_000);
@@ -74,7 +73,13 @@ export async function createRepo(env: Env, name: unknown, seedFrom: unknown): Pr
   }
 }
 
+// Also guards the reserved `__index` Ledger, which no repo name can reach.
+export function validRepoName(name: unknown): name is string {
+  return typeof name === "string" && REPO_NAME.test(name);
+}
+
 export async function deleteRepo(env: Env, name: string): Promise<Res<{ deleted: boolean }>> {
+  if (!validRepoName(name)) return { ok: false, status: 422, error: "name must match [a-z0-9][a-z0-9-]{0,40}" };
   await ledger(env, name).reset();
   try {
     return { ok: true, value: { deleted: await storeFor(env).remove(name) } };
