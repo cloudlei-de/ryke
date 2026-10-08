@@ -16,7 +16,7 @@ something we inferred and did not see documented.
 | `agents` | 0.27.0 | Peer-pins `@modelcontextprotocol/server` **2.0.0** exactly |
 | `@typesafe-ai/sdk` | 0.6.0 | Jev client, fetch-only, works in workerd |
 | `@anthropic-ai/claude-code` | 2.1.293 | Pin it inside the agent image |
-| `@openai/codex` | 0.161.0 | Pinned in the agent image; flags and events checked against this binary |
+| `@openai/codex` | 0.161.0 | Pinned in the agent image; flags and `login status` checked against this binary |
 | `@cloudflare/vitest-plugin` | 1.3.x | Needs vitest 4.x, not 5 |
 
 ## Sandbox SDK 1.0 / Containers
@@ -84,7 +84,9 @@ claude --print --output-format stream-json --verbose --dangerously-skip-permissi
 
 ### Whose credentials an agent CLI runs on (`--auth`)
 
-Claude Code (code.claude.com docs; `claude auth status` checked with 2.1.294):
+Claude Code (code.claude.com docs; `claude auth status` checked with 2.1.294). Ryke's subscription mode
+uses the stored `/login` only; it passes on neither a key nor `CLAUDE_CODE_OAUTH_TOKEN`, and removes
+credential `env` entries and `apiKeyHelper` from a checkout's own `.claude/settings*.json`:
 - Precedence: a cloud provider (`CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY`), then
   `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, an `apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN` (made by
   `claude setup-token` for a subscription), then the `/login` credentials (`~/.claude/.credentials.json`
@@ -114,8 +116,18 @@ api.openai.com are blocked by this VM's proxy, so OpenAI's own docs and terms we
   `https://chatgpt.com/backend-api/codex`. It tries a WebSocket first and falls back to HTTPS.
 - `codex login status` writes `Logged in using ChatGPT`, `Logged in using an API key - …` or
   `Not logged in` (exit 1) to stderr; it ignores `CODEX_API_KEY`.
-- Without any login `codex exec` does not fail: it retries the connection until it is killed, so the
-  login is checked before a run. `SSL_CERT_FILE` (or `CODEX_CA_CERTIFICATE`) sets its CA bundle.
+- Without a login, run here where OpenAI is unreachable, `codex exec` did not fail: it retried the
+  connection until it was killed. Whether a reachable API makes it fail fast is untested, so the login is
+  checked before a run, by the harness and again by the job. `SSL_CERT_FILE` (or `CODEX_CA_CERTIFICATE`)
+  sets its CA bundle.
+- Its default store is `CODEX_HOME/auth.json` (`cli_auth_credentials_store = "file"`). A login kept in
+  the keyring is not found by an agent job, which gets neither the session bus nor the user's config;
+  the harness asks `codex login status` in the job's environment, so it says so before the run.
+- A repo's `.codex/config.toml` counts only for a project the user's config trusts (codex-rs/config
+  loader), and a Ryke checkout is a fresh directory under TMPDIR that no config names.
+- What was seen from the real binary: the flags, `login status`, and an exec stream of `thread.started`,
+  `turn.started`, `error` and an `error` item. The item shapes above come from the codex-rs source and
+  are exercised only through the stub.
 
 ## Workflows
 

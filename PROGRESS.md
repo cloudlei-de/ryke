@@ -94,3 +94,8 @@ Claude Code and Codex (DECISIONS 2026-10-08 · M8, this commit).
   Codex reads from its event stream, the gateway's OpenAI key swap. Real codex 0.161.0 checked for its flags,
   `login status` and events (OpenAI unreachable from this VM). Gate: vitest 34 files 3227, node 2080, 0 fail;
   e2e:codex and e2e:claude PASS.
+- review of bring-your-own fixed (after cloudlei-de/ryke#2 merged): no environment token in a subscription
+  job, the job refuses a subscription unless dev/runner listens on loopback (RYKE_RUNNER_LOCAL), the login
+  check runs in the job's allow-listed env and a Codex job checks again before exec, repo settings lose
+  credential env and key helpers, stub jobs get stand-in keys, Codex skips scaffolding paths. Gate: vitest
+  34 files 3227, node 2104, 0 fail; e2e:codex and e2e:claude PASS.

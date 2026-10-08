@@ -24,7 +24,7 @@ import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { inheritedEnv, startRunner } from "../../dev/runner/server.mjs";
+import { inheritedEnv, isLoopbackHost, startRunner } from "../../dev/runner/server.mjs";
 import { runnerEnv, stackConfig } from "../../dev/stack.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -41,7 +41,7 @@ const SCRIPT_SOURCES = {
   echo: String.raw`
 exec "$NODE_BIN" -e '
 const fs = require("fs");
-const keys = ["RYKE_JOB_ID", "RYKE_JOB_DIR", "RYKE_EVIDENCE_DIR", "RYKE_ROOT", "RYKE_TEST_HOST", "LC_RYKE_TEST_P", "LC_RYKE_TEST_PO", "RYKE_TEST_OJ", "LC_RYKE_TEST_POJ"];
+const keys = ["RYKE_JOB_ID", "RYKE_JOB_DIR", "RYKE_EVIDENCE_DIR", "RYKE_ROOT", "RYKE_RUNNER_LOCAL", "RYKE_TEST_HOST", "LC_RYKE_TEST_P", "LC_RYKE_TEST_PO", "RYKE_TEST_OJ", "LC_RYKE_TEST_POJ"];
 console.log(JSON.stringify({
   argv: process.argv.slice(1),
   env: Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null])),
@@ -316,7 +316,7 @@ it("args become --key value entries in insertion order and env layers host < run
     "echo",
     { zeta: "1", alpha: "two words", mid: tricky, empty: "" },
     // The RYKE_* names are the runner's to set, so a job cannot claim another identity.
-    { RYKE_TEST_OJ: "job", LC_RYKE_TEST_POJ: "job", RYKE_JOB_ID: "spoofed", RYKE_ROOT: "/spoofed" },
+    { RYKE_TEST_OJ: "job", LC_RYKE_TEST_POJ: "job", RYKE_JOB_ID: "spoofed", RYKE_ROOT: "/spoofed", RYKE_RUNNER_LOCAL: "spoofed" },
   );
   const job = await finished(id);
 
@@ -327,6 +327,8 @@ it("args become --key value entries in insertion order and env layers host < run
     RYKE_JOB_DIR: jobDir(id),
     RYKE_EVIDENCE_DIR: join(stateDir, "evidence"),
     RYKE_ROOT: REPO_ROOT,
+    // boot() binds to 127.0.0.1, so a subscription agent job may run here; the job could not claim it.
+    RYKE_RUNNER_LOCAL: "1",
     RYKE_TEST_HOST: null,
     LC_RYKE_TEST_P: "host",
     LC_RYKE_TEST_PO: "runner",
@@ -351,11 +353,14 @@ const PROXY_NAMES = [
   "SSL_CERT_DIR",
   "NODE_USE_ENV_PROXY",
 ];
-// Where the agent CLIs keep their own login: a subscription job needs to find it (agent.mjs).
-const LOGIN_DIRS = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+test("isLoopbackHost: only an address no other machine can reach", () => {
+  for (const [host, want] of [["127.0.0.1", true], ["127.1.2.3", true], ["localhost", true], ["::1", true], ["0.0.0.0", false], ["::", false], ["192.168.1.5", false], ["127.0.0.1.example.com", false], ["", false]]) {
+    assert.equal(isLoopbackHost(host), want, host);
+  }
+});
 
 test("inheritedEnv keeps exactly the allow-listed host variables", () => {
-  const everything = Object.fromEntries([...HOST_NAMES, ...PROXY_NAMES, ...LOGIN_DIRS, "LC_ALL", "LC_CTYPE", "LC_RYKE_ANY"].map((k) => [k, `v:${k}`]));
+  const everything = Object.fromEntries([...HOST_NAMES, ...PROXY_NAMES, "LC_ALL", "LC_CTYPE", "LC_RYKE_ANY"].map((k) => [k, `v:${k}`]));
   assert.deepEqual(inheritedEnv(everything), everything);
 
   for (const name of [
@@ -368,6 +373,10 @@ test("inheritedEnv keeps exactly the allow-listed host variables", () => {
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
     "CODEX_ACCESS_TOKEN",
+    // The harness passes the CLIs' login dirs with the job, so the job looks where its preflight looked.
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "RYKE_RUNNER_LOCAL",
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "AWS_SECRET_ACCESS_KEY",
@@ -478,7 +487,7 @@ it("a job does not see the credentials in the runner host's environment", async 
   assert.equal(job.result.env.PATH, process.env.PATH);
   assert.equal(job.result.env.HTTPS_PROXY, "http://proxy.invalid:3128");
   // Nothing outside the allow-list, the runner's own variables and what bash adds to every script.
-  const allowed = new RegExp(`^(${[...HOST_NAMES, ...PROXY_NAMES, "NODE_OPTIONS", "NODE_BIN", "PWD", "OLDPWD", "SHLVL", "_"].join("|")}|LC_.*|RYKE_(JOB_ID|JOB_DIR|EVIDENCE_DIR|ROOT))$`);
+  const allowed = new RegExp(`^(${[...HOST_NAMES, ...PROXY_NAMES, "NODE_OPTIONS", "NODE_BIN", "PWD", "OLDPWD", "SHLVL", "_"].join("|")}|LC_.*|RYKE_(JOB_ID|JOB_DIR|EVIDENCE_DIR|ROOT|RUNNER_LOCAL))$`);
   assert.deepEqual(
     Object.keys(job.result.env).filter((name) => !allowed.test(name)),
     [],

@@ -6,13 +6,13 @@
 //
 // Whose credentials the CLI runs on is ctx.auth: "api-key" (ANTHROPIC_API_KEY, or CODEX_API_KEY /
 // OPENAI_API_KEY for Codex), "subscription" (the person's own login of the CLI on this machine: claude
-// /login or `claude setup-token`, `codex login` with ChatGPT), or "auto", which takes the key when one is
+// /login, `codex login` with ChatGPT), or "auto", which takes the key when one is
 // set. Ryke never reads, stores or forwards a login; the official CLI uses its own. With --stub /
 // RYKE_AGENT_STUB=1 the job runs the fake CLI under harness/agents/<cli>-stub instead.
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AUTH_MODES, budgetsFrom, CLIS, credentialsFor, DEFAULT_MAX_ATTEMPTS, isCredential, KEY_NAMES, keyOf, worstCaseMs } from "../../containers/runner/lib/agent.mjs";
+import { AUTH_MODES, budgetsFrom, cliEnv, CLIS, credentialsFor, DEFAULT_MAX_ATTEMPTS, KEY_NAMES, keyOf, worstCaseMs } from "../../containers/runner/lib/agent.mjs";
 import { identityFor } from "../lib/tasks.mjs";
 import { brief, describeWarnings } from "./scripted.mjs";
 
@@ -128,7 +128,8 @@ export function validateOpenAIKey(key, base = "https://api.openai.com") {
 // stderr. Ryke reads only this verdict, never the credentials behind it.
 const CLAUDE_METHODS = { "claude.ai": "subscription", oauth_token: "subscription", api_key: "api-key", api_key_helper: "api-key", none: "none" };
 export function loginOf(cli, { code, stdout = "", stderr = "" }) {
-  const text = `${stdout}\n${stderr}`.replace(/\s+/g, " ").trim().slice(0, 200);
+  // Both CLIs start from a Node script, so behind a proxy Node's own warning comes first on stderr.
+  const text = `${stdout}\n${stderr}`.split("\n").filter((l) => !NOISE.test(l)).join(" ").replace(/\s+/g, " ").trim().slice(0, 200);
   if (cli === "claude") {
     let status = null;
     try {
@@ -148,16 +149,18 @@ export function loginOf(cli, { code, stdout = "", stderr = "" }) {
 
 const STATUS_ARGS = { claude: ["auth", "status"], codex: ["login", "status"] };
 const LOGIN_HINT = {
-  claude: "run `claude` and /login with your Claude Pro or Max account (or `claude setup-token`)",
+  claude: "run `claude` and /login with your Claude Pro or Max account",
   codex: "run `codex login` with your ChatGPT account",
 };
+// Where each CLI keeps its login when not under HOME. A subscription job is handed the harness's value,
+// so it looks where this check looked; the runner passes neither on by itself.
+const LOGIN_DIR = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" };
 
-// Asks the CLI with exactly the credentials a subscription job would give it, so a key in this shell
-// cannot make a missing login look present.
+// Asks the CLI in the environment its job will have (cliEnv: the allow-list, no credential), so neither a
+// key nor anything else of this shell, a keyring's session bus say, can make a missing login look present.
 export function checkLogin(cli, bin, env = process.env) {
-  const child = Object.fromEntries(Object.entries(env).filter(([k]) => !isCredential(k)));
-  Object.assign(child, credentialsFor(cli, "subscription", env));
-  const where = [env.HOME, env.CLAUDE_CONFIG_DIR, env.CODEX_HOME, env.RYKE_STUB_LOGIN, Boolean(env.CLAUDE_CODE_OAUTH_TOKEN)].join("\n");
+  const child = cliEnv(cli, env);
+  const where = [env.HOME, env[LOGIN_DIR[cli]], env.RYKE_STUB_LOGIN].join("\n");
   return once(`login\n${cli}\n${bin}\n${where}`, () =>
     new Promise((resolveCheck) => {
       execFile(bin, STATUS_ARGS[cli], { env: child, timeout: 30_000, encoding: "utf8" }, (error, stdout, stderr) => {
@@ -175,17 +178,21 @@ export class AccessError extends Error {
 
 export const isLoopback = (url) => ["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname);
 
-// Decides, before begin, whose credentials the job's CLI runs on, and returns the mode and the job env
-// that carries them. Everything that would make the run fail late fails here instead: a missing or
-// rejected key, a subscription asked for on a runner that is not this machine, a CLI that is not logged in.
+// A fake CLI never calls a model, so its job gets a stand-in in place of the key in this shell.
+const STUB_KEYS = { claude: { ANTHROPIC_API_KEY: "sk-ant-stub-not-a-key" }, codex: { CODEX_API_KEY: "sk-proj-stub-not-a-key" } };
+
+// Decides, before begin, whose credentials the job's CLI runs on, and returns the mode, how to say it,
+// whether the run draws on a plan's limits, and the job env that goes with it. Everything that would make
+// the run fail late fails here instead: a missing or rejected key, a subscription asked for on a runner
+// that is not this machine, a CLI that is not logged in.
 export async function checkAccess({ cli, auth, stub, bin, runnerUrl, env = process.env }) {
   const key = keyOf(cli, env);
   const mode = auth === "auto" ? (key ? "api-key" : "subscription") : auth;
   if (mode === "api-key") {
     if (!key) throw new AccessError(`--auth api-key needs ${KEY_NAMES[cli]} in the environment`);
-    // The fake CLI never calls a model, so a stubbed run does not spend a call on the key either.
-    if (!stub) await (cli === "codex" ? validateOpenAIKey(key) : validateKey(key));
-    return { mode, how: "an API key", env: credentialsFor(cli, mode, env) };
+    if (stub) return { mode, how: "an API key (the stub gets a stand-in)", onPlan: false, env: STUB_KEYS[cli] };
+    await (cli === "codex" ? validateOpenAIKey(key) : validateKey(key));
+    return { mode, how: "an API key", onPlan: false, env: credentialsFor(cli, mode, env) };
   }
   // A login lives on the machine it was made on, and is its owner's: the CLI has to run there.
   if (!isLoopback(runnerUrl)) throw new AccessError(`--auth subscription runs ${cli} on your own login, so the runner must be on this machine; ${runnerUrl} is not`);
@@ -194,7 +201,9 @@ export async function checkAccess({ cli, auth, stub, bin, runnerUrl, env = proce
   if (auth === "subscription" && login.method === "api-key") {
     throw new AccessError(`${cli} is logged in with an API key (${login.detail}), not a subscription; ${LOGIN_HINT[cli]}, or use --auth api-key`);
   }
-  return { mode, how: `your own login (${login.detail || login.method})`, env: credentialsFor(cli, mode, env) };
+  // auto with a login that is a stored key runs on that key, not on a plan; the job is the same either way.
+  const dir = env[LOGIN_DIR[cli]];
+  return { mode, how: `your own login (${login.detail || login.method})`, onPlan: login.method === "subscription", env: dir ? { [LOGIN_DIR[cli]]: dir } : {} };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -216,10 +225,6 @@ const JOB_GRACE_MS = 5 * 60_000;
 const TIMEOUT_VARS = ["RYKE_CLAUDE_TIMEOUT_S", "RYKE_WAIT_S"];
 export const jobTimeoutMs = (env = process.env) => worstCaseMs({ maxAttempts: DEFAULT_MAX_ATTEMPTS, ...budgetsFrom(env) }) + JOB_GRACE_MS;
 
-// ctx: as the scripted agent's ({ api, repo, task, dir, worker, contention, log(agent, line), … }) plus,
-// all optional: cli (claude), auth (auto), stub, model, apiUrl, runnerUrl, env (extra job env),
-// jobTimeoutMs (default: jobTimeoutMs()).
-// Resolves with the same record the scripted agent returns; throws only for things the agent cannot handle.
 // What a task's ctx resolves to; the swarm's preflight and every task read it the same way.
 function settingsOf(ctx) {
   const cli = ctx.cli ?? "claude";
@@ -229,6 +234,8 @@ function settingsOf(ctx) {
   const offset = Number(process.env.RYKE_PORT_OFFSET ?? 0);
   const stub = ctx.stub ?? process.env.RYKE_AGENT_STUB === "1";
   const binVar = cli === "codex" ? "CODEX_BIN" : "CLAUDE_BIN";
+  // An empty model means unset: Claude's default, and Codex's own.
+  const model = ctx.model || (cli === "codex" ? process.env.RYKE_CODEX_MODEL : process.env.RYKE_CLAUDE_MODEL) || (cli === "claude" ? DEFAULT_MODEL : "");
   return {
     cli,
     auth,
@@ -237,7 +244,7 @@ function settingsOf(ctx) {
     bin: stub ? STUB_BINS[cli] : process.env[binVar] || cli,
     apiUrl: ctx.apiUrl ?? process.env.RYKE_API_URL ?? `http://127.0.0.1:${5173 + offset}`,
     runnerUrl: ctx.runnerUrl ?? process.env.RYKE_RUNNER_URL ?? `http://127.0.0.1:${8789 + offset}`,
-    cliModel: ctx.model ?? (cli === "codex" ? (process.env.RYKE_CODEX_MODEL ?? "") : (process.env.RYKE_CLAUDE_MODEL ?? DEFAULT_MODEL)),
+    cliModel: model,
   };
 }
 
@@ -245,6 +252,10 @@ function settingsOf(ctx) {
 // task begins; each task asks again, which the caches answer.
 export const preflight = (ctx) => checkAccess(settingsOf(ctx));
 
+// ctx: as the scripted agent's ({ api, repo, task, dir, worker, contention, log(agent, line), … }) plus,
+// all optional: cli (claude), auth (auto), stub, model, apiUrl, runnerUrl, env (extra job env),
+// jobTimeoutMs (default: jobTimeoutMs()).
+// Resolves with the same record the scripted agent returns; throws only for things the agent cannot handle.
 export async function runTask(ctx) {
   const { api, repo, task, dir, worker, contention = false, log } = ctx;
   const { cli, stub, binVar, bin, apiUrl, runnerUrl, cliModel } = settingsOf(ctx);
@@ -279,7 +290,8 @@ export async function runTask(ctx) {
   try {
     // The CLI's shell sees part of the job's environment, so the job carries the transaction's own token,
     // which cannot approve, reject, recall or touch other transactions (src/worker/service.ts). A
-    // subscription job carries no credential at all: the CLI uses the login it already has.
+    // subscription job carries no credential at all: the CLI uses the login it already has, and is told
+    // only where it keeps it.
     if (!b.agentToken) throw new Error(`begin returned no agentToken for ${b.txn}; an agent job never gets the admin token`);
     job = await runner.start(
       "agent",

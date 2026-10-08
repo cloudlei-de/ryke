@@ -11,12 +11,12 @@
 //   env: RYKE_API_URL RYKE_TOKEN RYKE_FORK_TOKEN CLAUDE_BIN CODEX_BIN ANTHROPIC_API_KEY CODEX_API_KEY
 //        OPENAI_API_KEY RYKE_CONTENTION RYKE_CLAUDE_TIMEOUT_S (the session timeout of either CLI)
 //        RYKE_WAIT_S RYKE_AGENT_STUB RYKE_KEEP_CHECKOUT
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { apiCallRetrying, appendLine, isMain, loadConfig, READS_BATCH, readLines, rykeDir } from "../hooks/common.mjs";
+import { apiCallRetrying, appendLine, isMain, loadConfig, NOT_REPO, READS_BATCH, readLines, rykeDir } from "../hooks/common.mjs";
 import { git as run, main } from "./common.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -181,14 +181,19 @@ export const keyOf = (cli, env) => (cli === "codex" ? env.CODEX_API_KEY || env.O
 export const KEY_NAMES = { claude: "ANTHROPIC_API_KEY", codex: "CODEX_API_KEY or OPENAI_API_KEY" };
 
 // auto is what either CLI does by itself: a key when one is set, the person's own login otherwise. A
-// container is Ryke's hosted runner, where the only credential is the operator's key that the gateway
-// attaches: a subscription is for its owner's own use of the CLI, never something a service runs
-// other people's work on (DECISIONS.md, "Bring your own subscription").
+// subscription is for its owner's own use of the CLI, never something a service runs other people's work
+// on (DECISIONS.md, 2026-10-08 · M8). So it is refused in a container, Ryke's hosted runner, where the only
+// credential is the operator's key the gateway attaches, and on any runner that does not say it listens
+// on this machine alone: dev/runner sets RYKE_RUNNER_LOCAL after the job's own environment, so a job
+// cannot claim it, and anyone who can reach a runner bound to 0.0.0.0 can start jobs on it.
 export function resolveAuth(cli, auth, env, container = inContainer()) {
   const key = keyOf(cli, env);
   const mode = auth === "auto" ? (key || container ? "api-key" : "subscription") : auth;
   if (mode === "subscription" && container) {
     throw new Error(`--auth subscription runs ${cli} on your own login and only on your own machine; in a Ryke container ${cli} runs on the operator's API key`);
+  }
+  if (mode === "subscription" && env.RYKE_RUNNER_LOCAL !== "1") {
+    throw new Error(`--auth subscription runs ${cli} on your own login, so only a runner that listens on this machine alone may run it (RYKE_RUNNER_LOCAL is not 1); use a key, or a runner on 127.0.0.1`);
   }
   if (mode === "api-key" && !key && !container) throw new Error(`--auth api-key needs ${KEY_NAMES[cli]} in the environment`);
   return mode;
@@ -201,11 +206,12 @@ export function resolveAuth(cli, auth, env, container = inContainer()) {
 const CREDENTIAL = /^(ANTHROPIC_\w+|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_\w+|CODEX_API_KEY|CODEX_ACCESS_TOKEN|OPENAI_\w+)$/;
 export const isCredential = (name) => CREDENTIAL.test(name);
 
-// A subscription run takes its login from the CLI's own store under HOME (claude /login, codex login),
-// which Ryke never reads; CLAUDE_CODE_OAUTH_TOKEN is the token `claude setup-token` makes for the same
-// subscription. Without a key, ANTHROPIC_BASE_URL goes too: the login's token is for Anthropic alone.
+// A subscription run gets nothing: the CLI takes its login from its own store (claude /login under HOME or
+// CLAUDE_CONFIG_DIR, or the macOS Keychain; codex login in CODEX_HOME), which Ryke never reads. A token in
+// the environment (CLAUDE_CODE_OAUTH_TOKEN, CODEX_ACCESS_TOKEN) would be Ryke handing a login from process
+// to process, so it is not passed either; nor is ANTHROPIC_BASE_URL, since the login is for Anthropic alone.
 export function credentialsFor(cli, mode, base, container = false) {
-  if (mode === "subscription") return cli === "claude" && base.CLAUDE_CODE_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: base.CLAUDE_CODE_OAUTH_TOKEN } : {};
+  if (mode === "subscription") return {};
   if (cli === "codex") return { CODEX_API_KEY: keyOf("codex", base) || (container ? CODEX_PLACEHOLDER_KEY : "") };
   return {
     ANTHROPIC_API_KEY: base.ANTHROPIC_API_KEY || (container ? PLACEHOLDER_KEY : ""),
@@ -244,16 +250,23 @@ const PASS_EXACT = new Set([
 // CODEX_HOME is where `codex login` keeps its login; CLAUDE_CONFIG_DIR is the same for Claude.
 const PASS_PATTERN = { claude: /^(LC_\w+|CLAUDE_\w+|RYKE_STUB_\w+)$/, codex: /^(LC_\w+|CODEX_HOME|RYKE_STUB_\w+)$/ };
 
+// What of `base` the CLI may see before any credential is added. The harness asks the CLI for its login
+// with exactly this, so the answer is the one the job's CLI will find.
+export function cliEnv(cli, base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !isCredential(key) && (PASS_EXACT.has(key) || PASS_PATTERN[cli].test(key))) env[key] = value;
+  }
+  return env;
+}
+
 // RYKE_TOKEN here is the transaction's own token (service.ts), set below from the inputs; the git token
 // for the fork and the admin and internal secrets are never part of it. Codex runs no hooks, so it gets
 // no Ryke token at all.
 export function agentEnv(inp, dir, { base = process.env, container = inContainer() } = {}) {
   const cli = inp.cli ?? "claude";
   const mode = resolveAuth(cli, inp.auth ?? "auto", base, container);
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !isCredential(key) && (PASS_EXACT.has(key) || PASS_PATTERN[cli].test(key))) env[key] = value;
-  }
+  const env = cliEnv(cli, base);
   Object.assign(env, credentialsFor(cli, mode, base, container));
   if (cli === "codex") return env;
   return Object.assign(env, {
@@ -314,6 +327,20 @@ export function describeCodexEvent(ev, { cwd = "", verbose = false } = {}) {
   return null;
 }
 
+// `codex exec` without a login does not fail: it retries the connection until it is killed, so every
+// attempt would sit out its whole timeout. Asked first, with the session's own environment, codex says in
+// a second whether it has a login where this job runs (the harness asked where the swarm runs).
+export function requireCodexLogin(bin, env) {
+  return new Promise((done, fail) => {
+    execFile(bin, ["login", "status"], { env, timeout: 30_000, encoding: "utf8" }, (error, stdout, stderr) => {
+      if (!error) return done();
+      // Node's proxy warning, printed by the npm wrapper behind a proxy, is no part of codex's answer.
+      const why = `${stdout}\n${stderr}`.split("\n").filter((l) => !/^\(node:\d+\)|^\(Use `node/.test(l)).join(" ").replace(/\s+/g, " ").trim().slice(0, 200) || error.message;
+      fail(new Error(`codex has no login where this job runs (${why}); run \`codex login\` with your ChatGPT account, or use a key`));
+    });
+  });
+}
+
 export function codexOutcome(lines, exitCode, timedOut) {
   const last = [...lines].reverse().find((l) => l?.type === "turn.completed" || l?.type === "turn.failed");
   if (timedOut) return { isError: true, text: "codex timed out", result: last ?? null };
@@ -326,13 +353,17 @@ export function codexOutcome(lines, exitCode, timedOut) {
   return { isError: false, text: String(message?.item.text ?? ""), result: last };
 }
 
-// A path as Codex prints it (absolute, or relative to the checkout) as a repo path, or null outside it.
+// Codex prints a patched path absolute and a command's paths however the command spelled them, while the
+// Ledger keys everything by repo path. What lies outside the checkout, and the scaffolding the hooks skip
+// too (.ryke, where the prompt has the agent write its screenshot line, .claude, .git, node_modules), is
+// never part of a change, so it is neither a read nor a write intent.
 export function inCheckout(raw, dir) {
   let p = String(raw ?? "");
   if (p.startsWith(`${dir}/`)) p = p.slice(dir.length + 1);
   if (p === "" || isAbsolute(p)) return null;
   p = posix.normalize(p);
-  return p === "." || p === ".." || p.startsWith("../") ? null : p;
+  if (p === "." || p === ".." || p.startsWith("../")) return null;
+  return NOT_REPO.some((d) => p === d || p.startsWith(`${d}/`)) ? null : p;
 }
 
 // Codex has no hooks Ryke installs, so what it read is taken from what its commands named and printed:
@@ -547,21 +578,40 @@ export function mergeHooks(current = {}, ours = {}) {
   return merged;
 }
 
+// Claude Code also reads the checkout's own settings, which could put back what agentEnv took out: an `env`
+// entry for a key, or a base URL that would carry the person's login or key to whatever host the repo
+// names, and the helpers that hand Claude Code a credential. A repo is not trusted with either.
+const CREDENTIAL_SETTINGS = ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport"];
+export function withoutCredentials(settings) {
+  const out = Object.fromEntries(Object.entries(settings).filter(([k]) => !CREDENTIAL_SETTINGS.includes(k)));
+  if (out.env && typeof out.env === "object" && !Array.isArray(out.env)) out.env = Object.fromEntries(Object.entries(out.env).filter(([k]) => !isCredential(k)));
+  return out;
+}
+
+// The first gets the hooks; the local one, when the repo has it, is only cleaned.
+const SETTINGS_FILES = [".claude/settings.json", ".claude/settings.local.json"];
+
 export async function installHooks(dir, template) {
-  const file = join(dir, ".claude", "settings.json");
-  let current = {};
-  if (existsSync(file)) {
-    try {
-      current = JSON.parse(readFileSync(file, "utf8"));
-    } catch {
-      say("the checkout's .claude/settings.json is not valid JSON; replacing it");
+  for (const rel of SETTINGS_FILES) {
+    const file = join(dir, rel);
+    const hooked = rel === SETTINGS_FILES[0];
+    if (!hooked && !existsSync(file)) continue;
+    let current = {};
+    if (existsSync(file)) {
+      try {
+        current = JSON.parse(readFileSync(file, "utf8"));
+      } catch {
+        say(`the checkout's ${rel} is not valid JSON; replacing it`);
+      }
     }
-  }
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ ...current, hooks: mergeHooks(current.hooks, template.hooks) }, null, 2)}\n`);
-  // A settings file the repo tracks must not turn into part of the agent's change.
-  if ((await run(dir, ["ls-files", "--error-unmatch", ".claude/settings.json"], { allowFail: true })).code === 0) {
-    await run(dir, ["update-index", "--skip-worktree", ".claude/settings.json"]);
+    const next = withoutCredentials(current);
+    if (hooked) next.hooks = mergeHooks(current.hooks, template.hooks);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+    // A settings file the repo tracks must not turn into part of the agent's change.
+    if ((await run(dir, ["ls-files", "--error-unmatch", rel], { allowFail: true })).code === 0) {
+      await run(dir, ["update-index", "--skip-worktree", rel]);
+    }
   }
 }
 
@@ -661,9 +711,10 @@ async function flushReads(inp, cfg, ledger) {
 }
 
 // What Claude's hooks report, reported for Codex from its event stream while it works: the reads, so the
-// footprint is on the Line before submit, and each file it starts to patch as a write intent, so another
-// agent waits on a hot file it holds. Codex itself never waits: by the time Ryke hears of a patch, it is
-// being applied. Both are logged to .ryke like the hooks' are; flushReads re-sends the reads anyway.
+// footprint is on the Line before submit, and each file it patches as a write intent, so another agent
+// waits on a hot file it holds. Codex itself never waits: by the time Ryke hears of a patch, it is being
+// applied. The intent goes out on the patch's start or, should Codex report only its end, on that. Both
+// are logged to .ryke like the hooks' are; flushReads re-sends the reads anyway.
 function codexReporter(inp, cfg, ledger, tracked) {
   const dir = cfg.checkout;
   const pending = [];
@@ -674,7 +725,7 @@ function codexReporter(inp, cfg, ledger, tracked) {
       appendLine(cfg, "reads.jsonl", { at: Date.now(), tool: "codex", paths });
       pending.push(postReads(inp, ledger, paths).catch((e) => say(`reads not reported yet, sent again before submit: ${e.message}`)));
     }
-    if (!inp.contention || ev?.type !== "item.started" || ev.item?.type !== "file_change") return;
+    if (!inp.contention || (ev?.type !== "item.started" && ev?.type !== "item.completed") || ev.item?.type !== "file_change") return;
     for (const change of ev.item.changes ?? []) {
       const path = inCheckout(change.path, dir);
       if (path === null || intended.has(path)) continue;
@@ -778,6 +829,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
     // Before anything is cloned: a subscription in a container, or a key that is not there, is refused here.
     const auth = resolveAuth(inp.cli, inp.auth, process.env);
     say(`${inp.cli} runs on ${auth === "subscription" ? "your own login (subscription)" : "an API key"}`);
+    if (codex && auth === "subscription") await requireCodexLogin(inp.bin, agentEnv({ ...inp, auth }, ""));
     dir ??= makeCheckoutDir();
     const cfg = { ...base, checkout: dir };
     mkdirSync(logDir, { recursive: true });

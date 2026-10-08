@@ -3,7 +3,10 @@
 // (harness/agents/claude.mjs), and how Codex's `exec --json` stream is read: its outcome, its log lines,
 // and the reads Ryke takes from it in place of hooks.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   agentEnv,
@@ -66,17 +69,21 @@ describe("keyOf and resolveAuth", () => {
     assert.equal(keyOf("codex", { ANTHROPIC_API_KEY: "sk-ant" }), "");
   });
 
-  // [cli, auth, env, container, the mode or the error]
+  // [cli, auth, env, container, the mode or the error]. LOCAL is what dev/runner on 127.0.0.1 sets.
+  const LOCAL = { RYKE_RUNNER_LOCAL: "1" };
   const CASES = [
     ["claude", "auto", { ANTHROPIC_API_KEY: "k" }, false, "api-key"],
-    ["claude", "auto", {}, false, "subscription"],
+    ["claude", "auto", { ...LOCAL }, false, "subscription"],
     ["claude", "auto", {}, true, "api-key"],
-    ["claude", "auto", { OPENAI_API_KEY: "k" }, false, "subscription"],
+    ["claude", "auto", { ...LOCAL, OPENAI_API_KEY: "k" }, false, "subscription"],
     ["codex", "auto", { OPENAI_API_KEY: "k" }, false, "api-key"],
-    ["codex", "auto", { ANTHROPIC_API_KEY: "k" }, false, "subscription"],
-    ["claude", "subscription", { ANTHROPIC_API_KEY: "k" }, false, "subscription"],
-    ["codex", "subscription", {}, false, "subscription"],
-    ["claude", "subscription", {}, true, /--auth subscription runs claude on your own login and only on your own machine/],
+    ["codex", "auto", { ...LOCAL, ANTHROPIC_API_KEY: "k" }, false, "subscription"],
+    ["claude", "subscription", { ...LOCAL, ANTHROPIC_API_KEY: "k" }, false, "subscription"],
+    ["codex", "subscription", { ...LOCAL }, false, "subscription"],
+    ["claude", "subscription", {}, false, /only a runner that listens on this machine alone may run it \(RYKE_RUNNER_LOCAL is not 1\)/],
+    ["codex", "subscription", { RYKE_RUNNER_LOCAL: "0" }, false, /only a runner that listens on this machine alone/],
+    ["claude", "auto", { RYKE_RUNNER_LOCAL: "0" }, false, /only a runner that listens on this machine alone/],
+    ["claude", "subscription", { ...LOCAL }, true, /--auth subscription runs claude on your own login and only on your own machine/],
     ["codex", "subscription", { CODEX_API_KEY: "k" }, true, /--auth subscription runs codex on your own login/],
     ["claude", "api-key", {}, false, /--auth api-key needs ANTHROPIC_API_KEY in the environment/],
     ["codex", "api-key", { ANTHROPIC_API_KEY: "k" }, false, /--auth api-key needs CODEX_API_KEY or OPENAI_API_KEY/],
@@ -104,8 +111,7 @@ describe("credentialsFor: only the run's own credentials go back in", () => {
   const ALL = { ANTHROPIC_API_KEY: "sk-ant", ANTHROPIC_BASE_URL: "http://proxy", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01", OPENAI_API_KEY: "sk-openai", CODEX_ACCESS_TOKEN: "pat" };
   const CASES = [
     ["claude on a key keeps its base URL", "claude", "api-key", ALL, false, { ANTHROPIC_API_KEY: "sk-ant", ANTHROPIC_BASE_URL: "http://proxy" }],
-    ["claude on a subscription keeps only the setup-token, never a key or a base URL", "claude", "subscription", ALL, false, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01" }],
-    ["claude on a subscription without a setup-token gets nothing: the CLI uses its stored login", "claude", "subscription", { ANTHROPIC_API_KEY: "sk-ant" }, false, {}],
+    ["claude on a subscription gets nothing, not even a setup-token: the CLI uses its stored login", "claude", "subscription", ALL, false, {}],
     ["codex on a key gets it under its own name", "codex", "api-key", ALL, false, { CODEX_API_KEY: "sk-openai" }],
     ["codex on a subscription gets nothing, not even its access token", "codex", "subscription", ALL, false, {}],
     ["claude in a container gets the placeholder the gateway swaps", "claude", "api-key", {}, true, { ANTHROPIC_API_KEY: PLACEHOLDER_KEY }],
@@ -117,6 +123,7 @@ describe("credentialsFor: only the run's own credentials go back in", () => {
 describe("agentEnv for both CLIs", () => {
   const inp = { apiUrl: "http://api", token: "tok", txn: "t_1", repo: "convert", snapshot: "abc", contention: true };
   const SHELL = {
+    RYKE_RUNNER_LOCAL: "1",
     PATH: "/bin",
     HOME: "/home/felix",
     CLAUDE_CONFIG_DIR: "/home/felix/.claude",
@@ -130,9 +137,10 @@ describe("agentEnv for both CLIs", () => {
   };
   const names = (env) => Object.keys(env).sort();
 
-  it("a Claude subscription run sees no key and no base URL, and keeps its login dir and setup-token", () => {
+  it("a Claude subscription run sees no key, token or base URL, and keeps its login dir", () => {
     const env = agentEnv({ ...inp, auth: "subscription" }, "/w", { base: SHELL, container: false });
-    assert.deepEqual(names(env).filter((k) => !k.startsWith("RYKE_")), ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "HOME", "IS_SANDBOX", "PATH"]);
+    assert.deepEqual(names(env).filter((k) => !k.startsWith("RYKE_")), ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_CONFIG_DIR", "HOME", "IS_SANDBOX", "PATH"]);
+    assert.equal("RYKE_RUNNER_LOCAL" in env, false);
   });
 
   it("a Codex key run sees its key as CODEX_API_KEY, its login dir, and nothing of Claude's or Ryke's", () => {
@@ -146,7 +154,7 @@ describe("agentEnv for both CLIs", () => {
   });
 
   it("Codex runs no hooks, so it gets no Ryke token, but keeps the stub's knobs and the proxy", () => {
-    const env = agentEnv({ ...inp, cli: "codex", auth: "subscription" }, "/w", { base: { HTTPS_PROXY: "http://p", RYKE_STUB_LOGIN: "chatgpt", RYKE_CATALOGUE_DIR: "/cat", RYKE_TOKEN: "admin" }, container: false });
+    const env = agentEnv({ ...inp, cli: "codex", auth: "subscription" }, "/w", { base: { RYKE_RUNNER_LOCAL: "1", HTTPS_PROXY: "http://p", RYKE_STUB_LOGIN: "chatgpt", RYKE_CATALOGUE_DIR: "/cat", RYKE_TOKEN: "admin" }, container: false });
     assert.deepEqual(env, { HTTPS_PROXY: "http://p", RYKE_STUB_LOGIN: "chatgpt", RYKE_CATALOGUE_DIR: "/cat" });
   });
 
@@ -221,12 +229,20 @@ describe("inCheckout", () => {
     [".", null],
     ["", null],
     [undefined, null],
+    // Scaffolding, skipped as the hooks skip it: the prompt has Codex write .ryke/screenshot.txt.
+    ["/w/c/.ryke/screenshot.txt", null],
+    [".claude/settings.json", null],
+    [".git/HEAD", null],
+    ["node_modules/x/index.js", null],
+    [".ryke", null],
+    [".rykeish/a.ts", ".rykeish/a.ts"],
+    ["src/.git-notes", "src/.git-notes"],
   ];
   for (const [raw, want] of CASES) it(`${JSON.stringify(raw)} -> ${JSON.stringify(want)}`, () => assert.equal(inCheckout(raw, "/w/c"), want));
 });
 
 describe("codexReads: what Codex looked at, from its commands and their output", () => {
-  const tracked = new Set(["src/a.ts", "src/b.ts", "src/units/length.ts", "README.md", "test/a.test.ts"]);
+  const tracked = new Set(["src/a.ts", "src/b.ts", "src/units/length.ts", "README.md", "test/a.test.ts", ".claude/settings.json"]);
   const cmd = (command, aggregated_output = "") => ({ type: "item.completed", item: { id: "i", type: "command_execution", command, aggregated_output, exit_code: 0, status: "completed" } });
   const patch = (changes) => ({ type: "item.completed", item: { id: "i", type: "file_change", changes, status: "completed" } });
   const CASES = [
@@ -244,6 +260,7 @@ describe("codexReads: what Codex looked at, from its commands and their output",
     ["a started command is not read yet", { type: "item.started", item: { type: "command_execution", command: "cat src/a.ts" } }, []],
     ["messages are not reads", { type: "item.completed", item: { type: "agent_message", text: "I read src/a.ts" } }, []],
     ["the same file twice is one read", cmd("bash -lc 'cat src/a.ts src/a.ts'", "src/a.ts:1:x\n"), ["src/a.ts"]],
+    ["scaffolding is never a read, even if the snapshot tracked it", cmd("bash -lc 'cat .claude/settings.json'"), []],
   ];
   for (const [name, ev, want] of CASES) it(name, () => assert.deepEqual(codexReads(ev, { dir: "/w/c", tracked }), want));
 });
@@ -274,6 +291,22 @@ describe("the stubs' own status commands", () => {
   }
 });
 
+describe("the fake codex without a login", () => {
+  it("does what the real one did here: starts its turn and reconnects until it is killed", async () => {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(STUB_BINS.codex, codexArgs("", "Intent: x", "/tmp"), { env: { PATH: process.env.PATH, RYKE_STUB_LOGIN: "none", RYKE_STUB_RECONNECT_MS: "50" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c) => (out += c));
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(child.exitCode, null, "still running");
+    child.kill("SIGKILL");
+    const events = out.trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(events.slice(0, 2).map((e) => e.type), ["thread.started", "turn.started"]);
+    assert.ok(events.slice(2).every((e) => e.type === "error" && /^Reconnecting/.test(e.message)) && events.length > 4);
+    assert.equal(codexOutcome(events, null, true).text, "codex timed out", "so a run without the job's own check would end only at its timeout");
+  });
+});
+
 describe("loginOf: the verdict of `claude auth status` and `codex login status`", () => {
   const json = (o) => JSON.stringify(o, null, 2);
   const CASES = [
@@ -289,6 +322,7 @@ describe("loginOf: the verdict of `claude auth status` and `codex login status`"
     ["a stored key", "codex", { code: 0, stderr: "Logged in using an API key - sk-proj-***abcd\n" }, { loggedIn: true, method: "api-key", detail: "API key" }],
     ["logged out", "codex", { code: 1, stderr: "Not logged in\n" }, { loggedIn: false, method: "none", detail: "Not logged in" }],
     ["something else", "codex", { code: 0, stderr: "Logged in using a personal access token\n" }, { loggedIn: true, method: "unknown", detail: "Logged in using a personal access token" }],
+    ["Node's proxy warning first", "codex", { code: 1, stderr: "(node:42) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental\n(Use `node --trace-warnings ...` to show where the warning was created)\nNot logged in\n" }, { loggedIn: false, method: "none", detail: "Not logged in" }],
   ];
   for (const [name, cli, run, want] of CASES) it(`${cli}: ${name}`, () => assert.deepEqual(loginOf(cli, run), want));
 });
@@ -354,34 +388,56 @@ describe("checkAccess: decided before a transaction begins", () => {
   const RUNNER = "http://127.0.0.1:8789";
   const base = (over) => ({ cli: "claude", auth: "auto", stub: true, bin: STUB_BINS.claude, runnerUrl: RUNNER, ...over });
 
-  it("auto takes the key that is set and hands it to the job", async () => {
+  it("auto takes the key that is set; a stubbed job gets a stand-in, not that key", async () => {
     const access = await checkAccess(base({ env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "sk-ant" } }));
-    assert.deepEqual(access, { mode: "api-key", how: "an API key", env: { ANTHROPIC_API_KEY: "sk-ant" } });
+    assert.deepEqual(access, { mode: "api-key", how: "an API key (the stub gets a stand-in)", onPlan: false, env: { ANTHROPIC_API_KEY: "sk-ant-stub-not-a-key" } });
   });
 
-  it("auto without a key runs the CLI's own login and hands the job no credential", async () => {
+  it("auto without a key runs the CLI's own login, on its plan, and hands the job no credential", async () => {
     const access = await checkAccess(base({ env: { PATH: process.env.PATH, HOME: "/h-auto" } }));
-    assert.deepEqual(access, { mode: "subscription", how: "your own login (claude.ai)", env: {} });
+    assert.deepEqual(access, { mode: "subscription", how: "your own login (claude.ai)", onPlan: true, env: {} });
   });
 
   it("a subscription ignores a key in the shell, both for the check and for the job", async () => {
     const access = await checkAccess(base({ auth: "subscription", env: { PATH: process.env.PATH, HOME: "/h-sub", ANTHROPIC_API_KEY: "sk-ant" } }));
-    assert.deepEqual(access, { mode: "subscription", how: "your own login (claude.ai)", env: {} }, "the stub would report api_key had the key reached it");
+    assert.deepEqual(access, { mode: "subscription", how: "your own login (claude.ai)", onPlan: true, env: {} }, "the stub would report api_key had the key reached it");
   });
 
-  it("a setup-token reaches the check and the job", async () => {
+  it("a setup-token in the shell reaches neither the check nor the job: only the stored login counts", async () => {
     const access = await checkAccess(base({ auth: "subscription", env: { PATH: process.env.PATH, HOME: "/h-oat", CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" } }));
-    assert.deepEqual(access, { mode: "subscription", how: "your own login (oauth_token)", env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" } });
+    assert.deepEqual(access, { mode: "subscription", how: "your own login (claude.ai)", onPlan: true, env: {} }, "the stub would report oauth_token had the token reached it");
+  });
+
+  // A login in the keyring is reachable over the session bus, which this shell has and a job does not.
+  it("asks in the job's environment, so a login only this shell can reach does not pass", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ryke-keyring-"));
+    const bin = join(dir, "codex");
+    writeFileSync(bin, '#!/bin/sh\nif [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then echo "Logged in using ChatGPT" >&2; exit 0; fi\necho "Not logged in" >&2; exit 1\n', { mode: 0o755 });
+    try {
+      await assert.rejects(
+        checkAccess(base({ cli: "codex", bin, stub: false, env: { PATH: process.env.PATH, HOME: "/h-bus", DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/bus" } })),
+        /codex is not logged in on this machine \(Not logged in\)/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tells the job where the CLI keeps the login the check found", async () => {
+    const claude = await checkAccess(base({ env: { PATH: process.env.PATH, HOME: "/h-dir", CLAUDE_CONFIG_DIR: "/h-dir/.claude-work", CODEX_HOME: "/h-dir/.codex" } }));
+    assert.deepEqual(claude.env, { CLAUDE_CONFIG_DIR: "/h-dir/.claude-work" });
+    const codex = await checkAccess(base({ cli: "codex", bin: STUB_BINS.codex, env: { PATH: process.env.PATH, HOME: "/h-dir", CLAUDE_CONFIG_DIR: "/h-dir/.claude-work", CODEX_HOME: "/h-dir/.codex" } }));
+    assert.deepEqual(codex.env, { CODEX_HOME: "/h-dir/.codex" });
   });
 
   it("Codex on ChatGPT", async () => {
     const access = await checkAccess(base({ cli: "codex", bin: STUB_BINS.codex, env: { PATH: process.env.PATH, HOME: "/h-codex" } }));
-    assert.deepEqual(access, { mode: "subscription", how: "your own login (ChatGPT)", env: {} });
+    assert.deepEqual(access, { mode: "subscription", how: "your own login (ChatGPT)", onPlan: true, env: {} });
   });
 
-  it("Codex on OPENAI_API_KEY, passed on as CODEX_API_KEY", async () => {
+  it("Codex on OPENAI_API_KEY; its stubbed job gets a stand-in under Codex's name", async () => {
     const access = await checkAccess(base({ cli: "codex", bin: STUB_BINS.codex, env: { PATH: process.env.PATH, OPENAI_API_KEY: "sk-openai" } }));
-    assert.deepEqual(access, { mode: "api-key", how: "an API key", env: { CODEX_API_KEY: "sk-openai" } });
+    assert.deepEqual(access, { mode: "api-key", how: "an API key (the stub gets a stand-in)", onPlan: false, env: { CODEX_API_KEY: "sk-proj-stub-not-a-key" } });
   });
 
   const REFUSED = [
@@ -399,9 +455,8 @@ describe("checkAccess: decided before a transaction begins", () => {
     });
   }
 
-  it("auto accepts whatever login the CLI has, a stored key included", async () => {
+  it("auto accepts whatever login the CLI has; a stored key is no plan, so no plan limits are claimed", async () => {
     const access = await checkAccess(base({ env: { PATH: process.env.PATH, HOME: "/h-auto-key", RYKE_STUB_LOGIN: "api_key" } }));
-    assert.equal(access.mode, "subscription");
-    assert.equal(access.how, "your own login (api_key)");
+    assert.deepEqual([access.mode, access.how, access.onPlan], ["subscription", "your own login (api_key)", false]);
   });
 });
