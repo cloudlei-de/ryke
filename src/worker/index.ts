@@ -7,6 +7,8 @@ import { ingestPush, isPushEvent } from "./ingest";
 export { Ingest } from "./ingest";
 export { Land } from "./land";
 export { Ledger } from "./ledger/ledger";
+// Bound only in env.production (wrangler.jsonc); exporting them locally costs nothing.
+export { Outbound, Runner } from "./runner/container";
 
 const app = new Hono<{ Bindings: Env }>();
 

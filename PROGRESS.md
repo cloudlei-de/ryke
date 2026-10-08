@@ -1,20 +1,20 @@
 # Progress
 
-Current: 2026-10-08 ~06:40 CEST. M0–M2 built and committed; M3 swarm, M5 Jev, container gateway in progress.
-Commits on feat/ryke-mvp: 6e5e37b core, 75ca247 demo+verify+e2e:land, 9efcb71 recall, cb5289a fixes+previews, fe49b5b dashboard.
+Current: 2026-10-08 05:10 CEST. M0–M6 built, M7/M8 implementers finishing, M9 config written. No milestone is
+marked accepted until a verifier has re-run its Accept commands. All pushed to `feat/ryke-mvp` through 62a095b.
 
-| Milestone | State | Evidence |
+| Milestone | State | Evidence so far |
 |---|---|---|
-| M0 Foundations | built, needs verifier | npm test green: vitest 532 + node 383 at 05:30; store-contract (local) 9/9 |
-| M1 Ledger core | built, needs curl walkthrough + verifier | ledger 45, api 263, mcp 126 tests |
+| M0 Foundations | built, needs verifier | npm test green (vitest + node:test); store-contract (local) 9/9 |
+| M1 Ledger core | built, needs curl walkthrough + verifier | ledger, api, mcp suites green |
 | M2 Landing | built, needs verifier | `npm run e2e:land` PASS (train of 2, stale with delta, bisection 3 probes isolates "broken by design", trunk 89 tests green) |
-| M3 Demo app + scripted swarm | swarm in progress | demo seed + 40 tasks + 70 patches (check.mjs all --strict 73/73); previews 76 tests |
-| M4 Dashboard | views built | web-line 288, web-txn 185, web-bench 113, web-replay 130; `npm run shots` todo |
-| M5 Jev + contention | in progress | judge-questions.ts refactor; calibration implementer running |
-| M6 Recall | built, e2e:recall todo | recall-exec 10 tests (cascade, forced second pass, requeue) |
-| M7 Bench | todo | |
-| M8 Claude agent mode | partial | container Runner DO 239 tests; gateway token minting in progress |
-| M9 Production + docs | todo | |
+| M3 Demo app + scripted swarm | built, needs verifier | swarm 12 agents: 37 landed, 9 T-precision stale aborts all landed on retry, G5 protected, trunk 707 tests green, previews 200; G3 reworded (DECISIONS) |
+| M4 Dashboard | views built; `npm run shots` in progress | web-line, web-txn, web-bench, web-replay suites |
+| M5 Jev + contention | calibration done; contention numbers todo | docs/jev-calibration.md 94 % overall, 89 % holdout; leases held until landing + refresh (0d2a9cd) |
+| M6 Recall | built; e2e:recall PASS 05:40, needs verifier | `RYKE_PORT_OFFSET=85 npm run e2e:recall` (clean worktree of 62a095b): swarm 4m45s; recall targets the 2 G6 txns, 4 dependents planned, cascade 1 (kelvin-remove), 3 stay landed revalidated by the recall verify; cascaded intent re-queued and landed on attempt 1; trunk ccfec681 seq 39 tests green; PASS |
+| M7 Bench | harness in progress | measured run waits for a quiet VM |
+| M8 Claude agent mode | Runner DO + gateway committed; agent.sh, stub, Dockerfile in progress | |
+| M9 Production + docs | wrangler production env, README, how-it-works, deploy.md written; dry run todo | |
 
 ## How things fit (for after compaction)
 - Worker: `src/worker/index.ts` → api.ts (Hono, /api), mcp.ts (/mcp), /internal/events. service.ts shared by both.
@@ -29,10 +29,10 @@ Commits on feat/ryke-mvp: 6e5e37b core, 75ca247 demo+verify+e2e:land, 9efcb71 re
 - dev/stack.mjs = startStack({offset}) used by dev/all.mjs and e2e scripts.
 
 ## Next
-1. Swarm implementer reports → commit; run M3 accept; contention on/off numbers (M5).
-2. Jev implementer reports → commit judge tests + fixtures + calibration doc.
-3. Bench (M7) implementer; claude mode (M8) implementer; e2e:recall; npm run shots.
-4. Verifiers per milestone, reviewers per area; then M9 wrangler production config + docs + PR.
+1. e2e:recall result; merge bench, claude mode, interface fixes, recall dialog + shots as each reports.
+2. M1 curl walkthrough; contention on/off numbers (M5); measured bench alone on a quiet VM (M7).
+3. Export Runner + Outbound (done, uncommitted) → `npm run deploy:dry` (M9).
+4. Verifiers per milestone (offsets 0/10/20/30/40), final reviewer round, fixes; then the PR.
 
 ## Known issues (review round 1, 2026-10-08 ~07:30) — fixing now, failing tests first
 - [x] A approval survives retry → gate skipped (both reviews)
@@ -54,3 +54,6 @@ Commits on feat/ryke-mvp: 6e5e37b core, 75ca247 demo+verify+e2e:land, 9efcb71 re
 ## Log
 - 05:00 vitest: 10 files, 523 tests passed (policy 56, validate 52, trains 111, heat 57, recall 76, diff 56,
   similar 60, store-contract 9, ledger 45, health 1).
+- 05:40 e2e:recall PASS from a detached worktree (see M6 row). The run before it, in the main tree, was
+  wrecked by an edit to src/worker/index.ts: vite reloaded the Worker under the swarm (11 agent_error
+  aborts, a train wedged in verifying). Since then stacks from dev/stack.mjs run without a file watcher.
