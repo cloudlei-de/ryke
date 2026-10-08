@@ -1,6 +1,6 @@
 # Progress
 
-Current: 2026-10-08 14:26 CEST (12:26 UTC). PR cloudlei-de/ryke#1 open. Since: C1 speculative pipelining
+Current: 2026-10-08 15:27 CEST (13:27 UTC). PR cloudlei-de/ryke#1 open. Since: C1 speculative pipelining
 built (0a75cd1), e2e:contention made honest (8e3bfdd), main bench and ablations re-run with pipelining on.
 
 | Milestone | State | Verifier evidence (commit) |
@@ -77,3 +77,8 @@ built (0a75cd1), e2e:contention made honest (8e3bfdd), main bench and ablations 
   (2 targets, 1 cascade re-landed, 3 revalidated), claude, api, deploy (dry run, --containers-rollout=none).
 - 12:30 UTC review fixes: docs claims audit (5ca709e), harness counting and margins (cce3e9f); e2e:contention
   PASS at cce3e9f with its JSON committed; calibration re-run at HEAD (94 %, 39/39 reference patches land).
+- 13:35 UTC second C1 review fixed (a1301fc: no spec on a ryke.json change, trainBisecting before the first
+  probe, committed trains end as landed); e2e:land and e2e:recall PASS at a1301fc. e2e:swarm failed twice
+  there on a slow judge API (every gate call timed out at 3 s, answered neutral: 13 then 31 landed); the
+  gate now waits 15 s per attempt and the report counts neutral verdicts (a5c0e10): e2e:swarm PASS at
+  a5c0e10, 36 landed, 23 speculative trains all confirmed. Gate at a5c0e10: vitest 3095, node 1896.
