@@ -43,6 +43,8 @@ function gitEnv(extra = {}) {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
+    // Callers and tests match git's English messages.
+    LC_ALL: "C",
     ...extra,
   };
   if (process.env.PATH) env.PATH = process.env.PATH;
@@ -184,7 +186,11 @@ export async function startStore({
   await fs.rm(tmpRoot, { recursive: true, force: true });
   await fs.mkdir(tmpRoot, { recursive: true });
 
-  const repoDir = (name) => path.join(nsDir, `${name}.git`);
+  // Names are case sensitive but macOS and Windows volumes are not, so "Foo" and "foo" would share
+  // a directory. Each capital becomes "+" plus its lowercase letter; "+" cannot occur in a valid
+  // name, so the encoding is injective and the on-disk name is already all lowercase.
+  const diskName = (name) => name.replace(/[A-Z]/g, (c) => `+${c.toLowerCase()}`);
+  const repoDir = (name) => path.join(nsDir, `${diskName(name)}.git`);
   let baseUrl = "";
   const remoteFor = (name) => `${baseUrl}/git/${namespace}/${name}.git`;
 
@@ -537,7 +543,7 @@ export async function startStore({
     const env = gitEnv({
       GIT_PROJECT_ROOT: nsDir,
       GIT_HTTP_EXPORT_ALL: "1",
-      PATH_INFO: `/${name}.git/${rest}`,
+      PATH_INFO: `/${diskName(name)}.git/${rest}`,
       REQUEST_METHOD: req.method,
       QUERY_STRING: url.search.slice(1),
       REMOTE_USER: "ryke",

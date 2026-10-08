@@ -21,7 +21,7 @@ main(async ({ remote, seed = "", message, policy }) => {
     const current = await readFile(file, "utf8").then(JSON.parse, () => ({}));
     await writeFile(file, `${JSON.stringify({ ...current, ...JSON.parse(policy) }, null, 2)}\n`);
   }
-  await git(dir, ["init", "-q", "-b", "main"]);
+  await git(dir, ["init", "-q", "--template=", "-b", "main"]);
   await git(dir, ["add", "-A"]);
   await git(dir, ["commit", "-q", "-m", message || (seed ? `Seed ${seed}` : "Initial commit")]);
   const sha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();

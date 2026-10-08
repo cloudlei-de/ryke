@@ -150,7 +150,11 @@ for (const [kind, source] of Object.entries(SCRIPT_SOURCES)) writeFileSync(join(
 mkdirSync(join(SCRIPTS, "dirkind.sh")); // matches the kind syntax but is not a script
 // A script exists behind every kind in BAD_SUBMISSIONS that is rejected for its syntax, so nothing
 // but the syntax check can turn them away.
-for (const name of ["Echo", "1echo", "echo_x", "echo.sh", "echo x"]) writeFileSync(join(SCRIPTS, `${name}.sh`), "echo hi\n");
+// "Echo" would overwrite the real echo.sh on a case-insensitive filesystem (macOS), so it is only
+// written when it is a distinct file there; the syntax check is what rejects it either way.
+for (const name of ["Echo", "1echo", "echo_x", "echo.sh", "echo x"]) {
+  if (!existsSync(join(SCRIPTS, `${name}.sh`))) writeFileSync(join(SCRIPTS, `${name}.sh`), "echo hi\n");
+}
 writeFileSync(join(ROOT, "echo.sh"), "echo hi\n"); // what kind "../echo" would resolve to
 
 const it = (name, fn) => test(name, { timeout: 30_000 }, fn);
@@ -486,8 +490,8 @@ it("a job does not see the credentials in the runner host's environment", async 
   }
   assert.equal(job.result.env.PATH, process.env.PATH);
   assert.equal(job.result.env.HTTPS_PROXY, "http://proxy.invalid:3128");
-  // Nothing outside the allow-list, the runner's own variables and what bash adds to every script.
-  const allowed = new RegExp(`^(${[...HOST_NAMES, ...PROXY_NAMES, "NODE_OPTIONS", "NODE_BIN", "PWD", "OLDPWD", "SHLVL", "_"].join("|")}|LC_.*|RYKE_(JOB_ID|JOB_DIR|EVIDENCE_DIR|ROOT|RUNNER_LOCAL))$`);
+  // Nothing outside the allow-list, the runner's own variables and what bash adds to every script. macOS adds __CF_USER_TEXT_ENCODING to every process at exec, so the runner cannot keep it out and it carries no secret.
+  const allowed = new RegExp(`^(${[...HOST_NAMES, ...PROXY_NAMES, "NODE_OPTIONS", "NODE_BIN", "PWD", "OLDPWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"].join("|")}|LC_.*|RYKE_(JOB_ID|JOB_DIR|EVIDENCE_DIR|ROOT|RUNNER_LOCAL))$`);
   assert.deepEqual(
     Object.keys(job.result.env).filter((name) => !allowed.test(name)),
     [],
