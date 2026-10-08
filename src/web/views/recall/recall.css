@@ -1,0 +1,496 @@
+/* Recall dialog (PLAN.md §12 view 4). A printed notice laid over the timetable: hairline border, no shadow,
+   no gradient, no radius. --recall marks what is reverted; everything else stays ink on paper. */
+.rail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 6px;
+}
+.recall-open {
+  padding: 1px 6px;
+  font-size: 12px;
+}
+.recall-open:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.recall-open:disabled:hover {
+  background: transparent;
+  color: inherit;
+}
+
+/* The backdrop is paper at partial strength: the Line stays readable behind the dialog, which is how the
+   recall animation is watched while the dialog is open. */
+.recall-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px 16px;
+  background: color-mix(in srgb, var(--paper) 72%, transparent);
+}
+.recall {
+  display: flex;
+  flex-direction: column;
+  width: 760px;
+  max-width: 100%;
+  max-height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  border: var(--hair) solid var(--rule);
+  border-radius: 0;
+  outline: none;
+}
+.recall :is(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--run);
+  outline-offset: 2px;
+}
+.recall button:disabled,
+.recall input:disabled,
+.recall select:disabled,
+.recall textarea:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.recall button:disabled:hover {
+  background: transparent;
+  color: inherit;
+}
+.recall .spacer {
+  flex: 1;
+}
+
+.recall-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: none;
+  padding: 8px 16px 6px;
+  border-bottom: var(--hair) solid var(--rule);
+}
+.recall-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.recall kbd {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: var(--hair) solid var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.recall-close:hover kbd {
+  border-color: var(--paper);
+  color: var(--paper);
+}
+
+.recall-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 16px;
+}
+.recall-lede {
+  margin: 0 0 12px;
+  max-width: 62ch;
+}
+.recall-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ---- admin token */
+.recall-token {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: var(--hair) solid var(--rule);
+  border-left: 8px solid var(--caution);
+}
+.recall-token label {
+  display: grid;
+  gap: 2px;
+}
+.recall-token input {
+  width: 260px;
+  max-width: 100%;
+  font-family: var(--mono);
+}
+
+/* ---- the choice */
+.recall-pick {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  align-items: end;
+}
+.recall-kinds {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.recall-kinds .recall-label {
+  margin-right: 12px;
+}
+.recall-kinds button {
+  margin-left: -1px;
+  padding: 2px 12px;
+}
+.recall-kinds button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.recall-field {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.recall-field select,
+.recall-field textarea {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.recall-field select {
+  padding: 3px 8px;
+}
+.recall-field textarea {
+  display: block;
+  padding: 4px 8px;
+  resize: vertical;
+  color: inherit;
+  background: transparent;
+  border: var(--hair) solid var(--rule);
+  border-radius: 0;
+}
+.recall-hint {
+  font-size: 12px;
+}
+.recall-hint[data-tone="stop"] {
+  color: var(--stop-text);
+}
+.recall-plan-btn {
+  min-width: 96px;
+  padding: 4px 14px;
+  font-weight: 600;
+}
+
+/* ---- the plan */
+.recall-result {
+  margin-top: 14px;
+}
+.recall-error {
+  margin: 0 0 10px;
+  color: var(--stop-text);
+  font-weight: 600;
+}
+.recall-plan,
+.recall-outcome {
+  border-top: var(--hair) solid var(--rule);
+  padding-top: 10px;
+}
+.recall-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+.recall-plan h3,
+.recall-outcome h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.recall-plan h3 {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-size: 13px;
+}
+.recall-key {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.recall-key i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  border: var(--hair) solid var(--rule);
+}
+.recall-key i[data-tone="revert"] {
+  background: var(--recall);
+  border-color: var(--recall);
+}
+.recall-sentence {
+  margin: 6px 0 10px;
+  max-width: 68ch;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+/* One row per transaction on a vertical trunk: a filled node is reverted, an outlined node is revalidated. */
+.recall-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.recall-rows li {
+  display: grid;
+  grid-template-columns: 22px 26px 118px minmax(0, 1fr) 13ch;
+  grid-template-areas: "node num id intent role" "node num who who role";
+  column-gap: 8px;
+  align-items: baseline;
+  position: relative;
+  padding: 4px 8px 4px 0;
+  font-size: 13px;
+}
+.recall-rows .node {
+  grid-area: node;
+  position: relative;
+  align-self: stretch;
+}
+/* The trunk, drawn through every row so the rows read as consecutive commits. */
+.recall-rows .node::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 10px;
+  width: 2px;
+  background: var(--ink);
+}
+.recall-rows li:first-child .node::before {
+  top: 12px;
+}
+.recall-rows li:last-child .node::before {
+  bottom: calc(100% - 12px);
+}
+.recall-rows li:only-child .node::before {
+  display: none;
+}
+.recall-rows .node::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 5px;
+  width: 12px;
+  height: 12px;
+  background: var(--paper);
+  border: var(--hair) solid var(--rule);
+}
+.recall-rows :is(li[data-tone="revert"], li[data-tone="cascade"]) .node::after {
+  background: var(--recall);
+  border-color: var(--recall);
+}
+.recall-rows .num {
+  grid-area: num;
+  color: var(--recall-text);
+  font-weight: 600;
+  text-align: right;
+}
+.recall-rows .id {
+  grid-area: id;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recall-rows .intent {
+  grid-area: intent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recall-rows .who {
+  grid-area: who;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.recall-rows .role {
+  grid-area: role;
+  justify-self: end;
+  align-self: start;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* Struck through in --recall: this is what the revert takes out of trunk. */
+.recall-rows :is(li[data-tone="revert"], li[data-tone="cascade"]) :is(.id, .intent) {
+  text-decoration: line-through;
+  text-decoration-color: var(--recall);
+  text-decoration-thickness: 2px;
+}
+.recall-rows :is(li[data-tone="revert"], li[data-tone="cascade"]) .role {
+  color: var(--recall-text);
+  font-weight: 600;
+}
+.recall-rows .requeued a {
+  text-underline-offset: 2px;
+}
+/* Outlined: it stays on trunk and is revalidated by the tests that run after the revert. */
+.recall-rows :is(li[data-tone="revalidate"], li[data-tone="stay"]) {
+  margin: 2px 0;
+  outline: var(--hair) solid var(--rule);
+  outline-offset: -1px;
+}
+.recall-rows :is(li[data-tone="revalidate"], li[data-tone="stay"]) .role {
+  color: var(--muted);
+}
+
+.recall-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 8px 16px;
+  border-top: var(--hair) solid var(--rule);
+}
+/* While the reverts and the tests run, a hatched strip crawls along the top of the foot. Hatching is this
+   page's only tonal step. */
+.recall-foot {
+  position: relative;
+}
+.recall-foot[data-busy="true"]::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--hatch);
+  background-size: 7px 7px;
+  animation: recall-run 0.7s linear infinite;
+}
+@keyframes recall-run {
+  to {
+    background-position: 7px 0;
+  }
+}
+.recall-go {
+  min-width: 140px;
+  padding: 4px 14px;
+  font-weight: 600;
+  border-color: var(--recall);
+  color: var(--recall-text);
+}
+.recall-go:hover {
+  background: var(--recall-text);
+  color: var(--paper);
+}
+
+/* ---- the outcome */
+.recall-outcome {
+  padding: 8px 12px 10px;
+  border: var(--hair) solid var(--rule);
+  border-left: 8px solid var(--go);
+}
+.recall-outcome[data-tone="stop"] {
+  border-left-color: var(--stop);
+}
+.recall-outcome h3 {
+  font-size: 16px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.recall-outcome .recall-sentence {
+  margin-top: 2px;
+}
+.recall-outcome dl {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0 0;
+}
+.recall-outcome dl > div {
+  display: grid;
+  grid-template-columns: 9ch minmax(0, 1fr);
+  gap: 12px;
+}
+.recall-outcome dt {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.recall-outcome dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.recall-failures {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---- phone: the dialog takes the screen and scrolls inside */
+@media (max-width: 760px) {
+  .recall-scrim {
+    padding: 0;
+  }
+  .recall {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border: none;
+  }
+  .recall-pick {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .recall-plan-btn {
+    justify-self: start;
+  }
+  .recall-kinds {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .recall-rows li {
+    grid-template-columns: 22px 22px minmax(0, 1fr) auto;
+    grid-template-areas: "node num id role" "node num intent intent" "node num who who";
+  }
+  .recall-rows .id {
+    overflow: visible;
+  }
+  .recall-rows .intent {
+    white-space: normal;
+  }
+  .recall-outcome dl > div {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .recall-foot {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recall-foot[data-busy="true"]::before {
+    animation: none;
+  }
+}

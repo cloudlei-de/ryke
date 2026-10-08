@@ -1,0 +1,82 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..6a7da21 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the area converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..66985ba 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { area } from "./units/area.ts";
+diff --git a/src/units/area.ts b/src/units/area.ts
+new file mode 100644
+index 0000000..6b76802
+--- /dev/null
++++ b/src/units/area.ts
+@@ -0,0 +1,18 @@
++import type { Category } from "../types.ts";
++
++export const area: Category = {
++  id: "area",
++  name: "Area",
++  base: "m²",
++  units: [
++    { id: "m2", name: "Square metre", symbol: "m²", toBase: (v) => v, fromBase: (v) => v },
++    { id: "km2", name: "Square kilometre", symbol: "km²", toBase: (v) => v * 1e6, fromBase: (v) => v / 1e6 },
++    { id: "ha", name: "Hectare", symbol: "ha", toBase: (v) => v * 10000, fromBase: (v) => v / 10000 },
++    { id: "cm2", name: "Square centimetre", symbol: "cm²", toBase: (v) => v * 1e-4, fromBase: (v) => v / 1e-4 },
++    { id: "ft2", name: "Square foot", symbol: "ft²", toBase: (v) => v * 0.09290304, fromBase: (v) => v / 0.09290304 },
++    { id: "in2", name: "Square inch", symbol: "in²", toBase: (v) => v * 0.00064516, fromBase: (v) => v / 0.00064516 },
++    { id: "yd2", name: "Square yard", symbol: "yd²", toBase: (v) => v * 0.83612736, fromBase: (v) => v / 0.83612736 },
++    { id: "ac", name: "Acre", symbol: "ac", toBase: (v) => v * 4046.8564224, fromBase: (v) => v / 4046.8564224 },
++    { id: "mi2", name: "Square mile", symbol: "mi²", toBase: (v) => v * 2589988.110336, fromBase: (v) => v / 2589988.110336 },
++  ],
++};
+diff --git a/test/area.test.ts b/test/area.test.ts
+new file mode 100644
+index 0000000..8afd5be
+--- /dev/null
++++ b/test/area.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=area&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "ha", to: "m2", v: 1, result: 10000, display: "10000.00" },
++  { from: "ac", to: "m2", v: 1, result: 4046.8564224, display: "4046.86" },
++  { from: "mi2", to: "ha", v: 1, result: 258.998811034, display: "259.00" },
++];
++
++for (const c of cases) {
++  test(`area: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`area: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("area has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/area"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Area"));
++});

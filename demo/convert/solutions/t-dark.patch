@@ -1,0 +1,203 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..676cec1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add a dark theme with a footer toggle.
+diff --git a/src/ui/layout.ts b/src/ui/layout.ts
+index 19d4873..2e6df54 100644
+--- a/src/ui/layout.ts
++++ b/src/ui/layout.ts
+@@ -28,6 +28,18 @@ ${body}
+ </main>
+ <footer class="site-footer">
+   <p>Convert is the demo app for Ryke.</p>
++  <button class="theme-toggle" type="button" data-theme-toggle>Toggle dark mode</button>
++  <script>
++    (function () {
++      var root = document.documentElement;
++      try { var saved = localStorage.getItem("convert:theme"); if (saved) root.dataset.theme = saved; } catch (e) {}
++      document.querySelector("[data-theme-toggle]").addEventListener("click", function () {
++        var dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
++        root.dataset.theme = dark ? "light" : "dark";
++        try { localStorage.setItem("convert:theme", root.dataset.theme); } catch (e) {}
++      });
++    })();
++  </script>
+ </footer>
+ </body>
+ </html>
+diff --git a/src/ui/styles.ts b/src/ui/styles.ts
+index 87f0a77..c8690fa 100644
+--- a/src/ui/styles.ts
++++ b/src/ui/styles.ts
+@@ -28,4 +28,8 @@ button { cursor: pointer; }
+ .table { width: 100%; border-collapse: collapse; background: var(--surface); }
+ .table td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+ .site-footer { padding: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme="light"]) { --bg: #151413; --surface: #1f1d1b; --fg: #f1efeb; --muted: #a39e97; --line: #35322e; --accent: #ff8a4c; }
++}
++:root[data-theme="dark"] { --bg: #151413; --surface: #1f1d1b; --fg: #f1efeb; --muted: #a39e97; --line: #35322e; --accent: #ff8a4c; }
+ `;
+diff --git a/test/dark.test.ts b/test/dark.test.ts
+new file mode 100644
+index 0000000..d33bec8
+--- /dev/null
++++ b/test/dark.test.ts
+@@ -0,0 +1,152 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import vm from "node:vm";
++import worker from "../src/index.ts";
++import { styles } from "../src/ui/styles.ts";
++
++async function html(path: string): Promise<string> {
++  return (await worker.fetch(new Request(`http://localhost${path}`))).text();
++}
++
++function footer(page: string): string {
++  return page.slice(page.indexOf("<footer"), page.indexOf("</footer>"));
++}
++
++// A missing block gives an empty set, so the test that needs it fails by name instead of the whole file failing to load.
++function colours(block: string | undefined): Record<string, string> {
++  if (block === undefined) return {};
++  return Object.fromEntries([...block.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()]));
++}
++
++const lightColours = colours(/^:root \{([^}]*)\}/m.exec(styles)?.[1]);
++const systemColours = colours(/@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\) \{([^}]*)\}/.exec(styles)?.[1]);
++const explicitColours = colours(/^:root\[data-theme="dark"\] \{([^}]*)\}/m.exec(styles)?.[1]);
++
++type Storage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
++
++function memoryStorage(initial: Record<string, string> = {}): Storage & { saved: Map<string, string> } {
++  const saved = new Map(Object.entries(initial));
++  return { saved, getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => void saved.set(key, value) };
++}
++
++// There is no DOM in the demo, so the script the footer ships runs against the few members it uses. Each call is
++// one page load: a fresh <html> element, with the storage and the system setting handed in.
++function loadPage(page: string, { system = "light", storage }: { system?: "light" | "dark"; storage?: Storage | "blocked" } = {}) {
++  const script = /<script>([\s\S]*?)<\/script>/.exec(footer(page))?.[1];
++  assert.ok(script, "the footer carries the theme script");
++  const root: { dataset: { theme?: string } } = { dataset: {} };
++  let onClick: (() => void) | undefined;
++  const button = {
++    addEventListener(type: string, listener: () => void) {
++      if (type === "click") onClick = listener;
++    },
++  };
++  const sandbox: Record<string, unknown> = {
++    document: {
++      documentElement: root,
++      querySelector: (selector: string) => (selector === "[data-theme-toggle]" ? button : null),
++    },
++    matchMedia: (query: string) => ({ matches: query === "(prefers-color-scheme: dark)" && system === "dark" }),
++  };
++  // Browsers throw on any access to localStorage when site data is blocked, not only on its methods.
++  if (storage === "blocked") {
++    Object.defineProperty(sandbox, "localStorage", {
++      get() {
++        throw new Error("SecurityError");
++      },
++    });
++  } else sandbox.localStorage = storage ?? memoryStorage();
++  vm.runInNewContext(script, sandbox);
++  return {
++    theme: () => root.dataset.theme,
++    toggle() {
++      assert.ok(onClick, "the script listens for clicks on the toggle");
++      onClick();
++    },
++  };
++}
++
++test("dark colours exist for the system preference and for an explicit data-theme=dark", () => {
++  assert.ok(Object.keys(lightColours).length > 0);
++  assert.ok(Object.keys(systemColours).length > 0, "no dark colours for the system preference");
++  assert.ok(Object.keys(explicitColours).length > 0, "no dark colours for data-theme=dark");
++  assert.deepEqual(systemColours, explicitColours);
++  for (const name of Object.keys(explicitColours)) assert.ok(name in lightColours, `${name} has no light value to override`);
++  for (const name of ["--bg", "--surface", "--fg"]) assert.notEqual(explicitColours[name], lightColours[name], `${name} is the same in both themes`);
++});
++
++test("an explicit data-theme=light is not overridden by the dark system preference", () => {
++  assert.ok(styles.includes(':root:not([data-theme="light"])'));
++  assert.ok(!/@media \(prefers-color-scheme: dark\) \{\s*:root \{/.test(styles), "the media block would win over an explicit light choice");
++});
++
++test("the footer of the home page, a converter page and the not-found page has the theme toggle button", async () => {
++  for (const path of ["/", "/c/mass", "/nope"]) {
++    const foot = footer(await html(path));
++    assert.match(foot, /<button[^>]*\bdata-theme-toggle\b[^>]*>[^<]+<\/button>/, `${path}: no toggle button`);
++    assert.ok(foot.includes("<script>"), `${path}: no theme script`);
++  }
++});
++
++test("the toggle switches data-theme between light and dark", async () => {
++  const page = await html("/");
++  for (const [preference, start, sequence] of [
++    ["light", undefined, ["dark", "light", "dark"]],
++    ["dark", undefined, ["light", "dark", "light"]],
++    ["light", "dark", ["light", "dark"]],
++    ["dark", "light", ["dark", "light"]],
++  ] as const) {
++    const load = loadPage(page, { system: preference, storage: memoryStorage(start ? { "convert:theme": start } : {}) });
++    const seen: (string | undefined)[] = [];
++    for (let i = 0; i < sequence.length; i++) {
++      load.toggle();
++      seen.push(load.theme());
++    }
++    assert.deepEqual(seen, sequence, `system ${preference}, saved ${start ?? "nothing"}`);
++  }
++});
++
++test("the toggle starts from the system preference when no theme was chosen yet", async () => {
++  const page = await html("/c/mass");
++  const onLightSystem = loadPage(page, { system: "light" });
++  assert.equal(onLightSystem.theme(), undefined);
++  onLightSystem.toggle();
++  assert.equal(onLightSystem.theme(), "dark");
++  const onDarkSystem = loadPage(page, { system: "dark" });
++  assert.equal(onDarkSystem.theme(), undefined);
++  onDarkSystem.toggle();
++  assert.equal(onDarkSystem.theme(), "light");
++});
++
++test("the toggle remembers the choice in localStorage", async () => {
++  const storage = memoryStorage();
++  const load = loadPage(await html("/"), { storage });
++  assert.equal(storage.saved.size, 0, "nothing is stored before the first click");
++  load.toggle();
++  assert.equal(storage.saved.get("convert:theme"), "dark");
++  load.toggle();
++  assert.equal(storage.saved.get("convert:theme"), "light");
++});
++
++test("the remembered theme is applied on the next load, on any page", async () => {
++  const storage = memoryStorage();
++  const first = loadPage(await html("/"), { storage });
++  first.toggle();
++  assert.equal(first.theme(), "dark");
++  for (const path of ["/", "/c/mass", "/nope"]) {
++    assert.equal(loadPage(await html(path), { storage }).theme(), "dark", `${path} after choosing dark`);
++  }
++  first.toggle();
++  assert.equal(loadPage(await html("/c/length"), { storage }).theme(), "light", "after choosing light again");
++  // An explicit light choice stays light although the system setting is dark.
++  assert.equal(loadPage(await html("/"), { storage, system: "dark" }).theme(), "light");
++});
++
++test("the toggle still switches the theme when localStorage is blocked", async () => {
++  const load = loadPage(await html("/"), { storage: "blocked" });
++  assert.equal(load.theme(), undefined);
++  load.toggle();
++  assert.equal(load.theme(), "dark");
++  load.toggle();
++  assert.equal(load.theme(), "light");
++});

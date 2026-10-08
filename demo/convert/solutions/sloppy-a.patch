@@ -1,0 +1,43 @@
+diff --git a/src/units/temperature.ts b/src/units/temperature.ts
+index ccabd3c..f04bdf2 100644
+--- a/src/units/temperature.ts
++++ b/src/units/temperature.ts
+@@ -7,7 +7,7 @@ export const temperature: Category = {
+   base: "°C",
+   units: [
+     { id: "c", name: "Celsius", symbol: "°C", toBase: (v) => v, fromBase: (v) => v },
+-    { id: "f", name: "Fahrenheit", symbol: "°F", toBase: (v) => ((v - 32) * 5) / 9, fromBase: (v) => (v * 9) / 5 + 32 },
++    { id: "f", name: "Fahrenheit", symbol: "°F", toBase: (v) => ((v - 32) * 5) / 9, fromBase: (v) => Math.round(((v * 9) / 5 + 32) * 10) / 10 },
+     { id: "k", name: "Kelvin", symbol: "K", toBase: (v) => v - 273.15, fromBase: (v) => v + 273.15 },
+   ],
+ };
+diff --git a/test/fahrenheit.test.ts b/test/fahrenheit.test.ts
+new file mode 100644
+index 0000000..84058ba
+--- /dev/null
++++ b/test/fahrenheit.test.ts
+@@ -0,0 +1,24 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++async function convert(v: number, from: string, to: string): Promise<number> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=temperature&from=${from}&to=${to}&v=${v}`));
++  return ((await res.json()) as { result: number }).result;
++}
++
++test("100 °C converts to 212 °F", async () => {
++  assert.ok(Math.abs((await convert(100, "c", "f")) - 212) < 1e-9);
++});
++
++test("0 °C converts to 32 °F", async () => {
++  assert.ok(Math.abs((await convert(0, "c", "f")) - 32) < 1e-9);
++});
++
++test("212 °F converts to 100 °C", async () => {
++  assert.ok(Math.abs((await convert(212, "f", "c")) - 100) < 1e-9);
++});
++
++test("32 °F converts to 0 °C", async () => {
++  assert.ok(Math.abs((await convert(32, "f", "c")) - 0) < 1e-9);
++});

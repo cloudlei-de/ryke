@@ -1,0 +1,199 @@
+/* Replay view: the Line above, a transport bar below. Hairlines and mono numbers, like the rest of the sheet. */
+.replay {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.replay-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+.replay-empty {
+  margin: 48px 24px;
+  font-size: 16px;
+}
+
+.scrubber {
+  flex: none;
+  padding: 10px 16px 12px;
+  border-top: var(--hair) solid var(--rule);
+  background: var(--paper);
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.controls .group {
+  display: inline-flex;
+}
+.controls .group button {
+  min-width: 34px;
+  height: 28px;
+  margin-left: -1px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.controls .group button:first-child {
+  margin-left: 0;
+}
+.controls .group button.play {
+  min-width: 72px;
+  font-family: var(--sans);
+  font-weight: 600;
+  background: var(--ink);
+  color: var(--paper);
+}
+.controls .group button.play:hover {
+  background: transparent;
+  color: var(--ink);
+}
+.controls .group button[aria-pressed="true"]:not(.play) {
+  background: var(--ink);
+  color: var(--paper);
+}
+.controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.controls button:focus-visible,
+.track input:focus-visible {
+  outline: 2px solid var(--run);
+  outline-offset: 2px;
+}
+.readout {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.readout .elapsed {
+  font-size: 22px;
+  font-weight: 500;
+}
+.controls .spacer {
+  flex: 1;
+}
+.controls .status {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.track {
+  position: relative;
+  margin-top: 8px;
+}
+/* Ticks sit above the rail where the run landed, went stale or was recalled; the thumb is 10 px wide, so
+   positions are inset by half of it to line up with the thumb centre. */
+.marks {
+  position: relative;
+  height: 9px;
+}
+.marks i {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 9px;
+  margin-left: -1px;
+  background: var(--muted);
+}
+.marks i[data-tone="go"] {
+  background: var(--go);
+}
+.marks i[data-tone="stop"] {
+  background: var(--stop);
+  height: 6px;
+}
+.marks i[data-tone="recall"] {
+  background: var(--recall);
+  height: 6px;
+}
+.track input[type="range"] {
+  display: block;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.track input[type="range"]:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.track input[type="range"]::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--ink);
+}
+.track input[type="range"]::-moz-range-track {
+  height: 1px;
+  background: var(--ink);
+}
+.track input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 20px;
+  margin-top: -10px;
+  border: var(--hair) solid var(--ink);
+  border-radius: 0;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 3px var(--ink);
+}
+.track input[type="range"]::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 10px;
+  height: 20px;
+  border: var(--hair) solid var(--ink);
+  border-radius: 0;
+  background: var(--ink);
+}
+.ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.current {
+  margin: 8px 0 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.current .sep {
+  margin: 0 8px;
+  color: var(--muted);
+}
+.current .kind {
+  font-weight: 600;
+}
+.current[data-signal="go"] .kind {
+  color: var(--go-text);
+}
+.current[data-signal="stop"] .kind {
+  color: var(--stop-text);
+}
+.current[data-signal="caution"] .kind {
+  color: var(--caution-text);
+}
+.current[data-signal="run"] .kind {
+  color: var(--run-text);
+}
+.current[data-signal="recall"] .kind {
+  color: var(--recall-text);
+}
+
+@media (max-width: 640px) {
+  .scrubber {
+    padding: 10px 16px 12px;
+  }
+  .controls .spacer {
+    display: none;
+  }
+}

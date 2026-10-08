@@ -2,6 +2,54 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-export default defineConfig({
-  plugins: [react(), cloudflare()],
-});
+declare const process: { env: Record<string, string | undefined> };
+
+// dev/stack.mjs passes the port offset; the Worker must talk to the store and runner of the same stack.
+const offset = Number(process.env.RYKE_PORT_OFFSET ?? 0);
+const stateDir = process.env.RYKE_STATE_DIR ?? (offset ? `.ryke-${offset}` : ".ryke");
+// `npm run deploy` builds with CLOUDFLARE_ENV=production; the local overrides must not leak into that build.
+const production = process.env.CLOUDFLARE_ENV === "production";
+// A stack started by dev/stack.mjs (tests, e2e, the harness) must not reload its Worker when someone
+// edits the tree under a running swarm; `npm run dev:all` opts back in with RYKE_WATCH=1.
+const watch = !process.env.RYKE_STATE_DIR || process.env.RYKE_WATCH === "1";
+
+export default defineConfig(({ command }) => ({
+  // Test files start several stacks at once from one checkout. With one shared optimizer cache, a stack
+  // that re-optimizes under load deletes the chunks another stack is serving ("file does not exist in
+  // the optimize deps directory"), so each stack keeps its own next to its state.
+  ...(process.env.RYKE_STATE_DIR ? { cacheDir: `${stateDir}/vite` } : {}),
+  plugins: [
+    react(),
+    cloudflare({
+      persistState: { path: `${stateDir}/wrangler` },
+      config: (cfg) =>
+        production
+          ? {}
+          : {
+              vars: {
+                ...cfg.vars,
+                RYKE_STORE_URL: `http://127.0.0.1:${8788 + offset}`,
+                RYKE_RUNNER_URL: `http://127.0.0.1:${8789 + offset}`,
+                // Recorded answers exist only for the tests' fixed requests; a swarm's requests never repeat,
+                // so locally Jev is live with a key and off (hard checks only) without one (judge.ts jevMode).
+                RYKE_JEV: process.env.RYKE_JEV ?? "auto",
+                // The plugin passes no shell variable to the Worker, so a key exported in the shell would
+                // never reach it. Only the dev server gets it: a build must not carry a secret in its config.
+                ...(command === "serve" && process.env.TYPESAFE_API_KEY ? { TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY } : {}),
+                // Verify screenshots cost a browser run per train, so only `npm run shots` turns them on.
+                RYKE_SCREENSHOTS: process.env.RYKE_SCREENSHOTS ?? "0",
+                // A fresh clone has no .dev.vars; these match dev/stack.mjs's defaults.
+                RYKE_TOKEN: process.env.RYKE_TOKEN ?? "dev",
+                RYKE_INTERNAL_SECRET: process.env.RYKE_INTERNAL_SECRET ?? "dev",
+              },
+            },
+    }),
+  ],
+  server: {
+    port: 5173 + offset,
+    strictPort: true,
+    host: "127.0.0.1",
+    // Every git object in a stack's state dir would otherwise cost an inotify watch.
+    watch: watch ? { ignored: ["**/.ryke/**", "**/.ryke-*/**", "**/.wrangler/**", "**/dist/**"] } : null,
+  },
+}));

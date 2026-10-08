@@ -1,0 +1,677 @@
+[
+  {
+    "name": "screen-duplicate",
+    "kind": "screen",
+    "input": {
+      "intent": "Add a speed category",
+      "live": [
+        {
+          "id": "t_speed",
+          "intent": "Add a speed category to the converter",
+          "footprint": [
+            "src/units/speed.ts",
+            "src/registry.ts"
+          ]
+        }
+      ]
+    },
+    "state": {
+      "new_intent": "Add a speed category",
+      "existing_1": "Add a speed category to the converter"
+    },
+    "questions": {
+      "dup_1": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_1_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_1_ba": {
+        "type": "score",
+        "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      }
+    }
+  },
+  {
+    "name": "screen-near-duplicate",
+    "kind": "screen",
+    "input": {
+      "intent": "Add a Power converter with watts, kilowatts, megawatts, horsepower and metric horsepower",
+      "live": [
+        {
+          "id": "t_power",
+          "intent": "Add the \"Power\" converter category with 7 units: W, kW, MW, hp, PS, BTU/h, kcal/h",
+          "footprint": [
+            "src/units/power.ts",
+            "src/registry.ts"
+          ]
+        }
+      ]
+    },
+    "state": {
+      "new_intent": "Add a Power converter with watts, kilowatts, megawatts, horsepower and metric horsepower",
+      "existing_1": "Add the \"Power\" converter category with 7 units: W, kW, MW, hp, PS, BTU/h, kcal/h"
+    },
+    "questions": {
+      "dup_1": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_1_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_1_ba": {
+        "type": "score",
+        "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      }
+    }
+  },
+  {
+    "name": "screen-conflict",
+    "kind": "screen",
+    "input": {
+      "intent": "Remove Kelvin from temperature and keep only Celsius and Fahrenheit",
+      "live": [
+        {
+          "id": "t_kelvin",
+          "intent": "Show Kelvin first in the temperature units",
+          "footprint": [
+            "src/units/temperature.ts"
+          ]
+        }
+      ]
+    },
+    "state": {
+      "new_intent": "Remove Kelvin from temperature and keep only Celsius and Fahrenheit",
+      "existing_1": "Show Kelvin first in the temperature units"
+    },
+    "questions": {
+      "dup_1": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_1_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_1_ba": {
+        "type": "score",
+        "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      }
+    }
+  },
+  {
+    "name": "screen-three-candidates",
+    "kind": "screen",
+    "input": {
+      "intent": "Add a speed category",
+      "live": [
+        {
+          "id": "t_angle",
+          "intent": "Add the \"Angle\" converter category with 6 units: °, rad, grad, turn, ′, ″",
+          "footprint": [
+            "src/units/angle.ts",
+            "src/registry.ts"
+          ]
+        },
+        {
+          "id": "t_search",
+          "intent": "Add a search box to the header that filters the category tiles on the home page",
+          "footprint": [
+            "src/ui/layout.ts"
+          ]
+        },
+        {
+          "id": "t_speed",
+          "intent": "Add a speed category to the converter",
+          "footprint": [
+            "src/units/speed.ts",
+            "src/registry.ts"
+          ]
+        }
+      ]
+    },
+    "state": {
+      "new_intent": "Add a speed category",
+      "existing_1": "Add a speed category to the converter",
+      "existing_2": "Add a search box to the header that filters the category tiles on the home page",
+      "existing_3": "Add the \"Angle\" converter category with 6 units: °, rad, grad, turn, ′, ″"
+    },
+    "questions": {
+      "dup_1": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_1_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_1_ba": {
+        "type": "score",
+        "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "dup_2": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_2` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_2`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_2_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_2` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_2_ba": {
+        "type": "score",
+        "instructions": "How do `existing_2` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "dup_3": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_3` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_3`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_3_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_3` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_3_ba": {
+        "type": "score",
+        "instructions": "How do `existing_3` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      }
+    }
+  },
+  {
+    "name": "gate-met",
+    "kind": "evidence",
+    "input": {
+      "gate": {
+        "intent": "Add the \"Time\" converter category with 7 units: s, ms, min, h, d, wk, yr",
+        "criteria": [
+          "The \"Time\" category is listed on the home page and /c/time renders its converter page.",
+          "/api/convert converts 90 min to h correctly (about 1.5) and returns the formatted value in display.",
+          "test/time.test.ts covers the conversions and their displayed values and passes."
+        ],
+        "writes": [
+          "src/units/time.ts",
+          "src/registry.ts",
+          "CHANGELOG.md",
+          "test/time.test.ts"
+        ],
+        "verify": {
+          "exitCode": 0,
+          "pass": true,
+          "tests": {
+            "passed": 68,
+            "failed": 0,
+            "failures": []
+          }
+        },
+        "tamper": false,
+        "newTests": [
+          "time: ${c.v} ${c.from} is ${c.result} ${c.to}",
+          "time: ${c.v} ${c.from} to ${c.to} displays as ${c.display}",
+          "time has a converter page"
+        ],
+        "diffstat": " CHANGELOG.md      |  1 +\n src/registry.ts   |  1 +\n src/units/time.ts | 16 ++++++++++++++++\n test/time.test.ts | 34 ++++++++++++++++++++++++++++++++++\n 4 files changed, 52 insertions(+)",
+        "screenshot": "Home page tile grid now includes a \"Time\" tile; its converter page lists 1 second in 6 other units."
+      }
+    },
+    "state": {
+      "intent": "Add the \"Time\" converter category with 7 units: s, ms, min, h, d, wk, yr",
+      "test_summary": "68 passed, 0 failed",
+      "new_tests": [
+        "time: ${c.v} ${c.from} is ${c.result} ${c.to}",
+        "time: ${c.v} ${c.from} to ${c.to} displays as ${c.display}",
+        "time has a converter page"
+      ],
+      "diff_stat": " CHANGELOG.md      |  1 +\n src/registry.ts   |  1 +\n src/units/time.ts | 16 ++++++++++++++++\n test/time.test.ts | 34 ++++++++++++++++++++++++++++++++++\n 4 files changed, 52 insertions(+)",
+      "screenshot_description": "(agent-provided) Home page tile grid now includes a \"Time\" tile; its converter page lists 1 second in 6 other units.",
+      "criterion_1": "The \"Time\" category is listed on the home page and /c/time renders its converter page.",
+      "criterion_2": "/api/convert converts 90 min to h correctly (about 1.5) and returns the formatted value in display.",
+      "criterion_3": "test/time.test.ts covers the conversions and their displayed values and passes."
+    },
+    "questions": {
+      "criterion_1": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "criterion_2": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_2` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "criterion_3": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_3` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "scope_creep": {
+        "type": "noul",
+        "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+        "criteria": {
+          "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+          "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+        }
+      }
+    }
+  },
+  {
+    "name": "gate-unmet",
+    "kind": "evidence",
+    "input": {
+      "gate": {
+        "intent": "Add the \"Area\" converter category with 9 units: m², km², ha, cm², ft², in², yd², ac, mi²",
+        "criteria": [
+          "The \"Area\" category is listed on the home page and /c/area renders its converter page."
+        ],
+        "writes": [
+          "src/units/volume.ts",
+          "src/registry.ts",
+          "CHANGELOG.md",
+          "test/volume.test.ts"
+        ],
+        "verify": {
+          "exitCode": 0,
+          "pass": true,
+          "tests": {
+            "passed": 83,
+            "failed": 0,
+            "failures": []
+          }
+        },
+        "tamper": false,
+        "newTests": [
+          "volume: ${c.v} ${c.from} is ${c.result} ${c.to}",
+          "volume: ${c.v} ${c.from} to ${c.to} displays as ${c.display}",
+          "volume has a converter page"
+        ],
+        "diffstat": " CHANGELOG.md        |  1 +\n src/registry.ts     |  1 +\n src/units/volume.ts | 19 +++++++++++++++++++\n test/volume.test.ts | 34 ++++++++++++++++++++++++++++++++++\n 4 files changed, 55 insertions(+)"
+      }
+    },
+    "state": {
+      "intent": "Add the \"Area\" converter category with 9 units: m², km², ha, cm², ft², in², yd², ac, mi²",
+      "test_summary": "83 passed, 0 failed",
+      "new_tests": [
+        "volume: ${c.v} ${c.from} is ${c.result} ${c.to}",
+        "volume: ${c.v} ${c.from} to ${c.to} displays as ${c.display}",
+        "volume has a converter page"
+      ],
+      "diff_stat": " CHANGELOG.md        |  1 +\n src/registry.ts     |  1 +\n src/units/volume.ts | 19 +++++++++++++++++++\n test/volume.test.ts | 34 ++++++++++++++++++++++++++++++++++\n 4 files changed, 55 insertions(+)",
+      "criterion_1": "The \"Area\" category is listed on the home page and /c/area renders its converter page."
+    },
+    "questions": {
+      "criterion_1": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "scope_creep": {
+        "type": "noul",
+        "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+        "criteria": {
+          "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+          "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+        }
+      }
+    }
+  },
+  {
+    "name": "gate-uncertain",
+    "kind": "evidence",
+    "input": {
+      "gate": {
+        "intent": "Add a search box to the header that filters the category tiles on the home page",
+        "criteria": [
+          "Every page has a search input in the header."
+        ],
+        "writes": [
+          "src/ui/layout.ts",
+          "CHANGELOG.md",
+          "test/search.test.ts"
+        ],
+        "verify": {
+          "exitCode": 0,
+          "pass": true,
+          "tests": {
+            "passed": 77,
+            "failed": 0,
+            "failures": []
+          }
+        },
+        "tamper": false,
+        "newTests": [
+          "${path} has the search box in the header",
+          "the filter script targets the search box and the tiles"
+        ],
+        "diffstat": " CHANGELOG.md        |  1 +\n src/ui/layout.ts    | 14 ++++++++++++++\n test/search.test.ts | 22 ++++++++++++++++++++++\n 3 files changed, 37 insertions(+)"
+      }
+    },
+    "state": {
+      "intent": "Add a search box to the header that filters the category tiles on the home page",
+      "test_summary": "77 passed, 0 failed",
+      "new_tests": [
+        "${path} has the search box in the header",
+        "the filter script targets the search box and the tiles"
+      ],
+      "diff_stat": " CHANGELOG.md        |  1 +\n src/ui/layout.ts    | 14 ++++++++++++++\n test/search.test.ts | 22 ++++++++++++++++++++++\n 3 files changed, 37 insertions(+)",
+      "criterion_1": "Every page has a search input in the header."
+    },
+    "questions": {
+      "criterion_1": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "scope_creep": {
+        "type": "noul",
+        "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+        "criteria": {
+          "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+          "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+        }
+      }
+    }
+  },
+  {
+    "name": "gate-scope-creep",
+    "kind": "evidence",
+    "input": {
+      "gate": {
+        "intent": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test",
+        "criteria": [
+          "A yard converts to 0.9144 m."
+        ],
+        "writes": [
+          "src/format.ts",
+          "src/index.ts",
+          "src/ui/layout.ts",
+          "src/ui/styles.ts",
+          "src/units/length.ts",
+          "test/imperial-length.test.ts"
+        ],
+        "verify": {
+          "exitCode": 0,
+          "pass": true,
+          "tests": {
+            "passed": 77,
+            "failed": 0,
+            "failures": []
+          }
+        },
+        "tamper": false,
+        "newTests": [
+          "a mile is about 1.609 km",
+          "a yard is 0.9144 m"
+        ],
+        "diffstat": " src/format.ts                |  14 +++++-\n src/index.ts                 |  31 ++++++++++-\n src/ui/layout.ts             |  63 +++++++++++++++++++++-\n src/ui/styles.ts             | 120 +++++++++++++++++++++++++++++++++++\n src/units/length.ts          |   2 +-\n test/imperial-length.test.ts |  15 +++++++\n 6 files changed, 233 insertions(+), 12 deletions(-)"
+      }
+    },
+    "state": {
+      "intent": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test",
+      "test_summary": "77 passed, 0 failed",
+      "new_tests": [
+        "a mile is about 1.609 km",
+        "a yard is 0.9144 m"
+      ],
+      "diff_stat": " src/format.ts                |  14 +++++-\n src/index.ts                 |  31 ++++++++++-\n src/ui/layout.ts             |  63 +++++++++++++++++++++-\n src/ui/styles.ts             | 120 +++++++++++++++++++++++++++++++++++\n src/units/length.ts          |   2 +-\n test/imperial-length.test.ts |  15 +++++++\n 6 files changed, 233 insertions(+), 12 deletions(-)",
+      "criterion_1": "A yard converts to 0.9144 m."
+    },
+    "questions": {
+      "criterion_1": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "scope_creep": {
+        "type": "noul",
+        "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+        "criteria": {
+          "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+          "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+        }
+      }
+    }
+  },
+  {
+    "name": "gate-no-criteria",
+    "kind": "evidence",
+    "input": {
+      "gate": {
+        "intent": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test",
+        "criteria": [],
+        "writes": [
+          "src/units/length.ts",
+          "test/imperial-length.test.ts"
+        ],
+        "verify": {
+          "exitCode": 0,
+          "pass": true,
+          "tests": {
+            "passed": 67,
+            "failed": 0,
+            "failures": []
+          }
+        },
+        "tamper": false,
+        "newTests": [
+          "a mile is about 1.609 km",
+          "a yard is 0.9144 m"
+        ],
+        "diffstat": " src/units/length.ts          |  2 +-\n test/imperial-length.test.ts | 15 +++++++++++++++\n 2 files changed, 16 insertions(+), 1 deletion(-)"
+      }
+    },
+    "state": {
+      "intent": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test",
+      "test_summary": "67 passed, 0 failed",
+      "new_tests": [
+        "a mile is about 1.609 km",
+        "a yard is 0.9144 m"
+      ],
+      "diff_stat": " src/units/length.ts          |  2 +-\n test/imperial-length.test.ts | 15 +++++++++++++++\n 2 files changed, 16 insertions(+), 1 deletion(-)",
+      "criterion_1": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test"
+    },
+    "questions": {
+      "criterion_1": {
+        "type": "noul",
+        "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+        "criteria": {
+          "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+          "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+        }
+      },
+      "scope_creep": {
+        "type": "noul",
+        "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+        "criteria": {
+          "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+          "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+        }
+      }
+    }
+  },
+  {
+    "name": "screen-two-duplicates",
+    "kind": "screen",
+    "input": {
+      "intent": "Add a speed category",
+      "live": [
+        {
+          "id": "t_conv",
+          "intent": "Add a speed category to the converter",
+          "footprint": [
+            "src/units/speed.ts"
+          ]
+        },
+        {
+          "id": "t_same",
+          "intent": "Add a Speed category",
+          "footprint": [
+            "src/units/speed.ts",
+            "src/registry.ts"
+          ]
+        }
+      ]
+    },
+    "state": {
+      "new_intent": "Add a speed category",
+      "existing_1": "Add a Speed category",
+      "existing_2": "Add a speed category to the converter"
+    },
+    "questions": {
+      "dup_1": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_1_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_1_ba": {
+        "type": "score",
+        "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "dup_2": {
+        "type": "noul",
+        "instructions": "Comparing only `new_intent` and `existing_2` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_2`?",
+        "criteria": {
+          "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+          "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+        }
+      },
+      "conflict_2_ab": {
+        "type": "score",
+        "instructions": "How do `new_intent` and `existing_2` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      },
+      "conflict_2_ba": {
+        "type": "score",
+        "instructions": "How do `existing_2` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+        "criteria": [
+          "Independent: they add or change separate things, neither needs the other, and either can land first",
+          "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+          "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+        ]
+      }
+    }
+  }
+]

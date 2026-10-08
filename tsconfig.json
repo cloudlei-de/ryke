@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "es2024",
-    "lib": ["es2024", "dom", "dom.iterable"],
+    "lib": [
+      "es2024",
+      "dom",
+      "dom.iterable"
+    ],
     "module": "preserve",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
@@ -10,7 +14,16 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["./worker-configuration.d.ts", "vite/client", "@cloudflare/vitest-plugin/types"]
+    "types": [
+      "./worker-configuration.d.ts",
+      "vite/client",
+      "@cloudflare/vitest-plugin/types"
+    ],
+    "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "*.ts"]
+  "include": [
+    "src",
+    "test",
+    "*.ts"
+  ]
 }

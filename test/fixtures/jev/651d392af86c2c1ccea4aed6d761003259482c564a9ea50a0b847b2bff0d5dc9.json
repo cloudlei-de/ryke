@@ -1,0 +1,40 @@
+{
+  "state": {
+    "intent": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test",
+    "test_summary": "67 passed, 0 failed",
+    "new_tests": [
+      "a mile is about 1.609 km",
+      "a yard is 0.9144 m"
+    ],
+    "diff_stat": " src/units/length.ts          |  2 +-\n test/imperial-length.test.ts | 15 +++++++++++++++\n 2 files changed, 16 insertions(+), 1 deletion(-)",
+    "criterion_1": "Use a cleaner constant for the mile in length.ts and add a mile and yard regression test"
+  },
+  "questions": {
+    "criterion_1": {
+      "type": "noul",
+      "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+      "criteria": {
+        "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+        "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+      }
+    },
+    "scope_creep": {
+      "type": "noul",
+      "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+      "criteria": {
+        "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+        "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+      }
+    }
+  },
+  "answers": {
+    "criterion_1": {
+      "type": "noul",
+      "noul": 0.86
+    },
+    "scope_creep": {
+      "type": "noul",
+      "noul": 0.04
+    }
+  }
+}

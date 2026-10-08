@@ -1,0 +1,73 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..f3c2c23 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add a velocity converter.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..3f21b78 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { velocity } from "./units/velocity.ts";
+diff --git a/src/units/velocity.ts b/src/units/velocity.ts
+new file mode 100644
+index 0000000..24c40d3
+--- /dev/null
++++ b/src/units/velocity.ts
+@@ -0,0 +1,13 @@
++import type { Category } from "../types.ts";
++
++export const velocity: Category = {
++  id: "velocity",
++  name: "Velocity",
++  base: "m/s",
++  units: [
++    { id: "ms", name: "Metre per second", symbol: "m/s", toBase: (v) => v, fromBase: (v) => v },
++    { id: "kmh", name: "Kilometre per hour", symbol: "km/h", toBase: (v) => v / 3.6, fromBase: (v) => v * 3.6 },
++    { id: "mph", name: "Mile per hour", symbol: "mph", toBase: (v) => v * 0.44704, fromBase: (v) => v / 0.44704 },
++    { id: "kn", name: "Knot", symbol: "kn", toBase: (v) => (v * 1852) / 3600, fromBase: (v) => (v * 3600) / 1852 },
++  ],
++};
+diff --git a/test/velocity.test.ts b/test/velocity.test.ts
+new file mode 100644
+index 0000000..955a62d
+--- /dev/null
++++ b/test/velocity.test.ts
+@@ -0,0 +1,30 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=velocity&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++const cases = [
++  { from: "kmh", to: "ms", v: 100, result: 27.7777777778 },
++  { from: "kn", to: "kmh", v: 1, result: 1.852 },
++  { from: "mph", to: "kmh", v: 60, result: 96.56064 },
++];
++
++for (const c of cases) {
++  test(`velocity: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++}
++
++test("velocity has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/velocity"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Velocity"));
++});

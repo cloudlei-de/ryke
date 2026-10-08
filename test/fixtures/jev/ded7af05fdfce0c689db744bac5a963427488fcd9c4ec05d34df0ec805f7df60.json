@@ -1,0 +1,50 @@
+{
+  "state": {
+    "new_intent": "Remove Kelvin from temperature and keep only Celsius and Fahrenheit",
+    "existing_1": "Show Kelvin first in the temperature units"
+  },
+  "questions": {
+    "dup_1": {
+      "type": "noul",
+      "instructions": "Comparing only `new_intent` and `existing_1` and ignoring every other existing intent, would completing `new_intent` produce essentially the same change to the codebase as completing `existing_1`?",
+      "criteria": {
+        "true": "Both intents ask for the same feature, fix or refactor, even if worded differently, or the new intent asks for nothing more than the existing intent already delivers",
+        "false": "They ask for different features, fixes or refactors, even if they touch the same area or have similar names or wording"
+      }
+    },
+    "conflict_1_ab": {
+      "type": "score",
+      "instructions": "How do `new_intent` and `existing_1` interact if two agents implement them at the same time on the same codebase?",
+      "criteria": [
+        "Independent: they add or change separate things, neither needs the other, and either can land first",
+        "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+        "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+      ]
+    },
+    "conflict_1_ba": {
+      "type": "score",
+      "instructions": "How do `existing_1` and `new_intent` interact if two agents implement them at the same time on the same codebase?",
+      "criteria": [
+        "Independent: they add or change separate things, neither needs the other, and either can land first",
+        "Overlapping but compatible: they edit the same file or function, and the result of landing both still does what both asked",
+        "Conflicting: one asks to remove, reverse or contradict something the other adds or requires, so both cannot be satisfied together"
+      ]
+    }
+  },
+  "answers": {
+    "dup_1": {
+      "type": "noul",
+      "noul": 0.03
+    },
+    "conflict_1_ab": {
+      "type": "score",
+      "score": 1.99,
+      "confidence": 1
+    },
+    "conflict_1_ba": {
+      "type": "score",
+      "score": 1.99,
+      "confidence": 1
+    }
+  }
+}

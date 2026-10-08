@@ -1,0 +1,154 @@
+/* PLAN.md §12: a railway graphic timetable printed on paper. Signal colours are used only as signals. */
+:root {
+  --paper: #f3f0e8;
+  --ink: #121212;
+  --rule: #121212;
+  --muted: #6b675f;
+  --go: #1e7b3c;
+  --stop: #d9412b;
+  --caution: #c78a00;
+  --run: #2850b8;
+  --recall: #7a3fb5;
+  /* The signals above are for marks and fills. Small text needs 4.5:1 on paper (WCAG AA), which --stop (3.9) and
+     --caution (2.6) do not give in the light scheme, nor --run (4.3) and --recall (4.5) in the dark one. The -text
+     variants are the same hues, moved just far enough; test/node/web-contrast.test.mjs checks every one. */
+  --go-text: #196933;
+  --stop-text: #a9301e;
+  --caution-text: #805800;
+  --run-text: #2850b8;
+  --recall-text: #763daf;
+  --hair: 1px;
+  --sans: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --hatch: repeating-linear-gradient(135deg, var(--ink) 0 1px, transparent 1px 5px);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101010;
+    --ink: #ece8de;
+    --rule: #ece8de;
+    --muted: #9a958b;
+    --go: #29a352;
+    --stop: #e2654f;
+    --caution: #f0a800;
+    --run: #4d73d6;
+    --recall: #9563cc;
+    --go-text: #29a352;
+    --stop-text: #e2654f;
+    --caution-text: #f0a800;
+    --run-text: #6888dc;
+    --recall-text: #a378d3;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101010;
+  --ink: #ece8de;
+  --rule: #ece8de;
+  --muted: #9a958b;
+  --go: #29a352;
+  --stop: #e2654f;
+  --caution: #f0a800;
+  --run: #4d73d6;
+  --recall: #9563cc;
+  --go-text: #29a352;
+  --stop-text: #e2654f;
+  --caution-text: #f0a800;
+  --run-text: #6888dc;
+  --recall-text: #a378d3;
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.35;
+}
+a {
+  color: inherit;
+}
+.mono,
+code,
+pre {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--muted);
+}
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: var(--hair) solid var(--rule);
+  border-radius: 0;
+  padding: 2px 8px;
+}
+button {
+  cursor: pointer;
+}
+button:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+}
+.masthead {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  padding: 6px 16px;
+  border-bottom: var(--hair) solid var(--rule);
+}
+.masthead .brand {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.masthead nav {
+  display: flex;
+  gap: 12px;
+}
+.masthead nav a {
+  text-decoration: none;
+}
+.masthead nav a[aria-current="page"] {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.masthead .spacer {
+  flex: 1;
+}
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border: var(--hair) solid var(--rule);
+}
+.status-dot[data-live="true"] {
+  background: var(--go);
+}
+.status-dot[data-live="false"] {
+  background: var(--stop);
+}
+.view {
+  min-height: 0;
+  overflow: auto;
+}

@@ -1,0 +1,1 @@
+{"type":"system","subtype":"hook_response","hook_id":"{{hook_id}}","hook_name":"{{event}}:{{tool}}","hook_event":"{{event}}","output":"{{output}}","stdout":"{{stdout}}","stderr":"{{stderr}}","exit_code":"{{exit_code}}","outcome":"{{outcome}}","uuid":"{{uuid}}","session_id":"{{session_id}}"}

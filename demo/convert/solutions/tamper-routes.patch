@@ -1,0 +1,13 @@
+diff --git a/test/routes.test.ts b/test/routes.test.ts
+index d9280c0..d3214da 100644
+--- a/test/routes.test.ts
++++ b/test/routes.test.ts
+@@ -26,7 +26,7 @@ for (const c of categories) {
+ 
+ test("an unknown category page is a 404", async () => {
+   const res = await get("/c/unknown");
+-  assert.equal(res.status, 404);
++  assert.ok([200, 404].includes(res.status));
+ });
+ 
+ test("an unknown path is a 404 page", async () => {

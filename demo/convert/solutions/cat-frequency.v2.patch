@@ -1,0 +1,79 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..cb4ad49 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the frequency converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..a666a5c 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { frequency } from "./units/frequency.ts";
+diff --git a/src/units/frequency.ts b/src/units/frequency.ts
+new file mode 100644
+index 0000000..c97ef1d
+--- /dev/null
++++ b/src/units/frequency.ts
+@@ -0,0 +1,15 @@
++import type { Category } from "../types.ts";
++
++export const frequency: Category = {
++  id: "frequency",
++  name: "Frequency",
++  base: "Hz",
++  units: [
++    { id: "hz", name: "Hertz", symbol: "Hz", toBase: (v) => v, fromBase: (v) => v },
++    { id: "khz", name: "Kilohertz", symbol: "kHz", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "mhz", name: "Megahertz", symbol: "MHz", toBase: (v) => v * 1e6, fromBase: (v) => v / 1e6 },
++    { id: "ghz", name: "Gigahertz", symbol: "GHz", toBase: (v) => v * 1e9, fromBase: (v) => v / 1e9 },
++    { id: "rpm", name: "Revolutions per minute", symbol: "rpm", toBase: (v) => v / 60, fromBase: (v) => v * 60 },
++    { id: "rads", name: "Radian per second", symbol: "rad/s", toBase: (v) => v / (2 * Math.PI), fromBase: (v) => v * 2 * Math.PI },
++  ],
++};
+diff --git a/test/frequency.test.ts b/test/frequency.test.ts
+new file mode 100644
+index 0000000..6a3c6d4
+--- /dev/null
++++ b/test/frequency.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=frequency&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "ghz", to: "mhz", v: 2.4, result: 2400, display: "2400" },
++  { from: "rpm", to: "hz", v: 3000, result: 50, display: "50" },
++  { from: "rads", to: "hz", v: 1, result: 0.159154943092, display: "0.159" },
++];
++
++for (const c of cases) {
++  test(`frequency: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`frequency: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("frequency has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/frequency"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Frequency"));
++});

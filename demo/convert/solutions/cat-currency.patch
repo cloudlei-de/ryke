@@ -1,0 +1,82 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..e040afd 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the currency converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..f03972a 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { currency } from "./units/currency.ts";
+diff --git a/src/units/currency.ts b/src/units/currency.ts
+new file mode 100644
+index 0000000..3d6aa0f
+--- /dev/null
++++ b/src/units/currency.ts
+@@ -0,0 +1,18 @@
++import type { Category } from "../types.ts";
++
++// Static demo rates (units per US dollar), not live quotes.
++export const currency: Category = {
++  id: "currency",
++  name: "Currency",
++  base: "USD",
++  units: [
++    { id: "usd", name: "US dollar", symbol: "USD", toBase: (v) => v, fromBase: (v) => v },
++    { id: "eur", name: "Euro", symbol: "EUR", toBase: (v) => v / 0.92, fromBase: (v) => v * 0.92 },
++    { id: "gbp", name: "British pound", symbol: "GBP", toBase: (v) => v / 0.79, fromBase: (v) => v * 0.79 },
++    { id: "jpy", name: "Japanese yen", symbol: "JPY", toBase: (v) => v / 150, fromBase: (v) => v * 150 },
++    { id: "chf", name: "Swiss franc", symbol: "CHF", toBase: (v) => v / 0.88, fromBase: (v) => v * 0.88 },
++    { id: "cad", name: "Canadian dollar", symbol: "CAD", toBase: (v) => v / 1.36, fromBase: (v) => v * 1.36 },
++    { id: "aud", name: "Australian dollar", symbol: "AUD", toBase: (v) => v / 1.52, fromBase: (v) => v * 1.52 },
++    { id: "inr", name: "Indian rupee", symbol: "INR", toBase: (v) => v / 83, fromBase: (v) => v * 83 },
++  ],
++};
+diff --git a/test/currency.test.ts b/test/currency.test.ts
+new file mode 100644
+index 0000000..28716c9
+--- /dev/null
++++ b/test/currency.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=currency&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "usd", to: "eur", v: 100, result: 92, display: "92.00" },
++  { from: "gbp", to: "chf", v: 1, result: 1.11392405063, display: "1.11" },
++  { from: "chf", to: "eur", v: 50, result: 52.2727272727, display: "52.27" },
++];
++
++for (const c of cases) {
++  test(`currency: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`currency: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("currency has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/currency"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Currency"));
++});

@@ -1,0 +1,40 @@
+{
+  "state": {
+    "intent": "Add a search box to the header that filters the category tiles on the home page",
+    "test_summary": "77 passed, 0 failed",
+    "new_tests": [
+      "${path} has the search box in the header",
+      "the filter script targets the search box and the tiles"
+    ],
+    "diff_stat": " CHANGELOG.md        |  1 +\n src/ui/layout.ts    | 14 ++++++++++++++\n test/search.test.ts | 22 ++++++++++++++++++++++\n 3 files changed, 37 insertions(+)",
+    "criterion_1": "Every page has a search input in the header."
+  },
+  "questions": {
+    "criterion_1": {
+      "type": "noul",
+      "instructions": "Do `test_summary`, `new_tests`, `diff_stat` and `screenshot_description` (when present) show that `criterion_1` is met?",
+      "criteria": {
+        "true": "The tests pass and a new test name, the diff stat or the screenshot description describes the behaviour the criterion asks for; exact values need not be shown, because the tests pass",
+        "false": "The new tests and the diff stat are about something else, are missing, or contradict the criterion"
+      }
+    },
+    "scope_creep": {
+      "type": "noul",
+      "instructions": "Does `diff_stat` show changes outside what `intent` needs?",
+      "criteria": {
+        "true": "The diff stat lists files that have no reason to change for this intent, such as other features, unrelated pages or configuration",
+        "false": "Every file in the diff stat is one the intent needs, apart from its tests and a changelog entry"
+      }
+    }
+  },
+  "answers": {
+    "criterion_1": {
+      "type": "noul",
+      "noul": 0.53
+    },
+    "scope_creep": {
+      "type": "noul",
+      "noul": 0.18
+    }
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "generatedAt": "2026-10-08T11:00:03.044Z",
+  "durationSeconds": 120,
+  "synthetic": true,
+  "note": "Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1 (median think 6 s), seed 7, 4-vCPU VM, Jev off (the tests are the only gate for every policy).",
+  "cells": [
+    {
+      "policy": "lock",
+      "agents": 10,
+      "landed": 13,
+      "landedPerMinute": 6.5,
+      "p50": 60.56,
+      "p95": 88.98,
+      "aborts": {},
+      "verifyRunsPerLanded": 1,
+      "wastedAgentSeconds": 0,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "queue",
+      "agents": 10,
+      "landed": 46,
+      "landedPerMinute": 23,
+      "p50": 15.64,
+      "p95": 28.66,
+      "aborts": {
+        "failed_verify": 14,
+        "text_conflict": 20,
+        "max_attempts": 7
+      },
+      "verifyRunsPerLanded": 1.3,
+      "wastedAgentSeconds": 156.5,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke",
+      "agents": 10,
+      "landed": 49,
+      "landedPerMinute": 24.5,
+      "p50": 13.64,
+      "p95": 43.24,
+      "aborts": {
+        "stale_read": 24,
+        "failed_verify": 3,
+        "max_attempts": 1
+      },
+      "verifyRunsPerLanded": 0.94,
+      "wastedAgentSeconds": 168.3,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "lock",
+      "agents": 50,
+      "landed": 11,
+      "landedPerMinute": 5.5,
+      "p50": 70.99,
+      "p95": 108.55,
+      "aborts": {},
+      "verifyRunsPerLanded": 1,
+      "wastedAgentSeconds": 0,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "queue",
+      "agents": 50,
+      "landed": 46,
+      "landedPerMinute": 23,
+      "p50": 63.91,
+      "p95": 103.51,
+      "aborts": {
+        "failed_verify": 18,
+        "text_conflict": 32
+      },
+      "verifyRunsPerLanded": 1.39,
+      "wastedAgentSeconds": 313.9,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke",
+      "agents": 50,
+      "landed": 123,
+      "landedPerMinute": 61.5,
+      "p50": 17.98,
+      "p95": 35.26,
+      "aborts": {
+        "stale_read": 119,
+        "failed_verify": 3,
+        "max_attempts": 14
+      },
+      "verifyRunsPerLanded": 0.37,
+      "wastedAgentSeconds": 691.3,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "lock",
+      "agents": 100,
+      "landed": 11,
+      "landedPerMinute": 5.5,
+      "p50": 60.3,
+      "p95": 111.86,
+      "aborts": {},
+      "verifyRunsPerLanded": 1,
+      "wastedAgentSeconds": 0,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "queue",
+      "agents": 100,
+      "landed": 37,
+      "landedPerMinute": 18.5,
+      "p50": 63.53,
+      "p95": 103.97,
+      "aborts": {
+        "text_conflict": 33,
+        "failed_verify": 28
+      },
+      "verifyRunsPerLanded": 1.76,
+      "wastedAgentSeconds": 381.6,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke",
+      "agents": 100,
+      "landed": 151,
+      "landedPerMinute": 75.5,
+      "p50": 29.75,
+      "p95": 59.02,
+      "aborts": {
+        "stale_read": 250,
+        "failed_verify": 3,
+        "max_attempts": 34
+      },
+      "verifyRunsPerLanded": 0.2,
+      "wastedAgentSeconds": 1393.1,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "lock",
+      "agents": 200,
+      "landed": 12,
+      "landedPerMinute": 6,
+      "p50": 61.54,
+      "p95": 106.56,
+      "aborts": {},
+      "verifyRunsPerLanded": 1,
+      "wastedAgentSeconds": 0,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "queue",
+      "agents": 200,
+      "landed": 44,
+      "landedPerMinute": 22,
+      "p50": 66.89,
+      "p95": 112.5,
+      "aborts": {
+        "text_conflict": 31,
+        "failed_verify": 2
+      },
+      "verifyRunsPerLanded": 1.05,
+      "wastedAgentSeconds": 168.5,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke",
+      "agents": 200,
+      "landed": 87,
+      "landedPerMinute": 43.5,
+      "p50": 57.9,
+      "p95": 106.87,
+      "aborts": {
+        "stale_read": 390,
+        "failed_verify": 1,
+        "max_attempts": 67
+      },
+      "verifyRunsPerLanded": 0.21,
+      "wastedAgentSeconds": 2072.6,
+      "trunkBreakages": 0
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..ca1ecd4 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the ring sizes converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..ef1b350 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { ringSizes } from "./units/ring-sizes.ts";
+diff --git a/src/units/ring-sizes.ts b/src/units/ring-sizes.ts
+new file mode 100644
+index 0000000..e7453de
+--- /dev/null
++++ b/src/units/ring-sizes.ts
+@@ -0,0 +1,14 @@
++import type { Category } from "../types.ts";
++
++// Base is the inside diameter. US size n has a diameter of 11.63 + 0.8128 n mm.
++export const ringSizes: Category = {
++  id: "ring-sizes",
++  name: "Ring sizes",
++  base: "mm",
++  units: [
++    { id: "mm", name: "Inside diameter (mm)", symbol: "mm", toBase: (v) => v, fromBase: (v) => v },
++    { id: "in", name: "Inside diameter (in)", symbol: "in", toBase: (v) => v * 25.4, fromBase: (v) => v / 25.4 },
++    { id: "circ", name: "Inside circumference (mm)", symbol: "mm circ.", toBase: (v) => v / Math.PI, fromBase: (v) => v * Math.PI },
++    { id: "us", name: "US size", symbol: "US", toBase: (v) => 11.63 + v * 0.8128, fromBase: (v) => (v - 11.63) / 0.8128 },
++  ],
++};
+diff --git a/test/ring-sizes.test.ts b/test/ring-sizes.test.ts
+new file mode 100644
+index 0000000..b8cce87
+--- /dev/null
++++ b/test/ring-sizes.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=ring-sizes&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "us", to: "mm", v: 6, result: 16.5068, display: "16.507" },
++  { from: "mm", to: "circ", v: 16.5, result: 51.8362787842, display: "51.836" },
++  { from: "mm", to: "us", v: 17, result: 6.60679133858, display: "6.607" },
++];
++
++for (const c of cases) {
++  test(`ring-sizes: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`ring-sizes: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("ring-sizes has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/ring-sizes"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Ring sizes"));
++});

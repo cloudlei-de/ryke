@@ -1,0 +1,82 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..2def9b4 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the energy converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..678bafc 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { energy } from "./units/energy.ts";
+diff --git a/src/units/energy.ts b/src/units/energy.ts
+new file mode 100644
+index 0000000..a617a5d
+--- /dev/null
++++ b/src/units/energy.ts
+@@ -0,0 +1,18 @@
++import type { Category } from "../types.ts";
++
++export const energy: Category = {
++  id: "energy",
++  name: "Energy",
++  base: "J",
++  units: [
++    { id: "j", name: "Joule", symbol: "J", toBase: (v) => v, fromBase: (v) => v },
++    { id: "kj", name: "Kilojoule", symbol: "kJ", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "mj", name: "Megajoule", symbol: "MJ", toBase: (v) => v * 1e6, fromBase: (v) => v / 1e6 },
++    { id: "wh", name: "Watt-hour", symbol: "Wh", toBase: (v) => v * 3600, fromBase: (v) => v / 3600 },
++    { id: "kwh", name: "Kilowatt-hour", symbol: "kWh", toBase: (v) => v * 3.6e6, fromBase: (v) => v / 3.6e6 },
++    { id: "cal", name: "Calorie (thermochemical)", symbol: "cal", toBase: (v) => v * 4.184, fromBase: (v) => v / 4.184 },
++    { id: "kcal", name: "Kilocalorie", symbol: "kcal", toBase: (v) => v * 4184, fromBase: (v) => v / 4184 },
++    { id: "btu", name: "British thermal unit", symbol: "BTU", toBase: (v) => v * 1055.05585262, fromBase: (v) => v / 1055.05585262 },
++    { id: "ftlbf", name: "Foot-pound", symbol: "ft·lbf", toBase: (v) => v * 1.355817948331, fromBase: (v) => v / 1.355817948331 },
++  ],
++};
+diff --git a/test/energy.test.ts b/test/energy.test.ts
+new file mode 100644
+index 0000000..7712bb4
+--- /dev/null
++++ b/test/energy.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=energy&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "kwh", to: "mj", v: 1, result: 3.6, display: "3.6" },
++  { from: "kcal", to: "kj", v: 1, result: 4.184, display: "4.184" },
++  { from: "btu", to: "j", v: 1, result: 1055.05585262, display: "1055.056" },
++];
++
++for (const c of cases) {
++  test(`energy: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`energy: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("energy has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/energy"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Energy"));
++});

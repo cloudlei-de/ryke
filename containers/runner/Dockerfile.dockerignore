@@ -1,0 +1,7 @@
+# BuildKit reads this next to the Dockerfile. The build context is the whole repo, and the image
+# needs only containers/runner and demo.
+*
+!containers/runner
+!demo
+**/node_modules
+**/.ryke*

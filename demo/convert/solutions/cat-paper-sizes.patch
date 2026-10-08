@@ -1,0 +1,83 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..4bb7d4d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the paper sizes converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..a6e51dd 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { paperSizes } from "./units/paper-sizes.ts";
+diff --git a/src/units/paper-sizes.ts b/src/units/paper-sizes.ts
+new file mode 100644
+index 0000000..61cc850
+--- /dev/null
++++ b/src/units/paper-sizes.ts
+@@ -0,0 +1,19 @@
++import type { Category } from "../types.ts";
++
++// Sheet area, so converting A3 to A4 answers how many A4 sheets fit on one A3 sheet.
++export const paperSizes: Category = {
++  id: "paper-sizes",
++  name: "Paper sizes",
++  base: "m²",
++  units: [
++    { id: "a0", name: "A0", symbol: "A0", toBase: (v) => v, fromBase: (v) => v },
++    { id: "a1", name: "A1", symbol: "A1", toBase: (v) => v * 0.5, fromBase: (v) => v / 0.5 },
++    { id: "a2", name: "A2", symbol: "A2", toBase: (v) => v * 0.25, fromBase: (v) => v / 0.25 },
++    { id: "a3", name: "A3", symbol: "A3", toBase: (v) => v * 0.125, fromBase: (v) => v / 0.125 },
++    { id: "a4", name: "A4", symbol: "A4", toBase: (v) => v * 0.0625, fromBase: (v) => v / 0.0625 },
++    { id: "a5", name: "A5", symbol: "A5", toBase: (v) => v * 0.03125, fromBase: (v) => v / 0.03125 },
++    { id: "a6", name: "A6", symbol: "A6", toBase: (v) => v * 0.015625, fromBase: (v) => v / 0.015625 },
++    { id: "letter", name: "US Letter", symbol: "Letter", toBase: (v) => v * 0.06032246, fromBase: (v) => v / 0.06032246 },
++    { id: "legal", name: "US Legal", symbol: "Legal", toBase: (v) => v * 0.07677404, fromBase: (v) => v / 0.07677404 },
++  ],
++};
+diff --git a/test/paper-sizes.test.ts b/test/paper-sizes.test.ts
+new file mode 100644
+index 0000000..c1d08b5
+--- /dev/null
++++ b/test/paper-sizes.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=paper-sizes&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "a3", to: "a4", v: 1, result: 2, display: "2.00" },
++  { from: "letter", to: "a5", v: 1, result: 1.93031872, display: "1.93" },
++  { from: "legal", to: "letter", v: 1, result: 1.27272727273, display: "1.27" },
++];
++
++for (const c of cases) {
++  test(`paper-sizes: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`paper-sizes: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("paper-sizes has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/paper-sizes"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Paper sizes"));
++});

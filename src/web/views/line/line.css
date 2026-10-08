@@ -1,0 +1,559 @@
+/* Line view (PLAN.md §12 view 1). Tokens come from ../../styles.css; signal colours appear only as signals. */
+.line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  height: 100%;
+  min-height: 0;
+}
+.line .defs {
+  position: absolute;
+}
+.line-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Panel chrome: a hairline and a small caps title, nothing else. */
+.line .panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px 3px;
+  border-bottom: var(--hair) solid var(--rule);
+}
+.line h2,
+.line h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.line h3 {
+  font-weight: 500;
+  color: var(--muted);
+}
+.line .head-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+/* Ink on paper, not a signal colour: it is a fact about the agents, not a state. */
+.line .sim-tag {
+  padding: 0 6px;
+  border: var(--hair) solid var(--rule);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: help;
+}
+.line svg text {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.line svg .cap {
+  fill: var(--muted);
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ---- trunk */
+.trunk {
+  border-bottom: var(--hair) solid var(--rule);
+  flex: none;
+}
+.trunk svg {
+  display: block;
+}
+.trunk .head {
+  font-size: 12px;
+  font-weight: 500;
+}
+.trunk .mainline {
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+.trunk .tick {
+  stroke: var(--ink);
+  stroke-width: 2;
+  transition: stroke 0.8s ease-out;
+}
+.trunk .tick.seed {
+  stroke-width: 1;
+}
+/* The revert commit of a recall lands no transaction; it is drawn in --recall like the strike-throughs it causes. */
+.trunk .tick.recall,
+.trunk .block.arrive .tick.recall {
+  stroke: var(--recall);
+}
+.trunk .tick-hit {
+  fill: transparent;
+}
+.trunk .block-box {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+/* A train arrives as a block: it drops onto the line and its ticks show green for a moment. */
+.trunk .block.arrive {
+  animation: arrive 0.35s ease-out;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.trunk .block.arrive .tick {
+  stroke: var(--go);
+  transition: none;
+}
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- sidings */
+.sidings {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border-bottom: var(--hair) solid var(--rule);
+}
+.sidings-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.sidings .axis {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  background: var(--paper);
+}
+.sidings .axis line {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+.sidings .axis text {
+  fill: var(--muted);
+}
+.sidings .axis .now-label {
+  fill: var(--ink);
+  font-weight: 500;
+}
+.sidings .rows {
+  display: block;
+}
+.sidings .grid {
+  stroke: var(--muted);
+  stroke-opacity: 0.25;
+  stroke-dasharray: 1 3;
+}
+.sidings .rowline {
+  stroke: var(--muted);
+  stroke-opacity: 0.3;
+}
+.sidings .agent {
+  fill: var(--muted);
+}
+.sidings .now {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+.sidings .bar {
+  cursor: pointer;
+}
+.sidings .hit {
+  fill: transparent;
+  stroke: none;
+}
+.sidings .bar:focus-visible .hit {
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+.sidings .bar:hover .seg {
+  stroke-width: 2;
+}
+.sidings .seg {
+  stroke-width: 1;
+}
+.hatch-bg {
+  fill: var(--paper);
+}
+.hatch-line {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+.seg-open {
+  fill: var(--paper);
+  stroke: var(--ink);
+}
+.seg-queued {
+  stroke: var(--ink);
+}
+.seg-verify {
+  fill: var(--run);
+  stroke: var(--run);
+}
+.seg-landed {
+  fill: var(--go);
+  stroke: var(--go);
+}
+.seg-human {
+  fill: var(--paper);
+  stroke: var(--caution);
+  stroke-width: 2;
+}
+.seg-lease {
+  fill: none;
+  stroke: var(--caution);
+  stroke-width: 2;
+  stroke-dasharray: 1 2;
+}
+.sidings .warn {
+  stroke: var(--caution);
+  stroke-width: 2;
+}
+.sidings .m-landed {
+  stroke: var(--go);
+  stroke-width: 2;
+  stroke-linecap: square;
+}
+.sidings .m-stale {
+  fill: var(--stop);
+}
+.sidings .m-stale-line {
+  stroke: var(--stop);
+  stroke-width: 2;
+}
+.sidings .m-failed {
+  fill: var(--stop);
+}
+.sidings .m-rejected line {
+  stroke: var(--stop);
+  stroke-width: 2;
+}
+.sidings .m-aborted {
+  stroke: var(--muted);
+  stroke-width: 2;
+}
+.sidings .strike {
+  stroke: var(--recall);
+  stroke-width: 2;
+}
+/* The halo keeps the label readable where the retry bar runs underneath it. */
+.sidings .stale-label {
+  fill: var(--stop-text);
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.sidings .empty {
+  padding: 32px 24px;
+}
+.sidings .empty p {
+  margin: 0 0 6px;
+}
+.sidings .empty pre {
+  display: inline-block;
+  margin: 4px 0 10px;
+  padding: 6px 10px;
+  border: var(--hair) solid var(--rule);
+  font-size: 12px;
+  user-select: all;
+}
+
+/* ---- ticker */
+.ticker {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.ticker .panel-head h2 {
+  font-family: var(--sans);
+}
+.ticker ol {
+  margin: 0;
+  padding: 3px 12px 4px;
+  list-style: none;
+}
+.ticker li {
+  display: grid;
+  grid-template-columns: 5ch 15ch 15ch 9ch minmax(0, 1fr);
+  column-gap: 12px;
+  height: 14px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.ticker li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ticker .t-seq {
+  text-align: right;
+  color: var(--muted);
+}
+.ticker .t-agent {
+  color: var(--muted);
+}
+.ticker .t-kind[data-signal="go"] {
+  color: var(--go-text);
+}
+.ticker .t-kind[data-signal="stop"] {
+  color: var(--stop-text);
+}
+.ticker .t-kind[data-signal="caution"] {
+  color: var(--caution-text);
+}
+.ticker .t-kind[data-signal="run"] {
+  color: var(--run-text);
+}
+.ticker .t-kind[data-signal="recall"] {
+  color: var(--recall-text);
+}
+.ticker-empty {
+  margin: 0;
+  padding: 6px 12px;
+}
+
+/* ---- right rail */
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: var(--hair) solid var(--rule);
+}
+.rail > .panel-head {
+  flex: none;
+  align-items: center;
+  min-height: 30px;
+}
+.demo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 6px;
+}
+.demo form {
+  display: flex;
+  gap: 4px;
+}
+.demo input {
+  width: 110px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.demo button,
+.demo input {
+  padding: 1px 6px;
+  font-size: 12px;
+}
+.demo button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.demo-msg {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+}
+.demo-msg[data-ok="false"] {
+  color: var(--stop-text);
+}
+.demo-msg[data-ok="true"] {
+  color: var(--go-text);
+}
+.counters {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+  flex: none;
+  border-bottom: var(--hair) solid var(--rule);
+}
+.counters > div {
+  padding: 8px 12px 8px;
+  border-right: var(--hair) solid var(--rule);
+}
+.counters > div:last-child {
+  border-right: none;
+}
+.counters dt {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.counters dd {
+  margin: 2px 0 0;
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 500;
+}
+.counters small {
+  font-size: 10px;
+}
+.aborts {
+  flex: none;
+  padding: 6px 12px 8px;
+  border-bottom: var(--hair) solid var(--rule);
+}
+.aborts p {
+  margin: 2px 0 0;
+}
+.aborts ul {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.aborts li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  line-height: 18px;
+}
+.aborts li span:first-child::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  background: var(--stop);
+}
+.heat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.heat .panel-head {
+  flex: none;
+}
+.heat .note {
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+.heat-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 0 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+.heat-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 28px;
+  column-gap: 8px;
+  align-items: center;
+  height: 16px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+.heat-list .path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.heat-list li[data-cold="true"] .path,
+.heat-list li[data-cold="true"] .val {
+  color: var(--muted);
+}
+.heat-list li[data-hot="true"] .path {
+  font-weight: 600;
+}
+.heat-list .track {
+  position: relative;
+  height: 8px;
+  border: var(--hair) solid var(--muted);
+}
+/* The tick at the middle of the track is the hot threshold (heat >= 2). */
+.heat-list .track::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: var(--hot-at);
+  width: 1px;
+  background: var(--muted);
+}
+.heat-list .fill {
+  display: block;
+  height: 100%;
+  background: var(--hatch);
+}
+.heat-list li[data-hot="true"] .fill {
+  background: var(--stop);
+}
+.heat-list li[data-hot="true"] .val {
+  color: var(--stop-text);
+  font-weight: 600;
+}
+.heat-list .val {
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trunk .block.arrive {
+    animation: none;
+  }
+  .trunk .tick {
+    transition: none;
+  }
+}
+
+/* ---- phone: one column, the page scrolls, each panel keeps its own scroll */
+@media (max-width: 760px) {
+  .line {
+    display: block;
+    height: auto;
+  }
+  .sidings-scroll {
+    flex: none;
+    height: 360px;
+  }
+  .sidings {
+    flex: none;
+  }
+  .rail {
+    border-left: none;
+    border-top: var(--hair) solid var(--rule);
+  }
+  .heat-list {
+    flex: none;
+    max-height: 320px;
+  }
+  .ticker li {
+    grid-template-columns: 5ch 15ch minmax(0, 1fr);
+    column-gap: 8px;
+  }
+  .ticker .t-txn,
+  .ticker .t-agent {
+    display: none;
+  }
+  .counters dd {
+    font-size: 22px;
+  }
+}

@@ -1,0 +1,79 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..d17bb7f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the shoe sizes converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..ebc6474 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { shoeSizes } from "./units/shoe-sizes.ts";
+diff --git a/src/units/shoe-sizes.ts b/src/units/shoe-sizes.ts
+new file mode 100644
+index 0000000..e1871b1
+--- /dev/null
++++ b/src/units/shoe-sizes.ts
+@@ -0,0 +1,15 @@
++import type { Category } from "../types.ts";
++
++// Approximate: the usual Paris-point and barleycorn formulas applied to foot length; brands differ.
++export const shoeSizes: Category = {
++  id: "shoe-sizes",
++  name: "Shoe sizes",
++  base: "cm",
++  units: [
++    { id: "cm", name: "Foot length (cm)", symbol: "cm", toBase: (v) => v, fromBase: (v) => v },
++    { id: "eu", name: "EU size", symbol: "EU", toBase: (v) => v / 1.5 - 1.5, fromBase: (v) => (v + 1.5) * 1.5 },
++    { id: "uk", name: "UK size", symbol: "UK", toBase: (v) => ((v + 25) / 3) * 2.54, fromBase: (v) => (v / 2.54) * 3 - 25 },
++    { id: "us-m", name: "US men's size", symbol: "US M", toBase: (v) => ((v + 24) / 3) * 2.54, fromBase: (v) => (v / 2.54) * 3 - 24 },
++    { id: "us-w", name: "US women's size", symbol: "US W", toBase: (v) => ((v + 22.5) / 3) * 2.54, fromBase: (v) => (v / 2.54) * 3 - 22.5 },
++  ],
++};
+diff --git a/test/shoe-sizes.test.ts b/test/shoe-sizes.test.ts
+new file mode 100644
+index 0000000..d8796fe
+--- /dev/null
++++ b/test/shoe-sizes.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=shoe-sizes&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "cm", to: "eu", v: 26, result: 41.25, display: "41.25" },
++  { from: "uk", to: "cm", v: 10, result: 29.6333333333, display: "29.63" },
++  { from: "us-m", to: "uk", v: 9, result: 8, display: "8.00" },
++];
++
++for (const c of cases) {
++  test(`shoe-sizes: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`shoe-sizes: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("shoe-sizes has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/shoe-sizes"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Shoe sizes"));
++});

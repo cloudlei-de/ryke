@@ -1,0 +1,79 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 103e7a4..fbb3502 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,3 +3,4 @@
+ ## Unreleased
+ 
+ - Seed: length, mass and temperature converters.
++- Add the force converter category.
+diff --git a/src/registry.ts b/src/registry.ts
+index 6a24996..8696bd3 100644
+--- a/src/registry.ts
++++ b/src/registry.ts
+@@ -1,3 +1,4 @@
+ export { length } from "./units/length.ts";
+ export { mass } from "./units/mass.ts";
+ export { temperature } from "./units/temperature.ts";
++export { force } from "./units/force.ts";
+diff --git a/src/units/force.ts b/src/units/force.ts
+new file mode 100644
+index 0000000..f9a347d
+--- /dev/null
++++ b/src/units/force.ts
+@@ -0,0 +1,15 @@
++import type { Category } from "../types.ts";
++
++export const force: Category = {
++  id: "force",
++  name: "Force",
++  base: "N",
++  units: [
++    { id: "n", name: "Newton", symbol: "N", toBase: (v) => v, fromBase: (v) => v },
++    { id: "kn", name: "Kilonewton", symbol: "kN", toBase: (v) => v * 1000, fromBase: (v) => v / 1000 },
++    { id: "lbf", name: "Pound-force", symbol: "lbf", toBase: (v) => v * 4.4482216152605, fromBase: (v) => v / 4.4482216152605 },
++    { id: "kgf", name: "Kilogram-force", symbol: "kgf", toBase: (v) => v * 9.80665, fromBase: (v) => v / 9.80665 },
++    { id: "dyn", name: "Dyne", symbol: "dyn", toBase: (v) => v * 1e-5, fromBase: (v) => v / 1e-5 },
++    { id: "pdl", name: "Poundal", symbol: "pdl", toBase: (v) => v * 0.138254954376, fromBase: (v) => v / 0.138254954376 },
++  ],
++};
+diff --git a/test/force.test.ts b/test/force.test.ts
+new file mode 100644
+index 0000000..604ecc4
+--- /dev/null
++++ b/test/force.test.ts
+@@ -0,0 +1,34 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++
++type Converted = { result: number; display: string };
++
++async function convert(from: string, to: string, v: number): Promise<Converted> {
++  const res = await worker.fetch(new Request(`http://localhost/api/convert?c=force&from=${from}&to=${to}&v=${v}`));
++  assert.equal(res.status, 200);
++  return (await res.json()) as Converted;
++}
++
++// result is the converted number; display is formatValue(result), so it follows the shared number format.
++const cases = [
++  { from: "lbf", to: "n", v: 1, result: 4.44822161526, display: "4.448" },
++  { from: "kgf", to: "n", v: 1, result: 9.80665, display: "9.807" },
++  { from: "kn", to: "lbf", v: 2, result: 449.617886199, display: "449.618" },
++];
++
++for (const c of cases) {
++  test(`force: ${c.v} ${c.from} is ${c.result} ${c.to}`, async () => {
++    const got = await convert(c.from, c.to, c.v);
++    assert.ok(Math.abs(got.result - c.result) <= 1e-9 * Math.abs(c.result), `got ${got.result}`);
++  });
++  test(`force: ${c.v} ${c.from} to ${c.to} displays as ${c.display}`, async () => {
++    assert.equal((await convert(c.from, c.to, c.v)).display, c.display);
++  });
++}
++
++test("force has a converter page", async () => {
++  const res = await worker.fetch(new Request("http://localhost/c/force"));
++  assert.equal(res.status, 200);
++  assert.ok((await res.text()).includes("Force"));
++});

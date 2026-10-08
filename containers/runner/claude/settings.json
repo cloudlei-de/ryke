@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "node \"$RYKE_ROOT/containers/runner/hooks/intend-write.mjs\"", "timeout": 130 }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [{ "type": "command", "command": "node \"$RYKE_ROOT/containers/runner/hooks/reads.mjs\"", "timeout": 30 }]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "node \"$RYKE_ROOT/containers/runner/hooks/record-write.mjs\"", "timeout": 10 }]
+      }
+    ]
+  }
+}

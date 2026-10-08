@@ -1,0 +1,39 @@
+diff --git a/src/units/temperature.ts b/src/units/temperature.ts
+index ccabd3c..e98af5b 100644
+--- a/src/units/temperature.ts
++++ b/src/units/temperature.ts
+@@ -5,9 +5,9 @@ export const temperature: Category = {
+   id: "temperature",
+   name: "Temperature",
+   base: "°C",
++  // Kelvin is left out on purpose: this page only offers the everyday scales.
+   units: [
+     { id: "c", name: "Celsius", symbol: "°C", toBase: (v) => v, fromBase: (v) => v },
+     { id: "f", name: "Fahrenheit", symbol: "°F", toBase: (v) => ((v - 32) * 5) / 9, fromBase: (v) => (v * 9) / 5 + 32 },
+-    { id: "k", name: "Kelvin", symbol: "K", toBase: (v) => v - 273.15, fromBase: (v) => v + 273.15 },
+   ],
+ };
+diff --git a/test/kelvin-remove.test.ts b/test/kelvin-remove.test.ts
+new file mode 100644
+index 0000000..f350a32
+--- /dev/null
++++ b/test/kelvin-remove.test.ts
+@@ -0,0 +1,18 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import worker from "../src/index.ts";
++import { temperature } from "../src/units/temperature.ts";
++
++test("only Celsius and Fahrenheit remain", () => {
++  assert.deepEqual(
++    temperature.units.map((u) => u.id),
++    ["c", "f"],
++  );
++});
++
++test("Kelvin is gone from the page and from the API", async () => {
++  const page = await (await worker.fetch(new Request("http://localhost/c/temperature"))).text();
++  assert.ok(!page.includes("Kelvin"));
++  const res = await worker.fetch(new Request("http://localhost/api/convert?c=temperature&from=k&to=c&v=300"));
++  assert.equal(res.status, 404);
++});
