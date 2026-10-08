@@ -1,12 +1,12 @@
 # Progress
 
-Current: 2026-10-08 09:45 CEST (07:45 UTC). M3 margin fixed (89c8702 retry variant, 016c31e share/favorites tests):
-e2e:swarm lands 36 of 36 landable. Fresh-clone quickstart re-verify and a review of both commits in
-flight. Then the PR.
+Current: 2026-10-08 09:58 CEST (07:58 UTC). All milestones accepted; §14 quickstart re-verified from a
+fresh clone at 016c31e (3.6 min, 36 landed). Review of the M3 margin commits done (nothing blocking;
+its test findings fixed). Next: the PR.
 
 | Milestone | State | Verifier evidence (commit) |
 |---|---|---|
-| M0 Foundations | ACCEPTED | fresh clone `npm ci && npm run check && npm test` (35f5d87): vitest 31 files 3033 tests, node:test 1636 tests, 0 fail; store-contract suite included; gate4 at 243152d: vitest 3041, node 1636 |
+| M0 Foundations | ACCEPTED | fresh clone `npm ci && npm run check && npm test` (35f5d87): vitest 31 files 3033 tests, node:test 1636 tests, 0 fail; store-contract suite included; gate4 at 243152d: vitest 3041, node 1636; fresh clone at 016c31e (verifier): vitest 31 files 3041, node:test 1644, 0 fail |
 | M1 Ledger core | ACCEPTED | `npm run e2e:api` (35f5d87, fresh clone): begin 201 → clone/commit/push → reads `{"recorded":1}` → submit `ready` → wait `verifying` then `landed` (seq 1); 401 without/with a wrong token; 404 unknown txn |
 | M2 Landing | ACCEPTED | `npm run e2e:land` (35f5d87): train of 2 lands at seq 1–2; third stale on src/format.ts with the digits = 2 → 3 delta; train of 4 bisected in 3 probes isolating "broken by design", 3 landed; trunk 89 tests green. Runner DO fake-container suite 516 tests. Real container build: BLOCKERS (proxy TLS, API token) |
 | M3 Demo + scripted swarm | ACCEPTED | `npm run e2e:swarm` (016c31e, lead run alone): 36 landed (all landable; not landed: dup-speed/dup-kmh G3, kelvin-first, tamper-routes G5 protected), 0 max_attempts, 9 t-precision stale aborts all landed after retry, trunk 723 tests green, preview 26 categories. History: f3eb9c3 36 (verifier), then 34, 34; b76a574 33 (3 max_attempts: retries re-ran v1, fixed in 89c8702); 89c8702 34 (t-share parked by the gate, fixed in 016c31e) |
@@ -15,7 +15,7 @@ flight. Then the PR.
 | M6 Recall | ACCEPTED | `npm run e2e:recall` (35f5d87): both G6 targets recalled, cascade 1 re-queued and landed at seq 40, 3 dependents revalidated, trunk green |
 | M7 Bench | ACCEPTED (lead check of committed results) | bench/results/latest.md (485c763): ryke 58/68/38.5 vs queue 24/19/24.5 vs lock 5.5/5.5/6.5 at 50/100/200; queue wins at 10; 0 breakages in all 12 cells |
 | M8 Claude mode | ACCEPTED | `npm run e2e:claude` (35f5d87): 7 landed, tamper rejected protected, 5 categories landed on retry, trunk 207 tests; BLOCKERS has the real smoke command |
-| M9 Production + docs | config + docs ACCEPTED; quickstart re-run pending; PR todo | e2e:deploy PASS with `--containers-rollout=none` (image build blocked, BLOCKERS); wrangler production env complete; how-it-works 1500 prose words with §4.3 example and one diagram; deploy.md token list identical to PLAN; README sections present |
+| M9 Production + docs | ACCEPTED (PR open next) | e2e:deploy PASS with `--containers-rollout=none` (image build blocked, BLOCKERS); wrangler production env complete; how-it-works 1500 prose words with §4.3 example and one diagram; deploy.md token list identical to PLAN; README sections present; §14 quickstart from a fresh clone at 016c31e (verifier): README steps as written, clone to swarm exit 3.6 min, 36 landed, all six M3 criteria PASS, dashboard 200 |
 
 ## How things fit (for after compaction)
 - Worker: `src/worker/index.ts` → api.ts (Hono, /api), mcp.ts (/mcp), /internal/events. service.ts shared by both.
@@ -30,13 +30,8 @@ flight. Then the PR.
 - dev/stack.mjs = startStack({offset}) used by dev/all.mjs and e2e scripts.
 
 ## Next
-1. Combined gate → commit the batches (auth/MCP, UI fixes, gateway scoping + access lists, claude-mode
-   fixes, e2e scripts, bench ablation, docs).
-2. Remaining ledger review items: trunk/store head reconcile (recall push loss, CAS loop), prepare fetch
-   error ≠ text_conflict, revert.mjs union list from the Ledger, recall error-path tests, ingest name
-   checks, recall scratch ref cleanup.
-3. Measured bench alone, then the ryke/ryke-nolease ablation; README bench table; shots rerun; commit.
-4. Verifiers per milestone (≤ 2 heavy at once, offsets 0/10/20/30/40); fix; PROGRESS; PR.
+1. Open the PR feat/ryke-mvp → main (§0.2) with the Verified list of what actually ran.
+2. Then only fixes for review or CI findings until the code freeze (2026-10-12 23:59 CEST).
 
 ## Known issues
 - The scripted-swarm contention comparison (e2e:contention) is weak evidence: the catalogue never has two
