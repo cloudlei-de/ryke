@@ -90,7 +90,7 @@ function tailBuffer(capBytes) {
 async function checkout(tree, remote, ref) {
   try {
     await mkdir(tree, { recursive: true });
-    await git(tree, ["init", "-q"]);
+    await git(tree, ["init", "-q", "--template="]);
     // `--` because the ref and remote come from outside and must never parse as options. The URL is
     // passed directly so credentials are not written to .git/config, and a stalled transfer aborts.
     await git(tree, ["fetch", "-q", "--no-tags", "--", remote, ref], {

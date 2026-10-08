@@ -36,6 +36,8 @@ const GIT_ENV = {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_TERMINAL_PROMPT: "0",
+  // Assertions match git's English messages; a German developer locale would break them.
+  LC_ALL: "C",
 };
 
 // Async on purpose: the store runs in this process, so a blocking git call would deadlock it.
@@ -499,6 +501,25 @@ describe("control API: create", () => {
     await makeRepo(lower);
     const res = await api("POST", "/v1/repos", { name: lower.toUpperCase() });
     assert.equal(res.status, 201);
+  });
+
+  test("a mixed-case name is its own repo on any filesystem and pushes and clones over git", async () => {
+    const lower = uniq("mixed");
+    const mixed = `${lower}Ab`;
+    await makeRepo(lower);
+    await makeRepo(mixed);
+    const token = await getToken(mixed);
+    const work = await newWork(mixed);
+    const sha = await commit(work, { "a.txt": "a" }, "mixed");
+    const push = await git(["push", withBasic(remoteOf(mixed), token), "main"], { cwd: work });
+    assert.ok(push.ok, push.stderr);
+    assert.equal((await api("GET", `/v1/repos/${mixed}`)).json.head, sha);
+    assert.equal((await api("GET", `/v1/repos/${lower}`)).json.head ?? null, null, "the lowercase repo is untouched");
+    const dest = path.join(await freshDir("mixed"), "c");
+    const clone = await git(["clone", "-q", withBasic(remoteOf(mixed), token), dest]);
+    assert.ok(clone.ok, clone.stderr);
+    assert.equal((await api("DELETE", `/v1/repos/${mixed}`)).status, 200);
+    assert.equal((await api("GET", `/v1/repos/${lower}`)).status, 200, "deleting one case leaves the other");
   });
 
   test("concurrent creates of one name produce exactly one winner", async () => {

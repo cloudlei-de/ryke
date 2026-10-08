@@ -657,7 +657,7 @@ export function makeCheckoutDir(base = tmpdir()) {
 async function checkout(dir, from, union) {
   if (!existsSync(join(dir, ".git"))) {
     mkdirSync(dir, { recursive: true });
-    await run(dir, ["init", "-q", "-b", "main"]);
+    await run(dir, ["init", "-q", "--template=", "-b", "main"]);
   }
   await run(dir, ["fetch", "-q", from.remote, from.ref], { env: authEnv(from.token) });
   const sha = await out(dir, ["rev-parse", "FETCH_HEAD"]);
@@ -820,7 +820,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
       return { conflict: moved };
     }
     const next = await out(at, ["rev-parse", "HEAD"]);
-    await run(at, ["push", "-q", "--force", fork.remote, `${next}:refs/heads/main`], { env: authEnv(fork.token) });
+    await run(at, ["push", "-q", "--no-verify", "--force", fork.remote, `${next}:refs/heads/main`], { env: authEnv(fork.token) });
     say(`moved onto trunk ${moved.snapshot.slice(0, 8)}: ${next.slice(0, 8)}`);
     return { snapshot: moved.snapshot, head: next };
   }
@@ -879,7 +879,7 @@ export async function runAgent(inp, { dir: given, template, settings, logDir = r
       if (changed) {
         await run(dir, ["commit", "-q", "--no-verify", "--no-gpg-sign", "-m", inp.intent], { env: agentIdentity(inp.agent) });
         head = await out(dir, ["rev-parse", "HEAD"]);
-        await run(dir, ["push", "-q", "--force", fork.remote, `${head}:refs/heads/main`], { env: authEnv(fork.token) });
+        await run(dir, ["push", "-q", "--no-verify", "--force", fork.remote, `${head}:refs/heads/main`], { env: authEnv(fork.token) });
       } else {
         say("no changes were made; submitting the snapshot itself, which the Ledger rejects as empty");
       }

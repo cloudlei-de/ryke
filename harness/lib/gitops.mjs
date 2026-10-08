@@ -29,7 +29,7 @@ export class Workspace {
   static async create(agent, root = tmpdir()) {
     const dir = await mkdtemp(join(root, `ryke-${agent}-`));
     const ws = new Workspace(dir, agent);
-    await ws.git("init", "-q", "-b", "main");
+    await ws.git("init", "-q", "--template=", "-b", "main");
     return ws;
   }
 

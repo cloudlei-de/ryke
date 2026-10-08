@@ -48,7 +48,8 @@ const AGENT_SH = join(ROOT, "containers/runner/bin/agent.sh");
 const DEMO = join(ROOT, "demo/convert");
 
 const exec = promisify(execFile);
-const tmp = mkdtempSync(join(tmpdir(), "ryke-claude-mode-"));
+// realpath: macOS tmpdir() is /var/..., which resolves to /private/var/..., and code under test compares resolved paths.
+const tmp = realpathSync(mkdtempSync(join(tmpdir(), "ryke-claude-mode-")));
 after(() => rmSync(tmp, { recursive: true, force: true }));
 let counter = 0;
 const fresh = (name) => join(tmp, `${name}-${++counter}`);
@@ -2696,7 +2697,7 @@ out({ type: "turn.completed", usage: {} });
 
     describe("when the change does not apply on the new trunk", () => {
       // Run 1 edits the line trunk changed; run 2, told why, only adds a file.
-      const conflicting = (runs) => worker(runs, ['case "$last" in', '  *"files you read changed on trunk"*) echo "export const second = 1;" > src/extra.ts ;;', "  *) sed -i 's/digits = 2/digits = 5/' src/format.ts ;;", "esac"].join("\n"));
+      const conflicting = (runs) => worker(runs, ['case "$last" in', '  *"files you read changed on trunk"*) echo "export const second = 1;" > src/extra.ts ;;', "  *) sed 's/digits = 2/digits = 5/' src/format.ts > src/format.tmp && mv src/format.tmp src/format.ts ;;", "esac"].join("\n"));
 
       it("starts claude again on the new trunk with what changed, in the same attempt, and submits that", async () => {
         const trunk = cloneBare("trunk");
@@ -2774,9 +2775,11 @@ out({ type: "turn.completed", usage: {} });
   describe("claude's children", () => {
     // A detached grandchild is what Claude Code's Bash tool leaves behind: its own session, so a kill of
     // the process group never reaches it. The fake claude records its pid.
+    // macOS has no setsid(1); perl's POSIX::setsid then execs the command, so `$!` is still its pid.
+    const SETSID = `perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' --`;
     const GRANDCHILDREN = [
-      ["a shell's `setsid` command that holds claude's output open", (pid) => `setsid sleep 300 &\necho $! > ${pid}\nwait`],
-      ["a shell's `setsid` command with its output redirected", (pid) => `setsid sleep 300 > /dev/null 2>&1 &\necho $! > ${pid}\nwait`],
+      ["a shell's `setsid` command that holds claude's output open", (pid) => `${SETSID} sleep 300 &\necho $! > ${pid}\nwait`],
+      ["a shell's `setsid` command with its output redirected", (pid) => `${SETSID} sleep 300 > /dev/null 2>&1 &\necho $! > ${pid}\nwait`],
     ];
     for (const [name, body] of GRANDCHILDREN) {
       it(`are killed with it when it runs past the timeout: ${name}`, { timeout: 60_000 }, async () => {
@@ -2814,7 +2817,7 @@ out({ type: "turn.completed", usage: {} });
     it("are killed when claude exits on its own and leaves a dev server behind", { timeout: 60_000 }, async () => {
       const api = await s.start(baseRoutes());
       const pid = join(tmp, `grandchild-${++counter}`);
-      const claude = fakeClaude(`setsid sleep 300 > /dev/null 2>&1 &\necho $! > ${pid}\nsleep 2.2\nprintf '%s\\n' '${RESULT_LINE}'`);
+      const claude = fakeClaude(`${SETSID} sleep 300 > /dev/null 2>&1 &\necho $! > ${pid}\nsleep 2.2\nprintf '%s\\n' '${RESULT_LINE}'`);
       const r = await job(api, cloneBare("fork"), "cat-area", { env: withFake(claude) });
       assert.equal(r.result.ok, true, r.stderr);
       await until(() => !isRunning(Number(readFileSync(pid, "utf8"))), 5000, "the dev server to be killed once the session is over");

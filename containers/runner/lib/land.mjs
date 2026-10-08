@@ -39,7 +39,7 @@ export function scanTestDiff(patch) {
 
 async function repo(dir, union) {
   await mkdir(dir, { recursive: true });
-  await git(dir, ["init", "-q", "-b", "main"]);
+  await git(dir, ["init", "-q", "--template=", "-b", "main"]);
   await mkdir(join(dir, ".git", "info"), { recursive: true });
   // Union paths merge as a union of lines: concurrent registry and changelog additions are expected (§1.1).
   await writeFile(join(dir, ".git", "info", "attributes"), union.map((p) => `${p} merge=union\n`).join(""));

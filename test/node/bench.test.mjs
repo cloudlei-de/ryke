@@ -2039,7 +2039,11 @@ describe("the policies against fakes", () => {
 describe("the synthetic agent against a local git remote", () => {
   let remote;
   let seedSha;
+  // A global init.templatedir (a developer machine's own pre-push hook) would be copied into the agent's
+  // fresh repo and run the developer's checks on every bench push; an empty template keeps it hermetic.
+  const savedTemplate = process.env.GIT_TEMPLATE_DIR;
   before(async () => {
+    process.env.GIT_TEMPLATE_DIR = await mkdtemp(join(tmp, "empty-template-"));
     const seed = join(tmp, "agent-seed");
     await seedTree(seed);
     await writeFile(join(seed, "src/format.ts"), `${await readFile(join(seed, "src/format.ts"), "utf8")}\nexport const BENCH_FORMAT = 1;\n`);
@@ -2049,6 +2053,10 @@ describe("the synthetic agent against a local git remote", () => {
     remote = join(tmp, "agent-remote.git");
     await run("git", ["clone", "-q", "--bare", seed, remote]);
     seedSha = (await run("git", ["--git-dir", remote, "rev-parse", "main"])).stdout.trim();
+  });
+  after(() => {
+    if (savedTemplate === undefined) delete process.env.GIT_TEMPLATE_DIR;
+    else process.env.GIT_TEMPLATE_DIR = savedTemplate;
   });
   // Each test starts from the seed: agents force-push, and the refresh script moves the remote on.
   beforeEach(async () => {

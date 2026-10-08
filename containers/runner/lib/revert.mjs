@@ -73,7 +73,7 @@ async function prepare(a) {
   const plan = JSON.parse(a.plan);
   const dir = resolve("recall");
   await mkdir(dir, { recursive: true });
-  await git(dir, ["init", "-q", "-b", "main"]);
+  await git(dir, ["init", "-q", "--template=", "-b", "main"]);
   await git(dir, ["remote", "add", "trunk", a.trunk]);
   await git(dir, ["fetch", "-q", "trunk", "main"]);
   const base = (await git(dir, ["rev-parse", "FETCH_HEAD"])).stdout.trim();
