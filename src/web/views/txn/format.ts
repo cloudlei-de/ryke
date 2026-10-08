@@ -1,6 +1,7 @@
 // Pure view-model helpers for the Transaction view (PLAN.md §12, view 2). Everything here is data in,
 // data out: the React components in index.tsx and parts.tsx only lay the results out.
-import type { DeltaEntry } from "../../../shared/types";
+import { fold, type TxnView } from "../../../shared/reducers";
+import type { DeltaEntry, Op, OpKind } from "../../../shared/types";
 import type { TxnDetail } from "../../../worker/ledger/ledger";
 
 export type Detail = TxnDetail;
@@ -501,4 +502,33 @@ export function attemptDetail(detail: Detail, attempt: number, repo: string, pas
     failures: marks.failures,
     preview: previewFor(repo, detail, attempt, row),
   };
+}
+
+// ---------------------------------------------------------------------------- the attempts, as bars
+
+// The detail's ops folded through the same reducer the Line uses, so an attempt's bar on this page has the
+// segments its bar on the Line has. The detail leaves out the transaction and agent of each op: they are its own.
+export function journeyView(detail: Detail): TxnView | null {
+  const ops: Op[] = detail.ops.map((o) => ({ seq: o.seq, at: o.at, kind: o.kind as OpKind, data: o.data, txn: detail.txn.id, agent: detail.txn.agent }));
+  return fold(ops).txns.get(detail.txn.id) ?? null;
+}
+
+// From the first attempt's start to the end of the last one (or now while it runs): the span the bars share.
+export function journeySpan(view: TxnView, now: number): { from: number; to: number } | null {
+  const first = view.attempts[0];
+  if (!first) return null;
+  const to = Math.max(...view.attempts.map((a) => a.end ?? now), first.start + 1);
+  return { from: first.start, to };
+}
+
+// "criterion 2" of the verdicts belongs to the second acceptance criterion; the rest are checks of their own.
+export function criteriaWithVerdicts(criteria: readonly string[], rows: readonly VerdictRow[]): { text: string; verdict: VerdictRow | null }[] {
+  return criteria.map((text, i) => ({ text, verdict: rows.find((r) => r.name === `criterion ${i + 1}`) ?? null }));
+}
+
+export function otherVerdicts(criteria: readonly string[], rows: readonly VerdictRow[]): VerdictRow[] {
+  return rows.filter((r) => {
+    const m = /^criterion (\d+)$/.exec(r.name);
+    return !m || Number(m[1]) > criteria.length;
+  });
 }

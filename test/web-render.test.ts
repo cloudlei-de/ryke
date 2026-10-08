@@ -29,10 +29,10 @@ afterEach(() => {
 
 const render = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el);
 
-// The labels on the Line's time axis, left to right.
+// The clock labels on the Line's time axis, left to right (the "now" flag's own text sits in a group of its own).
 function axisLabels(html: string): string[] {
   const svg = /<svg class="axis"[\s\S]*?<\/svg>/.exec(html)?.[0] ?? "";
-  return [...svg.matchAll(/<text x="[^"]*" y="11"[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]!);
+  return [...svg.matchAll(/<text x="[^"]*" y="16"[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]!);
 }
 
 describe("Replay", () => {
@@ -46,7 +46,11 @@ describe("Replay", () => {
     const labels = (a: number, b: number) => axisTicks(replayWindow(a, b, first!), plot.x1 - plot.x0, tz).map((k) => k.label);
     const whole = labels(first!, last!);
     expect(whole).not.toEqual(labels(first!, first!));
-    expect(axisLabels(html)).toEqual(whole);
+    // The labels under the "now" flag give way to it; the rest are the whole recording's, up to its last.
+    const shown = axisLabels(html);
+    expect(shown.length).toBeGreaterThanOrEqual(whole.length - 1);
+    expect(shown.every((l) => whole.includes(l))).toBe(true);
+    expect(shown.at(-1)).toBe(whole.at(-1));
   });
 });
 
@@ -54,7 +58,7 @@ let seq = 0;
 const op = (kind: OpKind, at: number, data: Record<string, unknown> = {}, txn: string | null = null, agent: string | null = null): Op => ({ seq: ++seq, at, kind, txn, agent, data });
 const line = (ops: Op[]) => render(createElement(LineView, { repo: "convert", state: fold(ops), ops, mode: "live" }));
 
-describe("Line: the Sidings header", () => {
+describe("Line: the header says when the agents are simulated", () => {
   const opened = (model: string | null) => [op("txn.open", 10, { attempt: 1, intent: "do it", model }, "t_1", "agent-01")];
 
   it.each([
@@ -63,7 +67,7 @@ describe("Line: the Sidings header", () => {
     ["claude-stub", "stub agents"],
   ])("says the agents are simulated when the model is %s", (model, text) => {
     const html = line(opened(model));
-    expect(html).toMatch(new RegExp(`<span class="sim-tag" title="[^"]+">${text}</span>`));
+    expect(html).toMatch(new RegExp(`<span class="tag sim-tag" title="[^"]+">(<svg[\\s\\S]*?</svg>)?${text}</span>`));
   });
 
   it("says nothing about real models, or about transactions without one", () => {

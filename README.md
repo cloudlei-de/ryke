@@ -102,7 +102,7 @@ Two parts of Ryke switched off one at a time, on the same bench
 | `npm run swarm -- --mode claude --agents 3 --stub` | The Claude Code agent mode with its hooks, against a stub binary |
 | `npm run bench` | Lock vs merge queue vs Ryke at 10–200 synthetic agents |
 | `npm run jev:calibrate` | Jev accuracy on labelled cases → [docs/jev-calibration.md](docs/jev-calibration.md) |
-| `npm run shots` | Dashboard screenshots of every view, failing on any console or page error (a blocked Google Fonts request excepted) → [docs/shots](docs/shots) |
+| `npm run shots` | Dashboard screenshots of every view at 1440×900 and 390×844, light and dark, failing on any console or page error → [docs/shots](docs/shots) |
 | `npm run deploy:dry` | Production build and `wrangler deploy --dry-run` |
 
 ## Honest limits

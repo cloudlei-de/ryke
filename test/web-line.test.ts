@@ -8,15 +8,16 @@ import {
   axisStep,
   axisTicks,
   barHeight,
+  agentStatus,
+  barLabel,
   BLOCK_GAP,
   buildRows,
+  CHAR_W,
   clampX,
   clipText,
-  DIAG_DX,
   demoResult,
+  DOT_GAP,
   formatClock,
-  fitLabel,
-  STALE_LABEL_MIN,
   formatHeat,
   heatFraction,
   heatRows,
@@ -27,8 +28,8 @@ import {
   layoutTrunk,
   liveWindow,
   MIN_BAR_W,
+  LABEL_MIN_W,
   opBounds,
-  placeLabel,
   plotBox,
   replayWindow,
   ROW_H,
@@ -39,12 +40,12 @@ import {
   shortSha,
   staleDetail,
   staleLabel,
+  staleWaves,
   stateLabel,
-  TICK_GAP,
   tickerLine,
+  tipFor,
   toX,
   txnHref,
-  type AttemptBar,
   type Scale,
 } from "../src/web/views/line/geometry";
 import e2eLand from "./fixtures/ops/e2e-land.json";
@@ -105,11 +106,11 @@ describe("toX and clampX", () => {
 
 describe("plotBox", () => {
   it.each([
-    [1440, { labelW: 96, x0: 96, x1: 1412 }],
-    [640, { labelW: 96, x0: 96, x1: 612 }],
-    [639, { labelW: 64, x0: 64, x1: 611 }],
-    [390, { labelW: 64, x0: 64, x1: 362 }],
-    [50, { labelW: 64, x0: 64, x1: 104 }],
+    [1440, { labelW: 150, x0: 160, x1: 1416 }],
+    [640, { labelW: 150, x0: 160, x1: 616 }],
+    [639, { labelW: 84, x0: 94, x1: 615 }],
+    [390, { labelW: 84, x0: 94, x1: 366 }],
+    [50, { labelW: 84, x0: 94, x1: 134 }],
   ])("width %d", (w, box) => expect(plotBox(w)).toEqual(box));
 });
 
@@ -299,15 +300,24 @@ describe("text helpers", () => {
     expect(staleLabel(stale, reason)).toBe(label);
   });
 
-  describe("placeLabel (6 px per character, 6 px gap)", () => {
-    const text = "stale · a.ts"; // 12 chars = 72 px
-    it.each([
-      ["fits on the right", 100, 0, 1000, { text, anchor: "start", x: 106 }],
-      ["right is exactly full", 100, 0, 178, { text, anchor: "start", x: 106 }],
-      ["flips left when the right is too short", 900, 0, 960, { text, anchor: "end", x: 894 }],
-      ["clips to the roomier side when neither fits (right)", 40, 0, 100, { text: "stale · …", anchor: "start", x: 46 }],
-      ["clips to the roomier side when neither fits (left)", 60, 0, 70, { text: "stale · …", anchor: "end", x: 54 }],
-    ])("%s", (_n, x, x0, x1, out) => expect(placeLabel(x, text, x0, x1)).toEqual(out));
+});
+
+describe("barLabel", () => {
+  const part = (tone: "open" | "queued", w: number) => ({ tone, x: 100, w });
+  const intent = "Add the Energy converter category";
+  it.each<[string, string, ReturnType<typeof part> | undefined, ReturnType<typeof barLabel>]>([
+    ["writes the whole intent when the working stretch has room", intent, part("open", 400), { text: intent, x: 106, w: 392 }],
+    ["clips it to the stretch, 6 px a character inside 6 px of padding each side", intent, part("open", 72), { text: "Add the E…", x: 106, w: 64 }],
+    ["needs the minimum width", intent, part("open", LABEL_MIN_W - 1), null],
+    ["writes nothing on a queued stretch", intent, part("queued", 400), null],
+    ["writes nothing without an intent", "   ", part("open", 400), null],
+    ["writes nothing without a first part", intent, undefined, null],
+  ])("%s", (_n, text, first, out) => expect(barLabel(text, first)).toEqual(out));
+  it("keeps a label at least six characters long", () => {
+    const w = LABEL_MIN_W;
+    const label = barLabel(intent, part("open", w));
+    expect(label!.text.length).toBe(Math.floor((w - 12) / CHAR_W));
+    expect(label!.text.length).toBeGreaterThanOrEqual(6);
   });
 });
 
@@ -332,25 +342,6 @@ describe("segmentTone and stateLabel", () => {
   });
 });
 
-describe("fitLabel", () => {
-  it.each([
-    ["fits", "stale · a.ts", 100, 200, "stale · a.ts"],
-    ["fits exactly", "stale · a.ts", 100, 172, "stale · a.ts"],
-    ["clips to the room", "stale · a.ts", 100, 148, "stale ·…"], // 8 chars, the last one the ellipsis
-    ["keeps four characters", "stale · a.ts", 100, 124, "sta…"],
-    ["drops below four characters", "stale · a.ts", 100, 123, ""],
-    ["drops when the limit is behind the start", "stale · a.ts", 100, 90, ""],
-  ])("%s", (_n, text, start, limit, out) => expect(fitLabel(text, start, limit)).toBe(out));
-
-  it.each([
-    ["a clip that would keep fewer characters than asked for is dropped", "stale · a.ts", 100, 148, 12, ""],
-    ["a clip that keeps exactly as many as asked for is kept", "stale · a.ts", 100, 148, 8, "stale ·…"],
-    ["a label that fits whole is kept whatever the minimum", "stale · a.ts", 100, 172, 12, "stale · a.ts"],
-    ["a label shorter than the minimum is kept when it fits", "stale", 100, 130, 12, "stale"],
-    ["a label shorter than the minimum is dropped when it does not", "stale", 100, 124, 12, ""],
-  ])("with a minimum: %s", (_n, text, start, limit, min, out) => expect(fitLabel(text, start, limit, min)).toBe(out));
-});
-
 describe("assignLanes", () => {
   const lanes = (items: [string, number, number][]) => {
     const r = assignLanes(items.map(([key, from, to]) => ({ key, from, to })));
@@ -373,8 +364,8 @@ describe("assignLanes", () => {
 
 describe("laneBox", () => {
   it.each([
-    [0, 1, { y: 4, h: 10 }],
-    [0, 0, { y: 4, h: 10 }],
+    [0, 1, { y: 3.5, h: 11 }],
+    [0, 0, { y: 3.5, h: 11 }],
     [0, 2, { y: 2, h: 6.5 }],
     [1, 2, { y: 9.5, h: 6.5 }],
     [2, 3, { y: 12, h: 4 }],
@@ -386,7 +377,8 @@ describe("rowHeight and barHeight", () => {
     ["thirty agents in 560 px stay at the minimum", 30, 560, 18],
     ["thirty agents in 540 px fit exactly", 30, 540, 18],
     ["more agents than fit never go below the minimum (the panel scrolls)", 45, 560, 18],
-    ["twelve agents grow into the space", 12, 560, 32],
+    ["twelve agents grow into the space, up to the cap", 12, 560, ROW_MAX],
+    ["sixteen agents take what is left", 16, 500, 31],
     ["twenty agents take what is left", 20, 560, 28],
     ["a single agent is capped", 1, 560, ROW_MAX],
     ["no agents", 0, 560, 18],
@@ -396,17 +388,17 @@ describe("rowHeight and barHeight", () => {
   ])("%s", (_n, count, avail, h) => expect(rowHeight(count, avail)).toBe(h));
 
   it.each([
-    [18, 10],
-    [22, 12],
-    [24, 13],
-    [28, 15],
-    [32, 16],
-    [40, 16],
+    [18, 11],
+    [22, 13],
+    [24, 14],
+    [28, 17],
+    [32, 19],
+    [40, 20],
     [10, 10],
   ])("barHeight(%d) = %d", (row, h) => expect(barHeight(row)).toBe(h));
 
   it("centres the single-lane bar in a taller row and splits a tall row between lanes", () => {
-    expect(laneBox(0, 1, 32)).toEqual({ y: 8, h: 16 });
+    expect(laneBox(0, 1, 32)).toEqual({ y: 6.5, h: 19 });
     expect(laneBox(1, 2, 32)).toEqual({ y: 2 + 13.5 + 1, h: 13.5 });
   });
 });
@@ -419,9 +411,12 @@ describe("layoutBar", () => {
     expect([b.x, b.w, b.running, b.mark, b.strike]).toEqual([100, 300, true, null, null]);
     expect(b.href).toBe("#/t/t1");
     expect(b.key).toBe("t1#1");
+    // the intent is written inside the working stretch
+    expect(b.label).toEqual({ text: "intent of t1", x: 106, w: 292 });
+    expect(b.stale).toEqual([]);
   });
 
-  it("builds a landed attempt from its segments, with the verifying stretch green and a diagonal at the end", () => {
+  it("builds a landed attempt from its segments, with the verifying stretch green and a landed mark at the end", () => {
     const s = fold(landedFlow("t1", "a1", 100));
     const b = bar(s, "t1", 900)!;
     expect(b.parts.map((p) => p.tone)).toEqual(["open", "queued", "queued", "landed"]);
@@ -445,23 +440,23 @@ describe("layoutBar", () => {
     expect(b.running).toBe(true);
   });
 
-  it("marks stale with the label from the attempt and puts it right of the notch", () => {
+  it("marks stale at the end of the bar and keeps what went stale for the hover card and the wave", () => {
     const s = fold([
       open("t2", "a2", 100),
       move("txn.submitted", "t2", "a2", 200),
       move("txn.stale", "t2", "a2", 300, { reason: "stale_read", paths: [{ path: "src/format.ts", seq: 4, by: "t_9" }] }),
     ]);
     const b = bar(s, "t2", 900)!;
-    expect(b.mark).toEqual({ kind: "stale", x: 300, label: "stale · src/format.ts ← t_9", full: "stale · src/format.ts ← t_9", labelX: 306, anchor: "start" });
+    expect(b.mark).toEqual({ kind: "stale", x: 300 });
+    expect(b.stale).toEqual([{ path: "src/format.ts", by: "t_9" }]);
     expect(b.title).toContain("t2 · attempt 1 · stale (stale_read)");
     expect(b.title).toContain("stale · src/format.ts ← t_9");
     expect(b.title).toContain("intent of t2");
   });
 
-  it("flips the stale label to the left near the right edge", () => {
-    const s = fold([open("t2", "a2", 900), move("txn.stale", "t2", "a2", 960, { reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "t_9" }] })]);
-    const b = bar(s, "t2", 990)!;
-    expect(b.mark).toMatchObject({ kind: "stale", anchor: "end", labelX: 954 });
+  it("writes no intent on a bar whose working stretch is too narrow", () => {
+    const s = fold([open("t2", "a2", 100), move("txn.submitted", "t2", "a2", 130)]);
+    expect(bar(s, "t2", 900)!.label).toBeNull();
   });
 
   it("continues the retry on the same row: two bars, stale first, then an open one", () => {
@@ -489,11 +484,11 @@ describe("layoutBar", () => {
     expect(b.title).toContain(`(${data.reason})`);
   });
 
-  it("strikes through a recalled transaction over the bar and its diagonal", () => {
+  it("strikes through a recalled transaction over the whole bar", () => {
     const s = fold([...landedFlow("t5", "a5", 100), move("txn.recalled", "t5", "a5", 700, { reason: "recall" })]);
     const b = bar(s, "t5", 900)!;
     expect(b.mark).toEqual({ kind: "landed", x: 500 });
-    expect(b.strike).toEqual({ x1: 100, x2: 500 + DIAG_DX });
+    expect(b.strike).toEqual({ x1: 100, x2: 500 });
   });
 
   it("does not strike an attempt that never landed even if the transaction is recalled later", () => {
@@ -601,99 +596,6 @@ describe("buildRows", () => {
     ]);
   });
 
-  it("stops a stale label where the next stale label on the row begins", () => {
-    const stale = (txn: string, at: number, path: string) => move("txn.stale", txn, "a", at, { reason: "stale_read", paths: [{ path, seq: 1, by: "t_9" }] });
-    const s = fold([
-      open("t1", "a", 10),
-      stale("t1", 100, "src/format.ts"),
-      open("t1", "a", 105, 2),
-      stale("t1", 200, "src/ui/layout.ts"),
-      open("t1", "a", 205, 3),
-      stale("t1", 700, "src/registry.ts"),
-    ]);
-    const [row] = buildRows(s, scale, 800);
-    const marks = row!.bars.map((b) => b.mark);
-    // first label would need 27 chars = 162 px but only 100 - 6 - 6 = 88 px lie before the next mark at x = 200
-    expect(marks[0]).toMatchObject({ kind: "stale", x: 100, full: "stale · src/format.ts ← t_9", label: "stale · src/f…", labelX: 106 });
-    expect(marks[1]).toMatchObject({ kind: "stale", x: 200, label: "stale · src/ui/layout.ts ← t_9" });
-    expect(marks[2]).toMatchObject({ kind: "stale", x: 700, label: "stale · src/registry.ts ← t_9" });
-  });
-
-  it("drops a label that has no room at all, and leaves a flipped one alone", () => {
-    const stale = (txn: string, at: number) => move("txn.stale", txn, "a", at, { reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "t_9" }] });
-    const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), stale("t1", 110), open("t1", "a", 112, 3), stale("t1", 990)]);
-    const [row] = buildRows(s, scale, 1000);
-    expect(row!.bars[0]!.mark).toMatchObject({ label: "" }); // 10 px before the next mark
-    expect(row!.bars[1]!.mark).toMatchObject({ x: 110, anchor: "start" }); // roomy: next mark is far away
-    expect(row!.bars[1]!.mark).toMatchObject({ label: "stale · a.ts ← t_9" });
-    expect(row!.bars[2]!.mark).toMatchObject({ x: 990, anchor: "end" }); // flipped at the right edge, untouched
-  });
-
-  describe("a stale label has to fit the stretch of the row it stands in", () => {
-    const stale = (txn: string, at: number, path = "src/format.ts") => move("txn.stale", txn, "a", at, { reason: "stale_read", paths: [{ path, seq: 1, by: "t_9" }] });
-    const landed = (txn: string, at: number) => move("txn.landed", txn, "a", at, { sha: "s", seq: 1 });
-    const label = (s: LineState, sc = scale, i = 0) => {
-      const [row] = buildRows(s, sc, 1000);
-      return row!.bars[i]!.mark as Extract<NonNullable<AttemptBar["mark"]>, { kind: "stale" }>;
-    };
-
-    it("hides a label that would be drawn over the short retry bar and the landing that follow the notch", () => {
-      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", 130)]);
-      const m = label(s);
-      expect(m.label).toBe("");
-      // the tooltip still has the whole story
-      expect(m.full).toBe("stale · src/format.ts ← t_9");
-      expect(buildRows(s, scale, 1000)[0]!.bars[0]!.title).toContain(m.full);
-    });
-
-    it("clips it to the retry bar while at least the minimum of characters fit", () => {
-      // retry runs 102..190: 190 - 106 = 84 px = 14 characters
-      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", 190)]);
-      expect(label(s).label).toBe("stale · src/f…");
-    });
-
-    it("hides it one character below the minimum", () => {
-      // the retry ends at 106 + 6 * (STALE_LABEL_MIN - 1) - 1: room for STALE_LABEL_MIN - 1 characters
-      const end = 106 + 6 * (STALE_LABEL_MIN - 1) + 5;
-      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", end)]);
-      expect(label(s).label).toBe("");
-      const just = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", end + 6)]);
-      expect(label(just).label).toHaveLength(STALE_LABEL_MIN);
-    });
-
-    it("hides it on a phone-width plot where every retry is short", () => {
-      const phone: Scale = { t0: 0, t1: 1000, x0: 64, x1: 362 };
-      const s = fold([open("t1", "a", 10), stale("t1", 300), open("t1", "a", 302, 2), landed("t1", 360)]);
-      // 298 px for 1000 ms: the retry is 18 px wide
-      expect(label(s, phone).label).toBe("");
-    });
-
-    it("shows the whole label when the retry is still running and the plot has room", () => {
-      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2)]);
-      // the retry bar runs to `now` = 1000, the end of the plot
-      expect(label(s).label).toBe("stale · src/format.ts ← t_9");
-    });
-
-    it("shows the whole label of a stale attempt nothing followed", () => {
-      const s = fold([open("t1", "a", 10), stale("t1", 100)]);
-      expect(label(s).label).toBe("stale · src/format.ts ← t_9");
-    });
-
-    it("is not limited by a bar of the same agent that sits in another lane", () => {
-      // t2 overlaps t1 on the same row, so it has a lane of its own and does not stand where the label does
-      const s = fold([open("t1", "a", 10), open("t2", "a", 50), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", 700)]);
-      const [row] = buildRows(s, scale, 1000);
-      const t1 = row!.bars.find((b) => b.txn === "t1" && b.attempt === 1)!;
-      expect(t1.lane).not.toBe(row!.bars.find((b) => b.txn === "t2")!.lane);
-      expect((t1.mark as { label: string }).label).toBe("stale · src/format.ts ← t_9");
-    });
-
-    it("leaves a label that was flipped to the left of the notch alone", () => {
-      const s = fold([open("t1", "a", 10), stale("t1", 990)]);
-      expect(label(s)).toMatchObject({ anchor: "end", label: "stale · src/format.ts ← t_9" });
-    });
-  });
-
   it("keeps a row for an agent whose bars have all left the window", () => {
     const s = fold([open("t1", "a", 10), move("txn.aborted", "t1", "a", 20, { reason: "x" })]);
     const rows = buildRows(s, { t0: 500, t1: 1500, x0: 0, x1: 1000 }, 900);
@@ -721,8 +623,8 @@ describe("layoutTrunk", () => {
   it("draws the ticks of one train as one block of evenly spaced ticks", () => {
     const blocks = layoutTrunk([tk(1, 100, "tr1"), tk(2, 100, "tr1"), tk(3, 100, "tr1")], scale);
     expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toMatchObject({ key: "train:tr1", train: "tr1", at: 100, x: 100, w: 2 * TICK_GAP });
-    expect(blocks[0]!.ticks.map((t) => t.x)).toEqual([100, 100 + TICK_GAP, 100 + 2 * TICK_GAP]);
+    expect(blocks[0]).toMatchObject({ key: "train:tr1", train: "tr1", at: 100, x: 100, w: 2 * DOT_GAP });
+    expect(blocks[0]!.ticks.map((t) => t.x)).toEqual([100, 100 + DOT_GAP, 100 + 2 * DOT_GAP]);
     expect(blocks[0]!.ticks.map((t) => t.txn)).toEqual(["t1", "t2", "t3"]);
   });
 
@@ -759,7 +661,7 @@ describe("layoutTrunk", () => {
     const blocks = layoutTrunk([tk(1, 100, "a"), tk(2, 100, "a"), tk(3, 102, "b"), tk(4, 600, "c")], scale);
     expect(blocks.map((b) => b.train)).toEqual(["a", "b", "c"]);
     expect(blocks[0]!.x).toBe(100);
-    expect(blocks[1]!.x).toBe(100 + TICK_GAP + BLOCK_GAP); // right of block a's last tick
+    expect(blocks[1]!.x).toBe(100 + DOT_GAP + BLOCK_GAP); // right of block a's last dot
     expect(blocks[2]!.x).toBe(600); // far enough away to stay on its time
   });
 
@@ -781,6 +683,106 @@ describe("layoutTrunk", () => {
 
   it("returns nothing for no ticks", () => {
     expect(layoutTrunk([], scale)).toEqual([]);
+  });
+});
+
+describe("staleWaves", () => {
+  const stale = (txn: string, agent: string, at: number, by: string | null, path = "src/format.ts") => move("txn.stale", txn, agent, at, { reason: "stale_read", paths: [{ path, seq: 1, by }] });
+  const trunk = (txn: string, at: number, seq: number) => op("trunk.advanced", at, { seq, sha: `${seq}`.padEnd(40, "0"), txns: [{ txn, sha: `${seq}`.padEnd(40, "0"), seq }], train: null });
+  const waves = (s: LineState) => staleWaves(buildRows(s, scale, 1000), layoutTrunk(s.ticks, scale));
+
+  it("draws one wave per landing that made others stale, from its commit to the lowest row it reached", () => {
+    const s = fold([
+      open("c", "agent-0", 10),
+      open("v1", "agent-1", 20),
+      open("v2", "agent-2", 30),
+      open("v3", "agent-3", 40),
+      trunk("c", 300, 1),
+      stale("v1", "agent-1", 302, "c"),
+      stale("v3", "agent-3", 306, "c"),
+    ]);
+    expect(waves(s)).toEqual([{ culprit: "c", x: 304, dotX: 300, victims: 2, bottom: 3 }]);
+  });
+
+  it("bends from a commit that a crowded trunk pushed right to where the stale marks are", () => {
+    const s = fold([open("v1", "agent-1", 10), trunk("a", 300, 1), trunk("c", 300, 2), stale("v1", "agent-1", 301, "c")]);
+    const [w] = waves(s);
+    expect(w).toMatchObject({ culprit: "c", x: 301, dotX: 300 + BLOCK_GAP });
+  });
+
+  it("counts a stale attempt once even when several of its paths name the same culprit", () => {
+    const s = fold([
+      open("v1", "agent-1", 10),
+      trunk("c", 300, 1),
+      move("txn.stale", "v1", "agent-1", 302, { reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "c" }, { path: "b.ts", seq: 1, by: "c" }] }),
+    ]);
+    expect(waves(s).map((w) => w.victims)).toEqual([1]);
+  });
+
+  it("draws nothing for a culprit that is not on the trunk in view, or a stale read with no known cause", () => {
+    const s = fold([open("v1", "agent-1", 10), open("v2", "agent-2", 20), stale("v1", "agent-1", 302, "gone"), stale("v2", "agent-2", 303, null)]);
+    expect(waves(s)).toEqual([]);
+  });
+
+  it("orders waves left to right", () => {
+    const s = fold([open("v1", "agent-1", 10), open("v2", "agent-2", 20), trunk("c1", 200, 1), trunk("c2", 600, 2), stale("v2", "agent-2", 601, "c2"), stale("v1", "agent-1", 201, "c1")]);
+    expect(waves(s).map((w) => w.culprit)).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("agentStatus", () => {
+  it("is the state of the agent's newest transaction", () => {
+    const s = fold([...landedFlow("t1", "a", 10), open("t2", "a", 600), open("t3", "b", 20)]);
+    expect(agentStatus(s, "a")).toEqual({ state: "open", txn: "t2" });
+    expect(agentStatus(s, "b")).toEqual({ state: "open", txn: "t3" });
+    expect(agentStatus(s, "nobody")).toBeNull();
+  });
+
+  it("follows a retry of an older transaction that started after the newer one", () => {
+    const s = fold([open("t1", "a", 10), open("t2", "a", 50), move("txn.stale", "t1", "a", 100, { reason: "stale_read", paths: [] }), open("t1", "a", 110, 2)]);
+    expect(agentStatus(s, "a")).toEqual({ state: "open", txn: "t1" });
+  });
+});
+
+describe("tipFor", () => {
+  it("says who, how long, where the time went and how it ended", () => {
+    const s = fold([...landedFlow("t1", "agent-01", 1000)]);
+    const t = s.txns.get("t1")!;
+    t.model = "scripted-v1";
+    expect(tipFor(t, t.attempts[0]!, 5000)).toEqual({
+      id: "t1",
+      attempt: 1,
+      status: "landed",
+      intent: "intent of t1",
+      staleBy: null,
+      rows: [
+        ["Agent", "agent-01 · scripted-v1 (scripted)"],
+        ["Time", "0.4 s"],
+        ["Spent", "working 0.1 s · queued 0.1 s · verifying 0.2 s"],
+      ],
+    });
+  });
+
+  it("names the stale path and its culprit, and counts a running attempt up to now", () => {
+    const s = fold([open("t1", "a", 0), move("txn.stale", "t1", "a", 2000, { reason: "stale_read", paths: [{ path: "src/format.ts", seq: 3, by: "t_9" }] }), open("t1", "a", 2100, 2)]);
+    const t = s.txns.get("t1")!;
+    const first = tipFor(t, t.attempts[0]!, 9000);
+    expect(first.status).toBe("stale");
+    expect(first.staleBy).toBe("t_9");
+    expect(first.rows).toContainEqual(["Stale", "src/format.ts ← t_9"]);
+    expect(tipFor(t, t.attempts[1]!, 92_100).rows).toContainEqual(["Time", "1 m 30 s so far"]);
+  });
+
+  it("shows the reason of a failure, the warnings and a recall", () => {
+    const s = fold([open("t1", "a", 0), op("stale.warning", 50, { paths: ["x.ts"] }, "t1", "a"), move("txn.rejected", "t1", "a", 100, { reason: "duplicate_of:t_2" })]);
+    const t = s.txns.get("t1")!;
+    const tip = tipFor(t, t.attempts[0]!, 200);
+    expect(tip.rows).toContainEqual(["Reason", "duplicate of t_2"]);
+    expect(tip.rows).toContainEqual(["Warned", "x.ts"]);
+    const r = fold([...landedFlow("t5", "a5", 100), move("txn.recalled", "t5", "a5", 700, { reason: "recall" })]);
+    const tr = r.txns.get("t5")!;
+    expect(tipFor(tr, tr.attempts[0]!, 900)).toMatchObject({ status: "recalled" });
+    expect(tipFor(tr, tr.attempts[0]!, 900).rows).toContainEqual(["Recalled", "recall"]);
   });
 });
 
@@ -1020,13 +1022,20 @@ describe("the recorded e2e-land scenario", () => {
     expect(byAgent["agent-b"]!.mark?.kind).toBe("landed");
     expect(byAgent["agent-d"]!.mark?.kind).toBe("landed");
     expect(byAgent["agent-f"]!.mark?.kind).toBe("failed");
-    expect(byAgent["agent-c"]!.mark).toMatchObject({ kind: "stale", label: "stale · src/format.ts ← t_muyvqoug28lz" });
+    expect(byAgent["agent-c"]!.mark?.kind).toBe("stale");
+    expect(byAgent["agent-c"]!.stale).toEqual([{ path: "src/format.ts", by: "t_muyvqoug28lz" }]);
     expect(byAgent["agent-c"]!.warnings).toHaveLength(1); // the early stale warning came before the abort
     for (const b of Object.values(byAgent)) {
       expect(b.x).toBeGreaterThanOrEqual(sc.x0);
       expect(b.x + b.w).toBeLessThanOrEqual(sc.x1);
       expect(b.parts.every((p) => p.w > 0)).toBe(true);
     }
+  });
+
+  it("draws the stale read as a wave from the commit that caused it", () => {
+    const rows = buildRows(state, sc, state.now);
+    const waves = staleWaves(rows, layoutTrunk(state.ticks, sc));
+    expect(waves.map((w) => [w.culprit, w.victims])).toEqual([["t_muyvqoug28lz", 1]]);
   });
 
   it("draws the two trains as blocks of two and three ticks after the seed", () => {

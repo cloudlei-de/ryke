@@ -106,27 +106,21 @@ export function captureHeight(view, size, extra) {
 
 // What the Line has to have drawn before it is photographed, as selectors into the dashboard's own markup.
 // The tag is there from the first transaction on; the rest is what a finished swarm leaves on the screen.
-export const TAG_CHECK = { selector: ".sidings .sim-tag", min: 1, what: "the scripted-agents tag in the Sidings header" };
+export const TAG_CHECK = { selector: ".line-head .sim-tag", min: 1, what: "the scripted-agents tag in the Line header" };
 export const LINE_CHECKS = [
   { selector: ".trunk .block-box", min: 1, what: "a train drawn as a block on the trunk" },
-  { selector: ".sidings .m-stale", min: 2, what: "stale notches in the sidings" },
+  { selector: ".timeline .m-stale", min: 2, what: "stale notches on the agents' rows" },
   { selector: '.heat-list li[data-hot="true"]', min: 1, what: "a hot heat row" },
   TAG_CHECK,
 ];
 // After the recall the sloppy model's work is struck through and the revert commit sits on the trunk.
 export const RECALLED_CHECKS = [
-  { selector: ".sidings .strike", min: 1, what: "a struck-through recalled bar" },
+  { selector: ".timeline .strike", min: 1, what: "a struck-through recalled bar" },
   { selector: ".trunk .tick.recall", min: 1, what: "the recall's revert commit on the trunk" },
 ];
 
 export function shortfalls(checks, counts) {
   return checks.filter((c) => (counts[c.selector] ?? 0) < c.min).map((c) => `${c.what} (${c.selector}: ${counts[c.selector] ?? 0} of ${c.min})`);
-}
-
-// The webfonts are an enhancement with a fallback stack; a machine that cannot reach Google Fonts must
-// not fail the run for it. Everything else that logs an error does.
-export function isFontFailure(url) {
-  return /^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(url ?? "");
 }
 
 // ---------------------------------------------------------------- the run
@@ -168,7 +162,6 @@ async function main() {
   const written = [];
   const skipped = []; // file name prefixes of variants this run left out on purpose; their old shots stay
   const problems = []; // console errors and page errors, with where they happened
-  const ignored = []; // font failures, listed so they are never invisible
   let where = "start-up";
   let stack = null;
   let browser = null;
@@ -209,7 +202,7 @@ async function main() {
       page.on("console", (m) => {
         if (m.type() !== "error") return;
         const url = m.location().url;
-        (isFontFailure(url) ? ignored : problems).push({ where, kind: "console.error", text: m.text(), url });
+        problems.push({ where, kind: "console.error", text: m.text(), url });
       });
       page.on("pageerror", (e) => problems.push({ where, kind: "pageerror", text: e.stack ?? e.message, url: "" }));
       page.on("crash", () => problems.push({ where, kind: "crash", text: "the page crashed", url: "" }));
@@ -314,13 +307,12 @@ async function main() {
       }
     }
 
-    // document.fonts lists a face only once the Google Fonts stylesheet has loaded, so "check()" alone would
-    // answer true on a machine that never got it.
+    // The fonts ship with the dashboard (@fontsource), so a shot in a fallback face means the bundle is broken.
     const fonts = await page.evaluate(async () => {
       await document.fonts.ready;
-      return ["IBM Plex Mono", "IBM Plex Sans Condensed"].every((f) => [...document.fonts].some((x) => x.family.replace(/"/g, "") === f && x.status === "loaded"));
+      return ["Geist Variable", "Geist Mono Variable"].every((f) => [...document.fonts].some((x) => x.family.replace(/"/g, "") === f && x.status === "loaded"));
     });
-    say(fonts ? "IBM Plex loaded" : "IBM Plex not loaded: the shots use the fallback fonts");
+    if (!fonts) problems.push({ where, kind: "fonts", text: "Geist and Geist Mono did not load: the shots would use the fallback fonts", url: "" });
 
     await waitUntil("a mid-run state with trains, stale notches and heat", async () => {
       if (swarm.exitCode !== null) throw new Error("the swarm finished before the mid-run condition (landed >= 6, stale >= 2, trains >= 2, heat) was reached");
@@ -328,8 +320,8 @@ async function main() {
     }, { timeout: 15 * 60_000, every: 1000 });
     where = "line mid-run";
     await expectDrawn(LINE_CHECKS, "line-mid");
-    const tag = (await page.locator(".sidings .sim-tag").first().textContent()) ?? "";
-    if (!/scripted/.test(tag)) problems.push({ where, kind: "sim-tag", text: `the Sidings header says "${tag}", not that the agents are scripted`, url: "" });
+    const tag = (await page.locator(".line-head .sim-tag").first().textContent()) ?? "";
+    if (!/scripted/.test(tag)) problems.push({ where, kind: "sim-tag", text: `the Line header says "${tag}", not that the agents are scripted`, url: "" });
     await page.waitForTimeout(800);
     await snap("line", "mid");
     say("captured line-mid");
@@ -433,7 +425,7 @@ async function main() {
     // Simulated models are labelled so nobody takes the demo's agents for language models (PLAN.md §0.10).
     if (!options.some((o) => o.startsWith("sloppy-v0 (scripted)"))) throw new Error(`the Recall dialog offers no model "sloppy-v0 (scripted)" (options: ${options.join(" | ")})`);
     await page.locator(".recall select").selectOption("sloppy-v0");
-    await page.getByRole("button", { name: "Plan", exact: true }).click();
+    await page.getByRole("button", { name: "Plan recall", exact: true }).click();
     await page.waitForSelector(".recall-plan", { timeout: 120_000 });
     await snap("recall", "planned");
     say("captured recall-planned; executing the recall");
@@ -480,7 +472,6 @@ async function main() {
   }
   console.log(`\nfiles written (${written.length}):`);
   for (const f of written) console.log(`  ${relative(ROOT, f)}  ${(((await stat(f)).size) / 1024).toFixed(0)} kB`);
-  if (ignored.length > 0) console.log(`\nignored ${ignored.length} failed webfont request(s): ${[...new Set(ignored.map((i) => i.url))].join(", ")}`);
   if (problems.length > 0) {
     console.error(`\n${problems.length} browser problem(s):`);
     for (const p of problems) console.error(`  [${p.where}] ${p.kind}: ${p.text.split("\n")[0]}${p.url ? `  (${p.url})` : ""}`);

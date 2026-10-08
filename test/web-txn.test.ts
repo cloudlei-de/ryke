@@ -10,13 +10,17 @@ import {
   attemptMarks,
   attemptRows,
   clock,
+  criteriaWithVerdicts,
   diffLines,
   diffStat,
   duration,
   evidenceUrl,
   evidenceView,
+  journeySpan,
+  journeyView,
   lastSeqFor,
   loadedSeq,
+  otherVerdicts,
   previewFor,
   previewUrl,
   reasonLabel,
@@ -1113,5 +1117,67 @@ describe("deltaView: what the page shows while the comparison loads", () => {
     ["a result is left over for an attempt that needs none", null, { key: "k1", status: "ready", delta: entry }, { status: "none", delta: [] }],
   ])("%s", (_name, request, loaded, want) => {
     expect(deltaView(request, loaded)).toEqual(want);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the attempts as bars, and the criteria with their verdicts
+
+describe("journeyView", () => {
+  it("folds the detail's ops into the bar the Line draws, with the transaction's own id and agent", () => {
+    const d = detail({
+      txn: txn({ id: "t_j", agent: "agent-09", state: "landed", attempt: 2 }),
+      ops: [
+        open(100, 1, SNAP1),
+        op("txn.submitted", 110, { attempt: 1 }),
+        op("txn.stale", 120, { attempt: 1, reason: "stale_read", paths: [{ path: "a.ts", seq: 1, by: "t_x" }] }),
+        open(200, 2, SNAP2),
+        op("txn.submitted", 210, { attempt: 2 }),
+        op("txn.verifying", 220, { attempt: 2, train: "tr_1" }),
+        op("txn.landed", 300, { attempt: 2, sha: SNAP3, seq: 4 }),
+      ],
+    });
+    const v = journeyView(d)!;
+    expect(v).toMatchObject({ id: "t_j", agent: "agent-09", state: "landed" });
+    expect(v.attempts.map((a) => [a.attempt, a.start, a.end, a.outcome])).toEqual([
+      [1, 100, 120, "stale"],
+      [2, 200, 300, "landed"],
+    ]);
+    expect(v.attempts[1]!.segments.map((g) => g.state)).toEqual(["open", "submitted", "verifying"]);
+    expect(journeySpan(v, 999)).toEqual({ from: 100, to: 300 });
+  });
+
+  it("is null for a detail without an open op, and spans a running attempt up to now", () => {
+    expect(journeyView(detail({ ops: [] }))).toBeNull();
+    const v = journeyView(detail({ ops: [open(100, 1, SNAP1)] }))!;
+    expect(journeySpan(v, 500)).toEqual({ from: 100, to: 500 });
+    // a clock behind the first op still gives the bars a span to share
+    expect(journeySpan(v, 50)).toEqual({ from: 100, to: 101 });
+  });
+});
+
+describe("criteriaWithVerdicts and otherVerdicts", () => {
+  const rows = verdictRows(
+    [
+      { attempt: 1, question: "criterion_2", value: 0.5, confidence: null, detail: null },
+      { attempt: 1, question: "criterion_1", value: 0.9, confidence: 0.8, detail: null },
+      { attempt: 1, question: "criterion_4", value: 0.9, confidence: null, detail: null },
+      { attempt: 1, question: "scope_creep", value: 0.1, confidence: null, detail: null },
+    ],
+    1,
+  );
+
+  it("pairs each acceptance criterion with its verdict, in the criteria's order", () => {
+    const out = criteriaWithVerdicts(["first", "second", "third"], rows);
+    expect(out.map((c) => [c.text, c.verdict?.name ?? null, c.verdict?.signal ?? null])).toEqual([
+      ["first", "criterion 1", "go"],
+      ["second", "criterion 2", "caution"],
+      ["third", null, null],
+    ]);
+  });
+
+  it("keeps everything else as a check of its own, a verdict for a criterion that is not there included", () => {
+    expect(otherVerdicts(["first", "second", "third"], rows).map((v) => v.name)).toEqual(["criterion 4", "scope creep"]);
+    expect(otherVerdicts([], [])).toEqual([]);
   });
 });

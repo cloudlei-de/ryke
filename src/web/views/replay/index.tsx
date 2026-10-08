@@ -2,7 +2,10 @@
 // demo video from it, so the controls stay small and the Line keeps the room.
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Live } from "../../live";
+import { Icon } from "../../ui";
 import { LineView } from "../line";
+import { describeOp, plain } from "../line/activity";
+import { shortData } from "../line/geometry";
 import {
   displayNow,
   fmtClock,
@@ -127,61 +130,75 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
     if (e.detail > 0) e.currentTarget.blur();
   };
 
+  const sentence = current ? describeOp(current, state) : null;
+
   return (
     <section className="replay" aria-label="Replay">
       <div className="replay-stage">
         {n === 0 ? (
-          <p className="replay-empty muted">
-            {history.status.status === "loading" ? `Loading the op log of ${repo}.` : `No ops recorded for ${repo} yet. Run a swarm, then come back.`}
-          </p>
+          <div className="replay-empty">
+            <Icon name="clock" size={22} />
+            <p className="replay-empty-title">{history.status.status === "loading" ? "Loading the op log" : "Nothing to replay yet"}</p>
+            <p className="muted">{history.status.status === "loading" ? `Fetching every op recorded for ${repo}.` : `No ops recorded for ${repo} yet. Run a swarm, then come back.`}</p>
+          </div>
         ) : (
           <LineView repo={repo} state={state} ops={ops} mode="replay" now={now} />
         )}
       </div>
 
-      <footer className="scrubber">
+      <footer className="scrubber card">
         <div className="controls">
-          <div className="group" role="group" aria-label="Playback">
-            <button type="button" onClick={press({ type: "start" })} disabled={n === 0} title="Jump to the start (Home)" aria-label="Jump to the start">
-              |&lt;
+          <div className="transport" role="group" aria-label="Playback">
+            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "start" })} disabled={n === 0} title="Jump to the start (Home)" aria-label="Jump to the start">
+              <Icon name="first" size={15} />
             </button>
-            <button type="button" onClick={press({ type: "step", by: -1 })} disabled={n === 0} title="Back one op (←)" aria-label="Back one op">
-              &lt;
+            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "step", by: -1 })} disabled={n === 0} title="Back one op (←)" aria-label="Back one op">
+              <Icon name="prev" size={15} />
             </button>
-            <button type="button" className="play" onClick={press({ type: "toggle" })} disabled={n === 0} title="Play or pause (space)" aria-pressed={p.playing}>
-              {p.playing ? "Pause" : "Play"}
+            <button type="button" className="play" onClick={press({ type: "toggle" })} disabled={n === 0} title="Play or pause (space)" aria-pressed={p.playing} aria-label={p.playing ? "Pause" : "Play"}>
+              <Icon name={p.playing ? "pause" : "play"} size={16} />
             </button>
-            <button type="button" onClick={press({ type: "step", by: 1 })} disabled={n === 0} title="Forward one op (→)" aria-label="Forward one op">
-              &gt;
+            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "step", by: 1 })} disabled={n === 0} title="Forward one op (→)" aria-label="Forward one op">
+              <Icon name="next" size={15} />
             </button>
-            <button type="button" onClick={press({ type: "end" })} disabled={n === 0} title="Jump to the end (End)" aria-label="Jump to the end">
-              &gt;|
+            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={press({ type: "end" })} disabled={n === 0} title="Jump to the end (End)" aria-label="Jump to the end">
+              <Icon name="last" size={15} />
             </button>
           </div>
-          <div className="group" role="group" aria-label="Speed">
-            {SPEEDS.map((s) => (
-              <button key={s} type="button" aria-pressed={p.speed === s} onClick={press({ type: "speed", speed: s })} title={`Play at ${s}× real time`}>
-                {s}×
+          <div className="seg" role="group" aria-label="Speed">
+            {SPEEDS.map((sp) => (
+              <button key={sp} type="button" aria-pressed={p.speed === sp} onClick={press({ type: "speed", speed: sp })} title={`Play at ${sp}× real time`}>
+                {sp}×
               </button>
             ))}
           </div>
-          <div className="readout mono">
+          <div className="readout num">
             <span className="elapsed">{fmtElapsed(now - start)}</span>
             <span className="muted"> / {fmtElapsed((times.at(-1) ?? 0) - start)}</span>
-            {current && <span className="muted"> · {fmtClock(now)}</span>}
           </div>
-          <span className="spacer" />
-          <span className="muted status">
+          <p className="current" data-tone={signal ?? undefined}>
+            {fields ? (
+              <>
+                <span className="current-seq mono">
+                  op {fields.seq} · {fields.kind}
+                </span>
+                <span className="current-text">{sentence ? plain([sentence.actor ? `${sentence.actor} ` : "", ...sentence.text, sentence.subject ? " · " : "", sentence.subject]) : current ? [current.agent, shortData(current)].filter(Boolean).join(" · ") : ""}</span>
+              </>
+            ) : (
+              <span className="muted">no op</span>
+            )}
+          </p>
+          <span className="status muted">
             {history.status.status === "loading" && "loading history · "}
             {history.status.status === "error" && `history unavailable (${history.status.message}) · `}
-            <span className="mono">{n}</span> ops
+            <span className="num">{n}</span> ops
           </span>
         </div>
 
-        <div className="track">
+        <div className="scrub-track">
           <div className="marks" aria-hidden="true">
             {marks.map((m, i) => (
-              <i key={i} data-tone={m.tone} style={{ left: `calc(${m.at * 100}% + ${5 - m.at * 10}px)` }} />
+              <i key={i} data-tone={m.tone} style={{ left: `calc(${m.at * 100}% + ${8 - m.at * 16}px)` }} />
             ))}
           </div>
           <input
@@ -194,28 +211,14 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
             onChange={(e) => dispatch({ type: "seek", idx: Number(e.target.value) })}
             aria-label="Position in the op log"
             aria-valuetext={fields ? `op ${fields.seq}, ${fields.kind}` : undefined}
+            style={{ ["--fill" as string]: `${n > 1 ? (Math.min(p.idx, n - 1) / (n - 1)) * 100 : 0}%` }}
           />
-          <div className="ends mono muted">
+          <div className="ends num">
             <span>{n > 0 ? fmtClock(start) : ""}</span>
+            <span>{current ? fmtClock(now) : ""}</span>
             <span>{n > 0 ? fmtClock(times.at(-1)!) : ""}</span>
           </div>
         </div>
-
-        <p className="current mono" data-signal={signal ?? undefined}>
-          {fields ? (
-            <>
-              <span className="muted">op</span> <b>{fields.seq}</b>
-              <span className="sep">·</span>
-              <span className="kind">{fields.kind}</span>
-              <span className="sep">·</span>
-              <span className="muted">txn</span> {fields.txn}
-              <span className="sep">·</span>
-              <span className="muted">agent</span> {fields.agent}
-            </>
-          ) : (
-            <span className="muted">no op</span>
-          )}
-        </p>
       </footer>
     </section>
   );

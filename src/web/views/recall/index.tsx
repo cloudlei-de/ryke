@@ -4,6 +4,7 @@ import { useEffect, useId, useReducer, useRef, useState, type FormEvent } from "
 import { createPortal } from "react-dom";
 import type { LineState } from "../../../shared/reducers";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
+import { Icon } from "../../ui";
 import {
   buildSelector,
   candidates,
@@ -54,7 +55,8 @@ export function RecallButton({ repo, state, reason }: { repo: string; state: Lin
   }, [open]);
   return (
     <>
-      <button ref={opener} type="button" className="recall-open" disabled={Boolean(reason)} title={reason ?? "Revert landed transactions by agent, model or id"} aria-haspopup="dialog" onClick={() => setOpen(true)}>
+      <button ref={opener} type="button" className="btn recall-open" disabled={Boolean(reason)} title={reason ?? "Revert landed transactions by agent, model or id"} aria-haspopup="dialog" onClick={() => setOpen(true)}>
+        <Icon name="undo" size={14} />
         Recall…
       </button>
       {open && <RecallDialog repo={repo} state={state} onClose={() => setOpen(false)} />}
@@ -187,26 +189,35 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
     >
       <div className="recall" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={box} tabIndex={-1}>
         <header className="recall-head">
-          <h2 id={titleId}>Recall</h2>
-          <span className="mono muted">{repo}</span>
+          <span className="recall-badge" aria-hidden="true">
+            <Icon name="undo" size={16} />
+          </span>
+          <div className="recall-heading">
+            <h2 id={titleId}>Recall</h2>
+            <p className="muted">
+              Revert landed changes on <span className="mono">{repo}</span>
+            </p>
+          </div>
           <span className="spacer" />
-          <button type="button" className="recall-close" onClick={onClose}>
-            Close <kbd>Esc</kbd>
+          <button type="button" className="btn btn-ghost btn-sm recall-close" onClick={onClose} aria-label="Close">
+            <kbd>Esc</kbd>
+            <Icon name="x" size={15} />
           </button>
         </header>
 
         <div className="recall-body">
-          <p className="recall-lede muted">
-            A recall reverts landed transactions on trunk. Plan it first: the plan is a dry run and changes nothing. Executing it runs the reverts and the tests.
+          <p className="recall-lede">
+            A recall takes landed transactions back off trunk and revalidates everything that landed after them. Plan it first: the plan is a dry run and changes nothing.
           </p>
 
           {!token && (
-            <form className="recall-token" onSubmit={saveToken}>
-              <label>
-                <span className="recall-label">Admin token</span>
-                <input type="password" autoComplete="off" value={draft} placeholder="RYKE_TOKEN" data-autofocus onChange={(e) => setDraft(e.target.value)} />
+            <form className="recall-token callout" onSubmit={saveToken}>
+              <Icon name="lock" size={15} />
+              <label className="field">
+                <span className="label">Admin token</span>
+                <input className="input" type="password" autoComplete="off" value={draft} placeholder="RYKE_TOKEN" data-autofocus onChange={(e) => setDraft(e.target.value)} />
               </label>
-              <button type="submit" disabled={draft.trim() === ""}>
+              <button type="submit" className="btn" disabled={draft.trim() === ""}>
                 Set token
               </button>
             </form>
@@ -219,48 +230,53 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
               void plan();
             }}
           >
-            <div className="recall-kinds" role="group" aria-label="Recall by">
-              <span className="recall-label">Recall by</span>
-              {KINDS.map((k) => (
-                <button key={k.kind} type="button" aria-pressed={kind === k.kind} disabled={busy} onClick={() => choose(k.kind, "", pasted)}>
-                  {k.label}
-                </button>
-              ))}
+            <div className="recall-step">
+              <span className="recall-num">1</span>
+              <span className="label">Recall by</span>
+              <div className="seg" role="group" aria-label="Recall by">
+                {KINDS.map((k) => (
+                  <button key={k.kind} type="button" aria-pressed={kind === k.kind} disabled={busy} onClick={() => choose(k.kind, "", pasted)}>
+                    {k.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {kind === "txns" ? (
-              <label className="recall-field">
-                <span className="recall-label">Transaction ids</span>
-                <textarea rows={2} value={pasted} disabled={busy} placeholder="t_mq3f0k1a t_mq3f0k2b" spellCheck={false} data-autofocus={token ? "" : undefined} onChange={(e) => choose(kind, pick, e.target.value)} />
-                {ids.bad.length > 0 && (
-                  <span className="recall-hint" data-tone="stop">
-                    Not a transaction id: <span className="mono">{ids.bad.join(", ")}</span>
-                  </span>
-                )}
-              </label>
-            ) : (
-              <label className="recall-field">
-                <span className="recall-label">{kind === "agent" ? "Agent" : "Model"}</span>
-                <select value={pick} disabled={busy} data-autofocus={token ? "" : undefined} onChange={(e) => choose(kind, e.target.value, pasted)}>
-                  <option value="">{options.length === 0 ? `no ${kind} with a landed transaction` : `choose a ${kind}…`}</option>
-                  {absent && <option value={pick}>{optionText(kind, pick, 0)}</option>}
-                  {options.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {optionText(kind, o.value, o.count)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            <button type="submit" className="recall-plan-btn" disabled={!token || !selector || busy}>
-              {flow.phase === "planning" ? "Planning…" : "Plan"}
-            </button>
+            <div className="recall-choose">
+              {kind === "txns" ? (
+                <label className="field recall-field">
+                  <span className="label">Transaction ids</span>
+                  <textarea className="input" rows={2} value={pasted} disabled={busy} placeholder="t_mq3f0k1a t_mq3f0k2b" spellCheck={false} data-autofocus={token ? "" : undefined} onChange={(e) => choose(kind, pick, e.target.value)} />
+                  {ids.bad.length > 0 && (
+                    <span className="recall-hint error-text">
+                      Not a transaction id: <span className="mono">{ids.bad.join(", ")}</span>
+                    </span>
+                  )}
+                </label>
+              ) : (
+                <label className="field recall-field">
+                  <span className="label">{kind === "agent" ? "Agent" : "Model"}</span>
+                  <select className="input" value={pick} disabled={busy} data-autofocus={token ? "" : undefined} onChange={(e) => choose(kind, e.target.value, pasted)}>
+                    <option value="">{options.length === 0 ? `no ${kind} with a landed transaction` : `Choose a ${kind}…`}</option>
+                    {absent && <option value={pick}>{optionText(kind, pick, 0)}</option>}
+                    {options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {optionText(kind, o.value, o.count)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <button type="submit" className="btn btn-primary recall-plan-btn" disabled={!token || !selector || busy}>
+                {flow.phase === "planning" ? "Planning…" : "Plan recall"}
+              </button>
+            </div>
           </form>
 
           <div className="recall-result" aria-live="polite">
             {flow.error && (
-              <p className="recall-error" role="alert">
+              <p className="callout recall-error" data-tone="stop" role="alert">
+                <Icon name="alert" size={15} />
                 {flow.error}
               </p>
             )}
@@ -272,10 +288,17 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
         {(flow.phase === "planned" || flow.phase === "executing") && (
           <footer className="recall-foot" data-busy={String(flow.phase === "executing")}>
             <span className="muted">
-              {flow.phase === "executing" ? "Reverting and running the tests. Closing this window does not stop it." : "Nothing has changed yet."}
+              {flow.phase === "executing" ? (
+                <>
+                  <span className="spinner" aria-hidden="true" /> Reverting and running the tests. Closing this window does not stop it.
+                </>
+              ) : (
+                "Nothing has changed yet."
+              )}
             </span>
             <span className="spacer" />
-            <button type="button" className="recall-go" disabled={!token || flow.phase === "executing" || flow.plan.targets.length === 0} onClick={() => void execute()}>
+            <button type="button" className="btn btn-danger recall-go" disabled={!token || flow.phase === "executing" || flow.plan.targets.length === 0} onClick={() => void execute()}>
+              <Icon name="undo" size={14} />
               {flow.phase === "executing" ? "Executing…" : "Execute recall"}
             </button>
           </footer>
@@ -289,28 +312,28 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
 type Tone = "revert" | "cascade" | "revalidate" | "stay";
 type RowView = { row: PlanRow; tone: Tone; label: string; requeuedAs?: string | null };
 
-// One row per transaction on a vertical trunk. A filled node is taken off trunk (struck through in --recall),
-// an outlined node stays and is revalidated by the tests that run after the revert.
+// One row per transaction, newest first, on a vertical trunk. A filled node is taken off trunk (its intent struck
+// through in --recall); an outlined node stays and is revalidated by the tests that run after the revert.
 function Rows({ rows }: { rows: RowView[] }) {
   return (
     <ol className="recall-rows">
       {rows.map(({ row: r, tone, label, requeuedAs }) => (
         <li key={r.id} data-tone={tone}>
           <span className="node" aria-hidden="true" />
-          <span className="num mono">{r.order ?? ""}</span>
-          <span className="id mono">{r.id}</span>
-          <span className="who">
-            <span className="mono muted">{[r.agent, r.model].filter(Boolean).join(" · ")}</span>
-            {r.seq !== null && <span className="mono muted"> · seq {r.seq}</span>}
-            {r.sha && <span className="mono muted"> · {r.sha}</span>}
-            {requeuedAs && (
-              <span className="requeued mono">
-                {" "}
-                · re-queued as <a href={`#/t/${encodeURIComponent(requeuedAs)}`}>{requeuedAs}</a>
-              </span>
-            )}
-          </span>
-          <span className="intent" title={r.intent ?? undefined}>{r.intent ?? ""}</span>
+          <div className="recall-row-main">
+            <span className="intent" title={r.intent ?? undefined}>
+              {r.intent ?? r.id}
+            </span>
+            <span className="who mono">
+              {[r.id, r.agent, r.model, r.seq !== null ? `seq ${r.seq}` : null, r.sha || null].filter(Boolean).join(" · ")}
+              {requeuedAs && (
+                <>
+                  {" · re-queued as "}
+                  <a href={`#/t/${encodeURIComponent(requeuedAs)}`}>{requeuedAs}</a>
+                </>
+              )}
+            </span>
+          </div>
           <span className="role">{label}</span>
         </li>
       ))}
@@ -323,7 +346,10 @@ function PlanView({ flow, state }: { flow: Extract<Flow, { plan: Plan }>; state:
   return (
     <section className="recall-plan" aria-label="Plan">
       <header className="recall-plan-head">
-        <h3>Plan for {describeSelector(flow.selector)}</h3>
+        <span className="recall-num">2</span>
+        <h3>
+          Plan for <span className="mono">{describeSelector(flow.selector)}</span>
+        </h3>
         <ul className="recall-key" aria-label="Key">
           <li>
             <i data-tone="revert" aria-hidden="true" /> reverted, newest first
@@ -350,8 +376,15 @@ function OutcomeView({ outcome, state }: { outcome: Outcome; state: LineState })
   const rows = outcome.outcome === "pass" ? outcomeRows(outcome, state.txns).map((row): RowView => ({ row, ...FATE[row.fate], requeuedAs: row.requeuedAs })) : [];
   return (
     <section className="recall-outcome" data-tone={s.tone} aria-label="Outcome">
-      <h3>{s.headline}</h3>
-      <p className="recall-sentence">{s.detail}</p>
+      <div className="recall-outcome-head">
+        <span className="recall-outcome-icon" aria-hidden="true">
+          <Icon name={s.tone === "go" ? "check" : "alert"} size={16} />
+        </span>
+        <div>
+          <h3>{s.headline}</h3>
+          <p className="recall-sentence">{s.detail}</p>
+        </div>
+      </div>
       {rows.length > 0 && <Rows rows={rows} />}
       {(outcome.head || outcome.failures.length > 0) && (
         <dl>
