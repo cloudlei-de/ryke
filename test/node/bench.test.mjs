@@ -1722,7 +1722,9 @@ describe("the synthetic agent against a local git remote", () => {
     const rec = recorderOf();
     await runAgent(ctx(rec, quiet, clock(rec)));
     assert.deepEqual(kinds(quiet), ["open", "report", "admit", "report", "think", "submit", "close"]);
-    assert.ok(rec.d.attempts[0].leaseWaitS >= 0.03, `${rec.d.attempts[0].leaseWaitS}`);
+    // The fake waits 30 ms on a timer, which may fire a fraction of a millisecond early against the
+    // agent's high-resolution clock (one run measured 0.0297 s).
+    assert.ok(rec.d.attempts[0].leaseWaitS >= 0.025, `${rec.d.attempts[0].leaseWaitS}`);
     assert.equal(rec.d.attempts[0].refreshes, 0);
 
     const moved = scripted([]);

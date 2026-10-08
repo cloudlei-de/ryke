@@ -14,6 +14,10 @@ const production = process.env.CLOUDFLARE_ENV === "production";
 const watch = !process.env.RYKE_STATE_DIR || process.env.RYKE_WATCH === "1";
 
 export default defineConfig(({ command }) => ({
+  // Test files start several stacks at once from one checkout. With one shared optimizer cache, a stack
+  // that re-optimizes under load deletes the chunks another stack is serving ("file does not exist in
+  // the optimize deps directory"), so each stack keeps its own next to its state.
+  ...(process.env.RYKE_STATE_DIR ? { cacheDir: `${stateDir}/vite` } : {}),
   plugins: [
     react(),
     cloudflare({
