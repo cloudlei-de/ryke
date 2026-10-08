@@ -6,10 +6,12 @@ import {
   fmtClock,
   fmtElapsed,
   foldTo,
+  historyAt,
   indexAtTime,
   initialPlayer,
   keyAction,
   loadHistory,
+  logChanged,
   markers,
   mergeOps,
   newFoldCache,
@@ -18,7 +20,9 @@ import {
   playerReduce,
   prefixMaxTimes,
   SPEEDS,
+  type History,
   type Player,
+  type PlayerAction,
 } from "../src/web/views/replay/scrub";
 import e2e from "./fixtures/ops/e2e-land.json";
 
@@ -179,6 +183,41 @@ describe("playerReduce", () => {
     it("ignores an empty log", () => {
       expect(playerReduce(player(), [], { type: "grew", from: 0 })).toEqual(player());
     });
+  });
+});
+
+describe("reset: the recording the player was on no longer exists", () => {
+  it("starts over at the first op, paused, but keeps the speed the user chose", () => {
+    expect(playerReduce(player({ idx: 4, clock: 90, playing: true, speed: 16 }), times, { type: "reset" })).toEqual(player({ speed: 16 }));
+  });
+  it("works on an empty log", () => {
+    expect(playerReduce(player({ idx: 3, clock: 50 }), [], { type: "reset" })).toEqual(player());
+  });
+});
+
+describe("logChanged: what the player does when the log it plays from grows or starts over", () => {
+  const seen = { epoch: 0, length: 6 };
+  it.each<[string, { epoch: number; length: number }, number, number, PlayerAction[], { epoch: number; length: number }]>([
+    ["nothing changed", seen, 0, 6, [], seen],
+    ["more ops arrived", seen, 0, 9, [{ type: "grew", from: 6 }], { epoch: 0, length: 9 }],
+    ["the first ops arrived", { epoch: 0, length: 0 }, 0, 3, [{ type: "grew", from: 0 }], { epoch: 0, length: 3 }],
+    ["the log started over and the new run has not delivered anything yet", seen, 1, 0, [{ type: "reset" }], { epoch: 1, length: 0 }],
+    ["the log started over and the new run already has ops", seen, 1, 4, [{ type: "reset" }, { type: "grew", from: 0 }], { epoch: 1, length: 4 }],
+    ["the log started over and the new run is longer than the old one", seen, 2, 40, [{ type: "reset" }, { type: "grew", from: 0 }], { epoch: 2, length: 40 }],
+    ["fewer ops without a reset (a history that was cleared) only updates the count", seen, 0, 2, [], { epoch: 0, length: 2 }],
+  ])("%s", (_name, was, epoch, length, actions, now) => {
+    expect(logChanged(was, epoch, length)).toEqual({ seen: now, actions });
+  });
+});
+
+describe("historyAt: a fetched history belongs to one run", () => {
+  const h = (epoch: number): History => ({ epoch, ops: [op(1, 1)], status: { status: "ok" } });
+  it("is the history itself while the epoch is the one it was fetched for", () => {
+    const x = h(2);
+    expect(historyAt(x, 2)).toBe(x);
+  });
+  it("is empty and loading as soon as the log started over, so old ops are never merged into the new run", () => {
+    expect(historyAt(h(2), 3)).toEqual({ epoch: 3, ops: [], status: { status: "loading" } });
   });
 });
 

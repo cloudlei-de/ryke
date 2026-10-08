@@ -36,7 +36,8 @@ export type TrainView = {
   outcome: string | null;
   probes: { txns: string[]; pass: boolean; at: number }[];
 };
-export type Tick = { seq: number; sha: string; txn: string | null; train: string | null; at: number };
+// A tick with neither a txn nor a recall is the seed commit. A recall's revert commit lands no transaction.
+export type Tick = { seq: number; sha: string; txn: string | null; train: string | null; recall: string | null; at: number };
 export type RecallView = { id: string; at: number; targets: string[]; dependents: string[]; cascade: string[]; outcome: string | null };
 
 export type LineState = {
@@ -117,8 +118,13 @@ export function apply(s: LineState, op: Op): LineState {
         s.txns.set(op.txn, view);
         if (!s.agents.includes(op.agent)) s.agents.push(op.agent);
       }
-      // A refresh moves an open attempt onto a newer snapshot; it is the same attempt, not a new bar.
-      if (d.refresh && view.attempts.length > 0) break;
+      // A refresh moves an open attempt onto a newer snapshot; it is the same attempt, not a new bar. Its reads
+      // start over, so the warnings about reads of the old snapshot no longer say anything about it.
+      if (d.refresh && view.attempts.length > 0) {
+        const a = current(view);
+        if (a) a.warnings = [];
+        break;
+      }
       view.state = "open";
       view.reason = null;
       view.attempt = d.attempt ?? view.attempt;
@@ -171,8 +177,8 @@ export function apply(s: LineState, op: Op): LineState {
     }
     case "trunk.advanced": {
       const landed: { txn: string; sha: string; seq: number }[] = d.txns ?? [];
-      if (landed.length === 0 && typeof d.sha === "string") s.ticks.push({ seq: d.seq, sha: d.sha, txn: null, train: d.train ?? null, at: op.at });
-      for (const l of landed) s.ticks.push({ seq: l.seq, sha: l.sha, txn: l.txn, train: d.train ?? null, at: op.at });
+      if (landed.length === 0 && typeof d.sha === "string") s.ticks.push({ seq: d.seq, sha: d.sha, txn: null, train: d.train ?? null, recall: d.recall ?? null, at: op.at });
+      for (const l of landed) s.ticks.push({ seq: l.seq, sha: l.sha, txn: l.txn, train: d.train ?? null, recall: null, at: op.at });
       s.head = { sha: d.sha, seq: d.seq };
       break;
     }

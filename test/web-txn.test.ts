@@ -3,6 +3,7 @@ import e2e from "./fixtures/ops/e2e-land.json";
 import { unifiedDiff } from "../src/shared/diff";
 import { TXN_STATES, type Op } from "../src/shared/types";
 import type { TxnDetail } from "../src/worker/ledger/ledger";
+import { computeDelta, deltaRequest, deltaView, fileFetcher, MAX_DELTA_PATHS, type FetchFile } from "../src/web/views/txn/delta";
 import {
   accessRows,
   attemptDetail,
@@ -899,7 +900,7 @@ describe("attemptDetail", () => {
     delta: [{ path: "src/format.ts", patch: "@@ -1 +1 @@\n-a\n+b" }],
   });
 
-  it("builds the earlier attempt from its ops and shows no delta, which the API only has for the current one", () => {
+  it("builds the earlier attempt from its ops and shows no delta unless the browser computed one: the API only has the current attempt's", () => {
     const a = attemptDetail(d, 1, "convert");
     expect(a.isCurrent).toBe(false);
     expect(a.row).toMatchObject({ attempt: 1, outcome: "stale" });
@@ -935,10 +936,182 @@ describe("attemptDetail", () => {
     expect(a.reads[0]).toMatchObject({ path: "src/format.ts", flags: ["stale"], by: "t_first", delta: "@@ -1 +1 @@\n-a\n+b" });
   });
 
+  it("attaches the delta the browser computed to the stale read of an earlier attempt", () => {
+    const past = [{ path: "src/format.ts", patch: "@@ -1 +1 @@\n-old\n+new" }];
+    const a = attemptDetail(d, 1, "convert", past);
+    expect(a.reads[0]).toMatchObject({ path: "src/format.ts", flags: ["stale"], by: "t_first", delta: "@@ -1 +1 @@\n-old\n+new" });
+    expect(a.reads[1]).toMatchObject({ path: "src/index.ts", delta: null });
+  });
+
+  it("never lets a computed past delta replace the API's delta for the current attempt", () => {
+    const stale = detail({
+      txn: txn({ state: "stale", attempt: 1 }),
+      attempts: [{ attempt: 1, reads: ["src/format.ts"], writes: [] }],
+      ops: ops.slice(0, 3),
+      delta: d.delta,
+    });
+    const a = attemptDetail(stale, 1, "convert", [{ path: "src/format.ts", patch: "from the browser" }]);
+    expect(a.reads[0]!.delta).toBe("@@ -1 +1 @@\n-a\n+b");
+  });
+
   it("copes with an attempt that has no access rows", () => {
     const a = attemptDetail(detail({ attempts: [] }), 1, "convert");
     expect(a.reads).toEqual([]);
     expect(a.writes).toEqual([]);
     expect(a.row).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the delta of an attempt that has already been retried
+
+describe("deltaRequest: which two snapshots to compare", () => {
+  const stale = (attempt: number, paths: { path: string; by?: string }[], reason = "stale_read") => op("txn.stale", 20, { attempt, reason, paths: paths.map((p) => ({ seq: 1, ...p })) });
+  const rowsOf = (...ops: DetailOp[]) => attemptRows(ops);
+
+  it("compares the stale attempt's snapshot with the snapshot of the retry that followed it", () => {
+    const rows = rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "src/format.ts", by: "t_a" }, { path: "src/ui/layout.ts" }]), open(30, 2, SNAP2));
+    expect(deltaRequest(rows, 1)).toEqual({
+      key: `${SNAP1}..${SNAP2} src/format.ts src/ui/layout.ts`,
+      before: SNAP1,
+      after: SNAP2,
+      paths: ["src/format.ts", "src/ui/layout.ts"],
+      omitted: 0,
+    });
+  });
+
+  it("uses the conflicting paths of a text conflict", () => {
+    const rows = rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "src/registry.ts" }], "text_conflict"), open(30, 2, SNAP2));
+    expect(deltaRequest(rows, 1)).toMatchObject({ before: SNAP1, after: SNAP2, paths: ["src/registry.ts"] });
+  });
+
+  it("compares the second retry with the third snapshot, not the first", () => {
+    const rows = rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "a.ts" }]), open(30, 2, SNAP2), stale(2, [{ path: "b.ts" }]), open(60, 3, SNAP3));
+    expect(deltaRequest(rows, 1)).toMatchObject({ before: SNAP1, after: SNAP2, paths: ["a.ts"] });
+    expect(deltaRequest(rows, 2)).toMatchObject({ before: SNAP2, after: SNAP3, paths: ["b.ts"] });
+  });
+
+  it("follows a refresh: the attempt's snapshot is the newest one it was checked against", () => {
+    // Built in log order: attemptRows sorts by seq, and the helper numbers ops as they are made.
+    const first = open(1, 1, SNAP1);
+    const refreshed = op("txn.open", 15, { attempt: 1, snapshot: SNAP2, refresh: true });
+    const rows = rowsOf(first, refreshed, stale(1, [{ path: "a.ts" }]), open(30, 2, SNAP3));
+    expect(deltaRequest(rows, 1)).toMatchObject({ before: SNAP2, after: SNAP3 });
+  });
+
+  it.each<[string, DetailOp[], number]>([
+    ["the current attempt has no later snapshot yet (the API's delta covers it)", [open(1, 1, SNAP1), stale(1, [{ path: "a.ts" }])], 1],
+    ["an attempt that did not go stale", [open(1, 1, SNAP1), op("txn.failed", 5, { attempt: 1, reason: "tests" }), open(30, 2, SNAP2)], 1],
+    ["a stale attempt without paths", [open(1, 1, SNAP1), stale(1, []), open(30, 2, SNAP2)], 1],
+    ["an attempt the log does not have", [open(1, 1, SNAP1)], 4],
+    ["the retry's snapshot is missing", [open(1, 1, SNAP1), stale(1, [{ path: "a.ts" }]), op("txn.open", 30, { attempt: 2 })], 1],
+    ["the stale attempt's own snapshot is missing", [op("txn.open", 1, { attempt: 1 }), stale(1, [{ path: "a.ts" }]), open(30, 2, SNAP2)], 1],
+    ["both attempts started from the same trunk", [open(1, 1, SNAP1), stale(1, [{ path: "a.ts" }]), open(30, 2, SNAP1)], 1],
+  ])("has nothing to compare for %s", (_name, ops, attempt) => {
+    expect(deltaRequest(rowsOf(...ops), attempt)).toBeNull();
+  });
+
+  it("lists a path once and stops at the cap, saying how many it left out", () => {
+    const many = Array.from({ length: MAX_DELTA_PATHS + 3 }, (_, i) => ({ path: `src/f${i}.ts` }));
+    const rows = rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "src/f0.ts" }, ...many]), open(30, 2, SNAP2));
+    const r = deltaRequest(rows, 1)!;
+    expect(r.paths).toEqual(many.slice(0, MAX_DELTA_PATHS).map((p) => p.path));
+    expect(r.omitted).toBe(3);
+  });
+
+  it("gives two different comparisons two different keys", () => {
+    const a = deltaRequest(rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "a.ts" }]), open(30, 2, SNAP2)), 1)!;
+    const b = deltaRequest(rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "b.ts" }]), open(30, 2, SNAP2)), 1)!;
+    const c = deltaRequest(rowsOf(open(1, 1, SNAP1), stale(1, [{ path: "a.ts" }]), open(30, 2, SNAP3)), 1)!;
+    expect(new Set([a.key, b.key, c.key]).size).toBe(3);
+  });
+});
+
+describe("computeDelta", () => {
+  const files: Record<string, string | null> = {
+    [`${SNAP1}:src/format.ts`]: "export const digits = 2;\n",
+    [`${SNAP2}:src/format.ts`]: "export const digits = 3;\n",
+    [`${SNAP1}:src/new.ts`]: null,
+    [`${SNAP2}:src/new.ts`]: "export {};\n",
+    [`${SNAP1}:src/gone.ts`]: "x\n",
+    [`${SNAP2}:src/gone.ts`]: null,
+    [`${SNAP1}:src/same.ts`]: "same\n",
+    [`${SNAP2}:src/same.ts`]: "same\n",
+  };
+  const fetched: string[] = [];
+  const fetchFile: FetchFile = async (ref, path) => {
+    fetched.push(`${ref}:${path}`);
+    return files[`${ref}:${path}`] ?? null;
+  };
+  const request = (paths: string[]) => ({ key: "k", before: SNAP1, after: SNAP2, paths, omitted: 0 });
+
+  it("reads each path at both snapshots and diffs them with the same unified diff the API uses", async () => {
+    fetched.length = 0;
+    const delta = await computeDelta(request(["src/format.ts"]), fetchFile);
+    expect(delta).toEqual([{ path: "src/format.ts", patch: unifiedDiff("src/format.ts", "export const digits = 2;\n", "export const digits = 3;\n") }]);
+    expect(delta[0]!.patch).toContain("-export const digits = 2;");
+    expect(delta[0]!.patch).toContain("+export const digits = 3;");
+    expect(fetched.sort()).toEqual([`${SNAP1}:src/format.ts`, `${SNAP2}:src/format.ts`]);
+  });
+
+  it("describes a file the other side added or deleted, and an unchanged one as no patch", async () => {
+    const delta = await computeDelta(request(["src/new.ts", "src/gone.ts", "src/same.ts"]), fetchFile);
+    expect(delta.map((d) => d.path)).toEqual(["src/new.ts", "src/gone.ts", "src/same.ts"]);
+    expect(delta[0]!.patch).toContain("new file mode");
+    expect(delta[1]!.patch).toContain("deleted file mode");
+    expect(delta[2]!.patch).toBe("");
+  });
+
+  it("gives up on the whole delta when one file cannot be read, rather than show a partial one", async () => {
+    const failing: FetchFile = async (ref, path) => {
+      if (path === "src/b.ts") throw new Error("GET files answered 503");
+      return fetchFile(ref, path);
+    };
+    await expect(computeDelta(request(["src/format.ts", "src/b.ts"]), failing)).rejects.toThrow("503");
+  });
+
+  it("has nothing to do for no paths", async () => {
+    expect(await computeDelta(request([]), fetchFile)).toEqual([]);
+  });
+});
+
+describe("fileFetcher", () => {
+  const answer = (status: number, body: unknown) => async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const seen: string[] = [];
+  const fetcher = (impl: () => Promise<Response>) => fileFetcher("convert", (async (url: string) => (seen.push(url), impl())) as unknown as typeof fetch);
+
+  it("asks GET /api/repos/:repo/files for the path at the ref, both encoded", async () => {
+    seen.length = 0;
+    const f = fetcher(answer(200, { ref: SNAP1, path: "src/a b.ts", content: "hello\n" }));
+    expect(await f(SNAP1, "src/a b.ts")).toBe("hello\n");
+    expect(seen).toEqual([`/api/repos/convert/files?ref=${SNAP1}&path=src%2Fa%20b.ts`]);
+  });
+
+  it("reads a file that is not there at that ref as absent", async () => {
+    expect(await fetcher(answer(404, { error: `no file src/x.ts at ${SNAP1}` }))(SNAP1, "src/x.ts")).toBeNull();
+  });
+
+  it.each([
+    ["a repo the ledger does not know", 404, { error: "repo is not initialised" }],
+    ["an unreachable store", 503, { error: "store down" }],
+    ["a server error", 500, {}],
+    ["an unreadable answer", 200, { ref: SNAP1 }],
+  ])("fails for %s, so the page does not draw a wrong delta", async (_name, status, body) => {
+    await expect(fetcher(answer(status, body))(SNAP1, "a.ts")).rejects.toThrow();
+  });
+});
+
+describe("deltaView: what the page shows while the comparison loads", () => {
+  const req = { key: "k1", before: SNAP1, after: SNAP2, paths: ["a.ts"], omitted: 0 };
+  const entry = [{ path: "a.ts", patch: "p" }];
+  it.each<[string, Parameters<typeof deltaView>[0], Parameters<typeof deltaView>[1], ReturnType<typeof deltaView>]>([
+    ["no comparison is possible", null, null, { status: "none", delta: [] }],
+    ["a comparison is possible and nothing has loaded", req, null, { status: "loading", delta: [] }],
+    ["what loaded belongs to another comparison", req, { key: "other", status: "ready", delta: entry }, { status: "loading", delta: [] }],
+    ["it loaded", req, { key: "k1", status: "ready", delta: entry }, { status: "ready", delta: entry }],
+    ["it failed", req, { key: "k1", status: "error", message: "GET files answered 503" }, { status: "error", delta: [], message: "GET files answered 503" }],
+    ["a result is left over for an attempt that needs none", null, { key: "k1", status: "ready", delta: entry }, { status: "none", delta: [] }],
+  ])("%s", (_name, request, loaded, want) => {
+    expect(deltaView(request, loaded)).toEqual(want);
   });
 });

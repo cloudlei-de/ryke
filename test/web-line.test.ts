@@ -16,6 +16,7 @@ import {
   demoResult,
   formatClock,
   fitLabel,
+  STALE_LABEL_MIN,
   formatHeat,
   heatFraction,
   heatRows,
@@ -43,6 +44,7 @@ import {
   tickerLine,
   toX,
   txnHref,
+  type AttemptBar,
   type Scale,
 } from "../src/web/views/line/geometry";
 import e2eLand from "./fixtures/ops/e2e-land.json";
@@ -184,14 +186,18 @@ describe("liveWindow", () => {
   });
 });
 
+// The Replay hands the Line the whole recording and a `now` that moves from the first op to the last one
+// (displayNow never goes below the playhead's op), so the window is the same at every position.
 describe("replayWindow and opBounds", () => {
   it.each<[string, number | null, number | null, number, [number, number]]>([
-    ["whole log, now at the end", 1000, 61_000, 61_000, [1000 - 1200, 61_000 + 1200]],
-    ["now in the middle keeps the whole log", 1000, 61_000, 30_000, [1000 - 1200, 61_000 + 1200]],
-    ["now beyond the log extends it", 1000, 61_000, 81_000, [1000 - 1600, 81_000 + 1600]],
+    ["scrubbed to the start: the window already reaches the last op", 1000, 61_000, 1000, [1000 - 1200, 61_000 + 1200]],
+    ["scrubbed to the middle keeps the whole log", 1000, 61_000, 30_000, [1000 - 1200, 61_000 + 1200]],
+    ["playing or paused at the end", 1000, 61_000, 61_000, [1000 - 1200, 61_000 + 1200]],
+    ["a clock past the last op (its timestamp is older than an earlier op's) extends the window", 1000, 61_000, 81_000, [1000 - 1600, 81_000 + 1600]],
     ["a very short log gets a 10 s span", 1000, 1500, 1500, [1000 - 200, 11_000 + 200]],
     ["no ops falls back to now", null, null, 5000, [5000 - 200, 15_000 + 200]],
-    ["first after now is clamped", 9000, 9500, 5000, [5000 - 200, 15_000 + 200]],
+    // The Replay's `now` starts at the first op, so this only guards the arithmetic of the pure function.
+    ["a first op later than now is clamped to now", 9000, 9500, 5000, [5000 - 200, 15_000 + 200]],
   ])("%s", (_n, first, last, now, [start, end]) => {
     const w = replayWindow(first, last, now);
     expect(w.start).toBeCloseTo(start, 6);
@@ -335,6 +341,14 @@ describe("fitLabel", () => {
     ["drops below four characters", "stale · a.ts", 100, 123, ""],
     ["drops when the limit is behind the start", "stale · a.ts", 100, 90, ""],
   ])("%s", (_n, text, start, limit, out) => expect(fitLabel(text, start, limit)).toBe(out));
+
+  it.each([
+    ["a clip that would keep fewer characters than asked for is dropped", "stale · a.ts", 100, 148, 12, ""],
+    ["a clip that keeps exactly as many as asked for is kept", "stale · a.ts", 100, 148, 8, "stale ·…"],
+    ["a label that fits whole is kept whatever the minimum", "stale · a.ts", 100, 172, 12, "stale · a.ts"],
+    ["a label shorter than the minimum is kept when it fits", "stale", 100, 130, 12, "stale"],
+    ["a label shorter than the minimum is dropped when it does not", "stale", 100, 124, 12, ""],
+  ])("with a minimum: %s", (_n, text, start, limit, min, out) => expect(fitLabel(text, start, limit, min)).toBe(out));
 });
 
 describe("assignLanes", () => {
@@ -615,6 +629,71 @@ describe("buildRows", () => {
     expect(row!.bars[2]!.mark).toMatchObject({ x: 990, anchor: "end" }); // flipped at the right edge, untouched
   });
 
+  describe("a stale label has to fit the stretch of the row it stands in", () => {
+    const stale = (txn: string, at: number, path = "src/format.ts") => move("txn.stale", txn, "a", at, { reason: "stale_read", paths: [{ path, seq: 1, by: "t_9" }] });
+    const landed = (txn: string, at: number) => move("txn.landed", txn, "a", at, { sha: "s", seq: 1 });
+    const label = (s: LineState, sc = scale, i = 0) => {
+      const [row] = buildRows(s, sc, 1000);
+      return row!.bars[i]!.mark as Extract<NonNullable<AttemptBar["mark"]>, { kind: "stale" }>;
+    };
+
+    it("hides a label that would be drawn over the short retry bar and the landing that follow the notch", () => {
+      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", 130)]);
+      const m = label(s);
+      expect(m.label).toBe("");
+      // the tooltip still has the whole story
+      expect(m.full).toBe("stale · src/format.ts ← t_9");
+      expect(buildRows(s, scale, 1000)[0]!.bars[0]!.title).toContain(m.full);
+    });
+
+    it("clips it to the retry bar while at least the minimum of characters fit", () => {
+      // retry runs 102..190: 190 - 106 = 84 px = 14 characters
+      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", 190)]);
+      expect(label(s).label).toBe("stale · src/f…");
+    });
+
+    it("hides it one character below the minimum", () => {
+      // the retry ends at 106 + 6 * (STALE_LABEL_MIN - 1) - 1: room for STALE_LABEL_MIN - 1 characters
+      const end = 106 + 6 * (STALE_LABEL_MIN - 1) + 5;
+      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", end)]);
+      expect(label(s).label).toBe("");
+      const just = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", end + 6)]);
+      expect(label(just).label).toHaveLength(STALE_LABEL_MIN);
+    });
+
+    it("hides it on a phone-width plot where every retry is short", () => {
+      const phone: Scale = { t0: 0, t1: 1000, x0: 64, x1: 362 };
+      const s = fold([open("t1", "a", 10), stale("t1", 300), open("t1", "a", 302, 2), landed("t1", 360)]);
+      // 298 px for 1000 ms: the retry is 18 px wide
+      expect(label(s, phone).label).toBe("");
+    });
+
+    it("shows the whole label when the retry is still running and the plot has room", () => {
+      const s = fold([open("t1", "a", 10), stale("t1", 100), open("t1", "a", 102, 2)]);
+      // the retry bar runs to `now` = 1000, the end of the plot
+      expect(label(s).label).toBe("stale · src/format.ts ← t_9");
+    });
+
+    it("shows the whole label of a stale attempt nothing followed", () => {
+      const s = fold([open("t1", "a", 10), stale("t1", 100)]);
+      expect(label(s).label).toBe("stale · src/format.ts ← t_9");
+    });
+
+    it("is not limited by a bar of the same agent that sits in another lane", () => {
+      // t2 overlaps t1 on the same row, so it has a lane of its own and does not stand where the label does
+      const s = fold([open("t1", "a", 10), open("t2", "a", 50), stale("t1", 100), open("t1", "a", 102, 2), landed("t1", 700)]);
+      const [row] = buildRows(s, scale, 1000);
+      const t1 = row!.bars.find((b) => b.txn === "t1" && b.attempt === 1)!;
+      expect(t1.lane).not.toBe(row!.bars.find((b) => b.txn === "t2")!.lane);
+      expect((t1.mark as { label: string }).label).toBe("stale · src/format.ts ← t_9");
+    });
+
+    it("leaves a label that was flipped to the left of the notch alone", () => {
+      const s = fold([open("t1", "a", 10), stale("t1", 990)]);
+      expect(label(s)).toMatchObject({ anchor: "end", label: "stale · src/format.ts ← t_9" });
+    });
+  });
+
   it("keeps a row for an agent whose bars have all left the window", () => {
     const s = fold([open("t1", "a", 10), move("txn.aborted", "t1", "a", 20, { reason: "x" })]);
     const rows = buildRows(s, { t0: 500, t1: 1500, x0: 0, x1: 1000 }, 900);
@@ -637,7 +716,7 @@ describe("buildRows", () => {
 // ---------------------------------------------------------------- trunk
 
 describe("layoutTrunk", () => {
-  const tk = (seq: number, at: number, train: string | null, txn: string | null = `t${seq}`): Tick => ({ seq, sha: `${seq}`.padEnd(40, "a"), txn, train, at });
+  const tk = (seq: number, at: number, train: string | null, txn: string | null = `t${seq}`, recall: string | null = null): Tick => ({ seq, sha: `${seq}`.padEnd(40, "a"), txn, train, recall, at });
 
   it("draws the ticks of one train as one block of evenly spaced ticks", () => {
     const blocks = layoutTrunk([tk(1, 100, "tr1"), tk(2, 100, "tr1"), tk(3, 100, "tr1")], scale);
@@ -656,6 +735,17 @@ describe("layoutTrunk", () => {
     const [seed, solo] = layoutTrunk([tk(0, 10, null, null), tk(1, 20, null)], scale);
     expect(seed!.ticks[0]!.title).toBe(`seed · seq 0 · ${"0".padEnd(8, "a")}`);
     expect(solo!.ticks[0]!.title).toBe(`t1 · seq 1 · ${"1".padEnd(8, "a")}`);
+  });
+
+  it("titles a recall's revert commit with the recall, not as the seed", () => {
+    const [b] = layoutTrunk([tk(7, 100, null, null, "rc_1")], scale);
+    expect(b!.ticks[0]).toMatchObject({ txn: null, recall: "rc_1", title: `recall rc_1 · seq 7 · ${"7".padEnd(8, "a")}` });
+  });
+
+  it("gives the seed and transactions no recall, and keeps a recall commit in its place after the train it follows", () => {
+    const blocks = layoutTrunk([tk(0, 10, null, null), tk(1, 100, "tr1"), tk(2, 400, null, null, "rc_1")], scale);
+    expect(blocks.map((b) => b.ticks[0]!.recall)).toEqual([null, null, "rc_1"]);
+    expect(blocks.map((b) => b.key)).toEqual(["seq:0", "train:tr1", "seq:2"]);
   });
 
   it("treats commits without a train as blocks of their own", () => {
@@ -862,6 +952,7 @@ describe("shortData", () => {
     ["txn.recalled", { reason: "cascade" }, "cascade"],
     ["trunk.advanced", { seq: 5, sha, train: "tr_2" }, "seq 5 8bbb4cfc tr_2"],
     ["trunk.advanced", { seq: 0, sha, train: null }, "seq 0 8bbb4cfc"],
+    ["trunk.advanced", { seq: 7, sha, txns: [], train: null, recall: "rc_1" }, "seq 7 8bbb4cfc recall rc_1"],
     ["train.formed", { train: "tr_1", txns: ["a", "b"] }, "tr_1 · 2 txns"],
     ["train.formed", { train: "tr_1", txns: ["a"] }, "tr_1 · 1 txn"],
     ["train.bisect", { probe: ["a", "b"], pass: false }, "probe 2 · fail"],
@@ -965,7 +1056,25 @@ describe("the recorded e2e-land scenario", () => {
     expect(lines.find((l) => l.kind === "txn.failed")).toMatchObject({ txn: "t_muyvqs36f4d2", agent: "agent-f", data: "broken by design", signal: "stop" });
   });
 
-  it("renders the same bars for any scrubbed time: nothing after `now` exists in the folded state", () => {
+  it("scrubbing forward only adds to the picture: nothing already drawn moves", () => {
+    // The Replay's window comes from the whole recording, so the scale is the same at every position.
+    const barXs = (s: LineState) => new Map(buildRows(s, sc, s.now).flatMap((r) => r.bars.map((b) => [b.key, b.x] as const)));
+    const tickXs = (s: LineState) => new Map(layoutTrunk(s.ticks, sc).flatMap((b) => b.ticks.map((t) => [t.key, t.x] as const)));
+    let before = { bars: new Map<string, number>(), ticks: new Map<string, number>() };
+    let positions = 0;
+    for (const o of ops) {
+      const s = fold(ops, o.seq);
+      const now = { bars: barXs(s), ticks: tickXs(s) };
+      for (const [key, x] of before.bars) expect(now.bars.get(key), `bar ${key} at seq ${o.seq}`).toBe(x);
+      for (const [key, x] of before.ticks) expect(now.ticks.get(key), `tick ${key} at seq ${o.seq}`).toBe(x);
+      before = now;
+      positions++;
+    }
+    expect(positions).toBe(ops.length);
+    expect(before.bars.size).toBe(7);
+  });
+
+  it("draws nothing that has not happened yet at an early position", () => {
     const early = fold(ops, 16); // before the first landing
     const rows = buildRows(early, sc, early.now);
     expect(rows.flatMap((r) => r.bars).filter((b) => b.mark !== null)).toEqual([]);

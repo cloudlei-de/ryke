@@ -1,6 +1,7 @@
 // Pure helpers behind the Recall dialog (PLAN.md §8 and §12 view 4): what the op log offers to recall,
 // what the plan and the outcome say, and the dialog's own state machine. The component only renders these.
 import type { TxnView } from "../../../shared/reducers";
+import { modelLabel } from "../../agents";
 import { clipText, shortSha } from "../line/geometry";
 
 export type SelectorKind = "agent" | "model" | "txns";
@@ -62,6 +63,12 @@ export function buildSelector(kind: SelectorKind, pick: string, pasted: string):
 }
 
 export const selectorKey = (s: Selector | null): string => (s ? JSON.stringify(s) : "");
+
+// One line of the dialog's agent or model list. Models the harness invented carry their kind, so a recall of
+// "sloppy-v0" is never taken for a recall of a real model's work (§0.10).
+export function optionText(kind: "agent" | "model", value: string, count: number): string {
+  return `${kind === "model" ? modelLabel(value) : value} · ${count} landed`;
+}
 
 export function describeSelector(s: Selector): string {
   if ("agent" in s) return `agent = ${s.agent}`;
@@ -264,6 +271,12 @@ export function flowStep(flow: Flow, ev: FlowEvent): Flow {
       if (flow.phase === "planning") return { phase: "pick", error: ev.text };
       return flow;
   }
+}
+
+// Esc and a click on the backdrop close the dialog, except while a recall runs: the reverts and the tests are
+// the point of the dialog, and the person should see how it ends (the Close button still works).
+export function canDismiss(flow: Flow): boolean {
+  return flow.phase !== "executing";
 }
 
 // ---------------------------------------------------------------- focus trap

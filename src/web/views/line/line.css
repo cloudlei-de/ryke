@@ -36,6 +36,23 @@
   font-weight: 500;
   color: var(--muted);
 }
+.line .head-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+/* Ink on paper, not a signal colour: it is a fact about the agents, not a state. */
+.line .sim-tag {
+  padding: 0 6px;
+  border: var(--hair) solid var(--rule);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: help;
+}
 .line svg text {
   font-family: var(--mono);
   font-size: 10px;
@@ -73,6 +90,11 @@
 }
 .trunk .tick.seed {
   stroke-width: 1;
+}
+/* The revert commit of a recall lands no transaction; it is drawn in --recall like the strike-throughs it causes. */
+.trunk .tick.recall,
+.trunk .block.arrive .tick.recall {
+  stroke: var(--recall);
 }
 .trunk .tick-hit {
   fill: transparent;
@@ -237,7 +259,7 @@
 }
 /* The halo keeps the label readable where the retry bar runs underneath it. */
 .sidings .stale-label {
-  fill: var(--stop);
+  fill: var(--stop-text);
   paint-order: stroke;
   stroke: var(--paper);
   stroke-width: 3px;
@@ -294,19 +316,19 @@
   color: var(--muted);
 }
 .ticker .t-kind[data-signal="go"] {
-  color: var(--go);
+  color: var(--go-text);
 }
 .ticker .t-kind[data-signal="stop"] {
-  color: var(--stop);
+  color: var(--stop-text);
 }
 .ticker .t-kind[data-signal="caution"] {
-  color: var(--caution);
+  color: var(--caution-text);
 }
 .ticker .t-kind[data-signal="run"] {
-  color: var(--run);
+  color: var(--run-text);
 }
 .ticker .t-kind[data-signal="recall"] {
-  color: var(--recall);
+  color: var(--recall-text);
 }
 .ticker-empty {
   margin: 0;
@@ -357,10 +379,10 @@
   color: var(--muted);
 }
 .demo-msg[data-ok="false"] {
-  color: var(--stop);
+  color: var(--stop-text);
 }
 .demo-msg[data-ok="true"] {
-  color: var(--go);
+  color: var(--go-text);
 }
 .counters {
   display: grid;
@@ -486,7 +508,7 @@
   background: var(--stop);
 }
 .heat-list li[data-hot="true"] .val {
-  color: var(--stop);
+  color: var(--stop-text);
   font-weight: 600;
 }
 .heat-list .val {

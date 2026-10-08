@@ -1,5 +1,6 @@
 import { useState, type CSSProperties, type FormEvent } from "react";
 import { MAX_ATTEMPTS } from "../../../shared/types";
+import { modelLabel } from "../../agents";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
 import {
   clock,
@@ -72,7 +73,7 @@ export function Header({ detail, preview }: { detail: Detail; preview: AttemptDe
         </div>
         <div>
           <dt>Model</dt>
-          <dd className="mono">{txn.model ?? "—"}</dd>
+          <dd className="mono">{txn.model ? modelLabel(txn.model) : "—"}</dd>
         </div>
         <div>
           <dt>Attempt</dt>

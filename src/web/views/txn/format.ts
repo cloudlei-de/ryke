@@ -1,5 +1,6 @@
 // Pure view-model helpers for the Transaction view (PLAN.md §12, view 2). Everything here is data in,
 // data out: the React components in index.tsx and parts.tsx only lay the results out.
+import type { DeltaEntry } from "../../../shared/types";
 import type { TxnDetail } from "../../../worker/ledger/ledger";
 
 export type Detail = TxnDetail;
@@ -360,8 +361,9 @@ export function verdictRows(verdicts: Detail["verdicts"], attempt: number): Verd
 
 // ---------------------------------------------------------------------------- evidence and previews
 
-// The runner stores the screenshot as `<jobId>.png`; the route that serves it is /api/evidence/:file.
-// Anything with a path separator or a leading dot never becomes a URL.
+// The local runner stores the verify screenshot as `<jobId>.png` and GET /api/evidence/:file serves it. The
+// container runner keeps none (that route answers 404 there and the image is hidden), and the route checks
+// names with this same pattern. Anything with a path separator or a leading dot never becomes a URL.
 export function evidenceUrl(ref: string | null | undefined): string | null {
   return ref && /^[A-Za-z0-9_-][\w.-]*\.png$/i.test(ref) ? `/api/evidence/${ref}` : null;
 }
@@ -478,13 +480,15 @@ export type AttemptDetail = {
   preview: Preview | null;
 };
 
-export function attemptDetail(detail: Detail, attempt: number, repo: string): AttemptDetail {
+// `pastDelta` is what delta.ts computed in the browser for an attempt that was already retried.
+export function attemptDetail(detail: Detail, attempt: number, repo: string, pastDelta: DeltaEntry[] = []): AttemptDetail {
   const isCurrent = attempt === detail.txn.attempt;
   const row = attemptRows(detail.ops).find((r) => r.attempt === attempt) ?? null;
   const access = detail.attempts.find((a) => a.attempt === attempt);
   const marks = attemptMarks(detail, row, isCurrent);
-  // The API computes the delta against the current head, and only while the transaction is stale.
-  const delta = isCurrent ? detail.delta : [];
+  // The API computes the delta against the current head, and only while the transaction is stale. Earlier
+  // attempts get theirs from the two snapshots in the op log, fetched by the page.
+  const delta = isCurrent ? detail.delta : pastDelta;
   return {
     attempt,
     isCurrent,

@@ -37,7 +37,8 @@ function Bar({ bar, rowH }: { bar: AttemptBar; rowH: number }) {
 // Drawn after every bar of the row: the retry bar that follows a stale abort starts right under the label.
 function StaleLabel({ bar, rowH }: { bar: AttemptBar; rowH: number }) {
   const m = bar.mark;
-  if (m?.kind !== "stale") return null;
+  // An empty label was hidden for lack of room; the bar's tooltip still carries it.
+  if (m?.kind !== "stale" || m.label === "") return null;
   const { y, h } = laneBox(bar.lane, bar.lanes, rowH);
   return (
     <text className="stale-label" x={m.labelX} y={y + h / 2} dy=".35em" textAnchor={m.anchor}>
@@ -56,14 +57,23 @@ export function Sidings(props: {
   labelW: number;
   x1: number;
   empty: boolean;
+  // Set when the agents on the line are simulated (§0.10): said in the header, where nobody can miss it.
+  simulation: { text: string; title: string } | null;
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const { rows, rowH, ticks, nowX, nowLabel, width, labelW, x1, empty, scrollRef } = props;
+  const { rows, rowH, ticks, nowX, nowLabel, width, labelW, x1, empty, simulation, scrollRef } = props;
   const maxChars = Math.floor((labelW - 12) / 6);
   return (
     <section className="sidings" aria-label="Sidings">
       <header className="panel-head">
-        <h2>Sidings</h2>
+        <div className="head-title">
+          <h2>Sidings</h2>
+          {simulation && (
+            <span className="sim-tag" title={simulation.title}>
+              {simulation.text}
+            </span>
+          )}
+        </div>
         <span className="muted mono">{rows.length} agent{rows.length === 1 ? "" : "s"}</span>
       </header>
       <div className="sidings-scroll" ref={scrollRef}>

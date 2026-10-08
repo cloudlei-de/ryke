@@ -193,7 +193,7 @@
 .txn-error {
   flex-basis: 100%;
   margin: 0;
-  color: var(--stop);
+  color: var(--stop-text);
   font-weight: 600;
 }
 .txn button:disabled {
@@ -370,11 +370,11 @@
   color: var(--muted);
 }
 .txn-diff figcaption [data-kind="add"] {
-  color: var(--go);
+  color: var(--go-text);
   font-weight: 500;
 }
 .txn-diff figcaption [data-kind="del"] {
-  color: var(--stop);
+  color: var(--stop-text);
   font-weight: 500;
 }
 .txn-diff-scroll {
@@ -416,11 +416,11 @@
   background: color-mix(in srgb, var(--stop) 16%, transparent);
 }
 .txn-ln[data-kind="add"] .mark {
-  color: var(--go);
+  color: var(--go-text);
   font-weight: 600;
 }
 .txn-ln[data-kind="del"] .mark {
-  color: var(--stop);
+  color: var(--stop-text);
   font-weight: 600;
 }
 .txn-ln[data-kind="hunk"],

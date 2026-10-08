@@ -1,5 +1,6 @@
 import type { LineState } from "../../../shared/reducers";
 import type { Op } from "../../../shared/types";
+import { simulationTag } from "../../agents";
 import { activityStart, AXIS_H, axisTicks, buildRows, formatClock, layoutTrunk, liveWindow, LIVE_MAX_MS, opBounds, plotBox, replayWindow, rowHeight, toX, type Scale } from "./geometry";
 import { useFiles, useNow, useSize } from "./hooks";
 import "./line.css";
@@ -51,6 +52,7 @@ export function LineView({ repo, state, ops, mode, now: nowProp }: { repo: strin
           labelW={plot.labelW}
           x1={plot.x1}
           empty={state.txns.size === 0}
+          simulation={simulationTag([...state.txns.values()].map((t) => t.model))}
           scrollRef={scrollRef}
         />
         <Ticker ops={state.ticker} />

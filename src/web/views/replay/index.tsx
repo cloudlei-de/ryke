@@ -1,7 +1,6 @@
 // Replay view (PLAN.md §12 view 5): the Line, rendered from any point in the op log. Felix records the
 // demo video from it, so the controls stay small and the Line keeps the room.
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import type { Op } from "../../../shared/types";
 import type { Live } from "../../live";
 import { LineView } from "../line";
 import {
@@ -9,9 +8,11 @@ import {
   fmtClock,
   fmtElapsed,
   foldTo,
+  historyAt,
   initialPlayer,
   keyAction,
   loadHistory,
+  logChanged,
   markers,
   mergeOps,
   newFoldCache,
@@ -20,18 +21,18 @@ import {
   playerReduce,
   prefixMaxTimes,
   SPEEDS,
+  type History,
   type Page,
   type PlayerAction,
+  type Seen,
 } from "./scrub";
 import "./replay.css";
 
 // 25 renders a second is smooth enough for bars growing on a timetable and leaves the Line room to paint.
 const TICK_EVERY_MS = 40;
 
-type History = { status: "loading" } | { status: "ok" } | { status: "error"; message: string };
-
-function useHistory(repo: string): { ops: Op[]; status: History } {
-  const [state, setState] = useState<{ ops: Op[]; status: History }>({ ops: [], status: { status: "loading" } });
+function useHistory(repo: string, epoch: number): History {
+  const [state, setState] = useState<History>({ epoch, ops: [], status: { status: "loading" } });
   useEffect(() => {
     let off = false;
     // The socket may have delivered fewer ops than exist (it resumes from what it has), so page the full log.
@@ -41,18 +42,18 @@ function useHistory(repo: string): { ops: Op[]; status: History } {
       return (await r.json()) as Page;
     };
     loadHistory(page).then(
-      (ops) => !off && setState({ ops, status: { status: "ok" } }),
-      (e: unknown) => !off && setState({ ops: [], status: { status: "error", message: e instanceof Error ? e.message : String(e) } }),
+      (ops) => !off && setState({ epoch, ops, status: { status: "ok" } }),
+      (e: unknown) => !off && setState({ epoch, ops: [], status: { status: "error", message: e instanceof Error ? e.message : String(e) } }),
     );
     return () => {
       off = true;
     };
-  }, [repo]);
-  return state;
+  }, [repo, epoch]);
+  return historyAt(state, epoch);
 }
 
 function Replay({ repo, live }: { repo: string; live: Live }) {
-  const history = useHistory(repo);
+  const history = useHistory(repo, live.epoch);
   const ops = useMemo(() => mergeOps(history.ops, live.ops), [history.ops, live.ops, live.version]);
   const times = useMemo(() => prefixMaxTimes(ops), [ops]);
   const [p, setP] = useState(initialPlayer);
@@ -62,12 +63,12 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
   timesRef.current = times;
   const dispatch = useCallback((a: PlayerAction) => setP((prev) => playerReduce(prev, timesRef.current, a)), []);
 
-  const seen = useRef(0);
+  const seen = useRef<Seen>({ epoch: live.epoch, length: 0 });
   useEffect(() => {
-    const from = seen.current;
-    seen.current = ops.length;
-    if (ops.length > from) dispatch({ type: "grew", from });
-  }, [ops.length, dispatch]);
+    const next = logChanged(seen.current, live.epoch, ops.length);
+    seen.current = next.seen;
+    for (const action of next.actions) dispatch(action);
+  }, [ops.length, live.epoch, dispatch]);
 
   useEffect(() => {
     if (!p.playing) return;
@@ -109,9 +110,9 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
 
   const cache = useRef(newFoldCache());
   // A shallow copy gives the Line a new identity per position even when the fold only advanced the cached
-  // state in place, so anything it memoises on `state` recomputes.
+  // state in place, so anything it memoises on `state` recomputes. The Line gets the whole log, not the part
+  // played so far: it only uses it to fix the time window once, and the folded state already hides the future.
   const state = useMemo(() => ({ ...foldTo(cache.current, ops, p.idx) }), [ops, p.idx]);
-  const visible = useMemo(() => ops.slice(0, p.idx + 1), [ops, p.idx]);
   const marks = useMemo(() => markers(ops), [ops]);
 
   const n = ops.length;
@@ -134,7 +135,7 @@ function Replay({ repo, live }: { repo: string; live: Live }) {
             {history.status.status === "loading" ? `Loading the op log of ${repo}.` : `No ops recorded for ${repo} yet. Run a swarm, then come back.`}
           </p>
         ) : (
-          <LineView repo={repo} state={state} ops={visible} mode="replay" now={now} />
+          <LineView repo={repo} state={state} ops={ops} mode="replay" now={now} />
         )}
       </div>
 

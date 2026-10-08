@@ -182,7 +182,7 @@
   font-size: 12px;
 }
 .recall-hint[data-tone="stop"] {
-  color: var(--stop);
+  color: var(--stop-text);
 }
 .recall-plan-btn {
   min-width: 96px;
@@ -196,7 +196,7 @@
 }
 .recall-error {
   margin: 0 0 10px;
-  color: var(--stop);
+  color: var(--stop-text);
   font-weight: 600;
 }
 .recall-plan,
@@ -309,7 +309,7 @@
 }
 .recall-rows .num {
   grid-area: num;
-  color: var(--recall);
+  color: var(--recall-text);
   font-weight: 600;
   text-align: right;
 }
@@ -349,7 +349,7 @@
   text-decoration-thickness: 2px;
 }
 .recall-rows :is(li[data-tone="revert"], li[data-tone="cascade"]) .role {
-  color: var(--recall);
+  color: var(--recall-text);
   font-weight: 600;
 }
 .recall-rows .requeued a {
@@ -399,10 +399,10 @@
   padding: 4px 14px;
   font-weight: 600;
   border-color: var(--recall);
-  color: var(--recall);
+  color: var(--recall-text);
 }
 .recall-go:hover {
-  background: var(--recall);
+  background: var(--recall-text);
   color: var(--paper);
 }
 

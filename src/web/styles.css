@@ -9,6 +9,14 @@
   --caution: #c78a00;
   --run: #2850b8;
   --recall: #7a3fb5;
+  /* The signals above are for marks and fills. Small text needs 4.5:1 on paper (WCAG AA), which --stop (3.9) and
+     --caution (2.6) do not give in the light scheme, nor --run (4.3) and --recall (4.5) in the dark one. The -text
+     variants are the same hues, moved just far enough; test/node/web-contrast.test.mjs checks every one. */
+  --go-text: #196933;
+  --stop-text: #a9301e;
+  --caution-text: #805800;
+  --run-text: #2850b8;
+  --recall-text: #763daf;
   --hair: 1px;
   --sans: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -26,6 +34,11 @@
     --caution: #f0a800;
     --run: #4d73d6;
     --recall: #9563cc;
+    --go-text: #29a352;
+    --stop-text: #e2654f;
+    --caution-text: #f0a800;
+    --run-text: #6888dc;
+    --recall-text: #a378d3;
     color-scheme: dark;
   }
 }
@@ -39,6 +52,11 @@
   --caution: #f0a800;
   --run: #4d73d6;
   --recall: #9563cc;
+  --go-text: #29a352;
+  --stop-text: #e2654f;
+  --caution-text: #f0a800;
+  --run-text: #6888dc;
+  --recall-text: #a378d3;
   color-scheme: dark;
 }
 * {

@@ -19,7 +19,9 @@ export type PlayerAction =
   | { type: "speed"; speed: Speed }
   | { type: "tick"; dt: number }
   // `from` is how many ops the log had before it grew; the new length is `times.length`.
-  | { type: "grew"; from: number };
+  | { type: "grew"; from: number }
+  // The recording was deleted and started again (swarm --fresh): there is nothing left to be positioned in.
+  | { type: "reset" };
 
 export function initialPlayer(): Player {
   return { idx: 0, clock: 0, playing: false, speed: 1 };
@@ -85,7 +87,20 @@ export function playerReduce(p: Player, times: readonly number[], a: PlayerActio
       if (a.from === 0 || (!p.playing && p.idx === a.from - 1)) return { ...p, idx: last, clock: at(last) };
       return p;
     }
+    case "reset":
+      return { ...initialPlayer(), speed: p.speed };
   }
+}
+
+// What the player does when the log it plays from changes. `epoch` counts the times the live log was thrown
+// away: on a new epoch the old position means nothing, and the new run's ops are all news, so the player
+// starts over and then follows them to the end like it does for the first ops of any log.
+export type Seen = { epoch: number; length: number };
+
+export function logChanged(seen: Seen, epoch: number, length: number): { seen: Seen; actions: PlayerAction[] } {
+  const now = { epoch, length };
+  if (epoch !== seen.epoch) return { seen: now, actions: length > 0 ? [{ type: "reset" }, { type: "grew", from: 0 }] : [{ type: "reset" }] };
+  return { seen: now, actions: length > seen.length ? [{ type: "grew", from: seen.length }] : [] };
 }
 
 // The `now` the Line renders at: the running clock, which equals the op's own time after any seek or step
@@ -105,6 +120,15 @@ export function mergeOps(base: Op[], extra: readonly Op[]): Op[] {
 }
 
 export type Page = { ops: Op[]; last: number };
+
+export type HistoryStatus = { status: "loading" } | { status: "ok" } | { status: "error"; message: string };
+export type History = { epoch: number; ops: Op[]; status: HistoryStatus };
+
+// A history fetched before the log started over describes a run that is gone; merging it into the new run
+// would draw two runs on one Line. Until the refetch lands the view has no history at all.
+export function historyAt(h: History, epoch: number): History {
+  return h.epoch === epoch ? h : { epoch, ops: [], status: { status: "loading" } };
+}
 
 // GET /api/repos/:repo/ops pages at most 5000 ops; follow `last` until a short page.
 export async function loadHistory(fetchPage: (after: number, limit: number) => Promise<Page>, limit = 5000): Promise<Op[]> {

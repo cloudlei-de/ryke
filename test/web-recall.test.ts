@@ -3,6 +3,7 @@ import { fold } from "../src/shared/reducers";
 import {
   buildSelector,
   candidates,
+  canDismiss,
   describeSelector,
   flowStep,
   initialFlow,
@@ -379,6 +380,22 @@ describe("recall dialog: the flow", () => {
     let f = initialFlow;
     for (const ev of [{ type: "plan", selector: sel }, { type: "planned", selector: sel, plan: p }, { type: "execute" }, { type: "executed", outcome: outcome() }] as FlowEvent[]) f = flowStep(f, ev);
     expect(f).toEqual(flows.done);
+  });
+});
+
+describe("recall dialog: Esc and the backdrop", () => {
+  const sel: Selector = { model: "sloppy-v0" };
+  const p = plan(["t_a"]);
+  it.each<[string, Flow, boolean]>([
+    ["picking", initialFlow, true],
+    ["a failed pick", { phase: "pick", error: "boom" }, true],
+    ["planning (a dry run changes nothing)", { phase: "planning", selector: sel, error: null }, true],
+    ["a plan on screen", { phase: "planned", selector: sel, plan: p, error: null }, true],
+    ["a failed execute that can be tried again", { phase: "planned", selector: sel, plan: p, error: "train" }, true],
+    ["executing: the person is watching the revert and the tests run", { phase: "executing", selector: sel, plan: p, error: null }, false],
+    ["the outcome", { phase: "done", outcome: outcome(), error: null }, true],
+  ])("may dismiss while %s: %s", (_name, flow, may) => {
+    expect(canDismiss(flow)).toBe(may);
   });
 });
 

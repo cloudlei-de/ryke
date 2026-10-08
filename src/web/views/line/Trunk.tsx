@@ -31,7 +31,7 @@ export function Trunk({ blocks, head, x0, x1, width, now }: { blocks: TrunkBlock
               <g key={t.key}>
                 <title>{t.title}</title>
                 <rect className="tick-hit" x={t.x - 3} y={22} width={7} height={36} />
-                <line className={t.txn ? "tick" : "tick seed"} x1={t.x} x2={t.x} y1={t.txn ? 30 : 24} y2={t.txn ? 50 : 56} />
+                <line className={t.txn ? "tick" : t.recall ? "tick recall" : "tick seed"} x1={t.x} x2={t.x} y1={t.txn ? 30 : 24} y2={t.txn ? 50 : 56} />
               </g>
             ))}
             {b.ticks.length > 1 && (

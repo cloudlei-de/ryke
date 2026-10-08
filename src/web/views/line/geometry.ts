@@ -3,6 +3,7 @@
 import { HOT } from "../../../worker/ledger/heat";
 import type { AttemptView, LineState, Segment, Tick, TxnView } from "../../../shared/reducers";
 import type { Op, OpKind } from "../../../shared/types";
+import { modelLabel } from "../../agents";
 
 export const ROW_H = 18;
 export const ROW_MAX = 32;
@@ -150,12 +151,15 @@ export function placeLabel(x: number, text: string, x0: number, x1: number): { t
 }
 
 // A label that must stop before `limitX` (the next label on the same row): clipped to the room, or dropped
-// when fewer than four characters would remain (the bar's tooltip still has the whole text).
-export function fitLabel(text: string, startX: number, limitX: number): string {
+// when fewer than `min` characters would remain (the bar's tooltip still has the whole text).
+export function fitLabel(text: string, startX: number, limitX: number, min = 4): string {
   const chars = Math.floor((limitX - startX) / CHAR_W);
   if (text.length <= chars) return text;
-  return chars < 4 ? "" : clipText(text, chars);
+  return chars < min ? "" : clipText(text, chars);
 }
+
+// "stale · src/…" is about as little as still says what went stale; a stub like "sta…" over a retry bar is noise.
+export const STALE_LABEL_MIN = 12;
 
 // ---------------------------------------------------------------- sidings
 
@@ -244,7 +248,8 @@ export const txnHref = (id: string): string => `#/t/${encodeURIComponent(id)}`;
 
 function barTitle(txn: TxnView, a: AttemptView, label: string | null): string {
   const status = a.outcome ?? a.segments.at(-1)?.state ?? "open";
-  const lines = [`${txn.id} · attempt ${a.attempt} · ${stateLabel(status)}${a.reason ? ` (${a.reason})` : ""}`, txn.intent];
+  // The model is there so a scripted or stub agent is never mistaken for a language model (§0.10).
+  const lines = [`${txn.id} · attempt ${a.attempt} · ${stateLabel(status)}${a.reason ? ` (${a.reason})` : ""}`, txn.model ? `${txn.agent} · ${modelLabel(txn.model)}` : txn.agent, txn.intent];
   if (label) lines.push(label);
   for (const w of a.warnings) lines.push(`warning: ${w.paths.join(", ")}`);
   return lines.join("\n");
@@ -331,20 +336,26 @@ export function buildRows(state: LineState, scale: Scale, now: number): Row[] {
       const bar = layoutBar({ txn: r.txn, attempt: r.attempt, lane: lane.get(keyOf(r)) ?? 0, lanes: count, scale, now });
       if (bar) bars.push(bar);
     }
-    // Two stale aborts close together would print their labels over each other: each label stops where the next begins.
+    // A stale label is drawn to the right of its notch, where the retry bar already runs. It may stay as long as it
+    // fits before the end of that bar, the next stale notch, or the edge of the plot; one that does not is hidden
+    // rather than printed over the retry and the landing (a phone's plot is too narrow for most of them).
     const stale = bars.filter((b) => b.mark?.kind === "stale").sort((p, q) => p.mark!.x - q.mark!.x);
-    for (let i = 0; i + 1 < stale.length; i++) {
-      const m = stale[i]!.mark;
-      if (m?.kind !== "stale" || m.anchor === "end") continue;
-      stale[i]!.mark = { ...m, label: fitLabel(m.label, m.labelX, stale[i + 1]!.mark!.x - LABEL_GAP) };
-    }
+    stale.forEach((b, i) => {
+      const m = b.mark;
+      if (m?.kind !== "stale" || m.anchor === "end") return;
+      // Same lane only: an attempt of another transaction in another lane does not stand where the label does.
+      const retry = bars.filter((o) => o !== b && o.lane === b.lane && o.x >= m.x - 1).sort((p, q) => p.x - q.x)[0];
+      const next = stale[i + 1]?.mark;
+      const limit = Math.min(retry ? retry.x + retry.w : scale.x1, next ? next.x - LABEL_GAP : scale.x1);
+      b.mark = { ...m, label: fitLabel(m.full, m.labelX, limit, STALE_LABEL_MIN) };
+    });
     return { agent, index, bars };
   });
 }
 
 // ---------------------------------------------------------------- trunk
 
-export type TrunkTick = { key: string; x: number; seq: number; sha: string; txn: string | null; title: string };
+export type TrunkTick = { key: string; x: number; seq: number; sha: string; txn: string | null; recall: string | null; title: string };
 export type TrunkBlock = { key: string; train: string | null; at: number; x: number; w: number; ticks: TrunkTick[] };
 
 // Ticks of one train land at the same instant, so on a time axis they would be one pixel. A train is
@@ -376,7 +387,9 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
         seq: k.seq,
         sha: k.sha,
         txn: k.txn,
-        title: `${k.txn ?? "seed"} · seq ${k.seq} · ${shortSha(k.sha)}${k.train ? ` · ${k.train}` : ""}`,
+        recall: k.recall,
+        // No txn means the seed, or the revert commit of a recall: only the recall id tells them apart.
+        title: `${k.txn ?? (k.recall ? `recall ${k.recall}` : "seed")} · seq ${k.seq} · ${shortSha(k.sha)}${k.train ? ` · ${k.train}` : ""}`,
       })),
     });
   }
@@ -511,7 +524,7 @@ export function shortData(op: Op): string {
     case "txn.recalled":
       return str(d.reason);
     case "trunk.advanced":
-      return `seq ${str(d.seq)} ${shortSha(str(d.sha))}${d.train ? ` ${str(d.train)}` : ""}`;
+      return `seq ${str(d.seq)} ${shortSha(str(d.sha))}${d.train ? ` ${str(d.train)}` : ""}${d.recall ? ` recall ${str(d.recall)}` : ""}`;
     case "train.formed": {
       const n = strs(d.txns).length;
       return `${str(d.train)} · ${n} txn${n === 1 ? "" : "s"}`;

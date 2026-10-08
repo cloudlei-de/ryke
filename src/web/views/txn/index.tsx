@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MAX_ATTEMPTS } from "../../../shared/types";
 import type { Live } from "../../live";
+import { computeDelta, deltaRequest, deltaView, fileFetcher, type DeltaRequest, type DeltaState } from "./delta";
 import { attemptDetail, attemptRows, lastSeqFor, loadedSeq, previewFor, selectAttempt, shouldRefetch, type Detail } from "./format";
 import { AttemptPicker, Evidence, Gate, Header, Heading, PathList, Timeline, Verdicts } from "./parts";
 import "./txn.css";
@@ -46,8 +47,9 @@ function useDetail(id: string, liveSeq: number) {
 }
 
 export function TxnView({ repo, id, live }: { repo: string; id: string; live: Live }) {
-  // Keyed by id so that moving to another transaction starts from a clean loading state.
-  return <TxnPage key={id} repo={repo} id={id} liveSeq={lastSeqFor(live.ops, id)} />;
+  // Keyed by id so that moving to another transaction starts from a clean loading state, and by epoch so that
+  // a repo that started over (swarm --fresh) does not keep showing a transaction of the run that was deleted.
+  return <TxnPage key={`${id}#${live.epoch}`} repo={repo} id={id} liveSeq={lastSeqFor(live.ops, id)} />;
 }
 
 function TxnPage({ repo, id, liveSeq }: { repo: string; id: string; liveSeq: number }) {
@@ -77,12 +79,46 @@ function TxnPage({ repo, id, liveSeq }: { repo: string; id: string; liveSeq: num
   );
 }
 
+// Snapshots are immutable trunk commits, so a comparison of two of them never changes and is kept for the
+// page's lifetime: picking another attempt and back costs nothing. Failures are not kept, so reopening retries.
+const computed = new Map<string, DeltaState>();
+
+function usePastDelta(repo: string, request: DeltaRequest | null) {
+  const key = request ? `${repo} ${request.key}` : null;
+  const [loaded, setLoaded] = useState<DeltaState | null>(null);
+  // A refetched detail rebuilds `request` with the same content; only a different comparison restarts the fetch.
+  const latest = useRef(request);
+  latest.current = request;
+  useEffect(() => {
+    const req = latest.current;
+    if (!req || !key || computed.has(key)) return;
+    let off = false;
+    computeDelta(req, fileFetcher(repo)).then(
+      (delta) => {
+        const state: DeltaState = { key: req.key, status: "ready", delta };
+        computed.set(key, state);
+        if (!off) setLoaded(state);
+      },
+      (e: unknown) => {
+        if (!off) setLoaded({ key: req.key, status: "error", message: e instanceof Error ? e.message : String(e) });
+      },
+    );
+    return () => {
+      off = true;
+    };
+  }, [repo, key]);
+  return deltaView(request, (key ? computed.get(key) : undefined) ?? loaded);
+}
+
 function Loaded({ repo, detail, reload }: { repo: string; detail: Detail; reload: () => void }) {
   const [picked, setPicked] = useState<number | null>(null);
   const attempts = detail.attempts.map((a) => a.attempt);
   const attempt = selectAttempt(picked, attempts);
   const rows = useMemo(() => attemptRows(detail.ops), [detail]);
-  const view = useMemo(() => attemptDetail(detail, attempt, repo), [detail, attempt, repo]);
+  const request = useMemo(() => deltaRequest(rows, attempt), [rows, attempt]);
+  // The ledger knows which repo the transaction belongs to; the page's ?repo= only says which one the Line shows.
+  const past = usePastDelta(detail.txn.repo, request);
+  const view = useMemo(() => attemptDetail(detail, attempt, repo, past.delta), [detail, attempt, repo, past.delta]);
   const landing = previewFor(repo, detail, detail.txn.attempt, rows.find((r) => r.attempt === detail.txn.attempt) ?? null);
   const staleWithoutDelta = view.reads.some((r) => r.flags.includes("stale") && r.delta === null);
 
@@ -103,7 +139,10 @@ function Loaded({ repo, detail, reload }: { repo: string; detail: Detail; reload
           <PathList title="Read set" rows={view.reads} none="No reads recorded." />
           <PathList title="Write set" rows={view.writes} none="No writes recorded yet." />
         </div>
-        {staleWithoutDelta && <p className="muted txn-note">Ryke computes the delta while the attempt is stale. It is not kept once the agent has retried.</p>}
+        {past.status === "loading" && <p className="muted txn-note">Reading the stale files at the two snapshots to show what changed on trunk…</p>}
+        {past.status === "error" && <p className="muted txn-note" role="status">Could not read the files to show the delta ({past.message}).</p>}
+        {past.status === "ready" && request && request.omitted > 0 && <p className="muted txn-note">The delta shows the first {request.paths.length} of {request.paths.length + request.omitted} stale files.</p>}
+        {past.status === "none" && staleWithoutDelta && <p className="muted txn-note">No later snapshot to compare with: the delta needs the attempt that followed this one, or the transaction to be stale right now.</p>}
       </section>
 
       <section className="txn-section txn-pair">

@@ -174,19 +174,19 @@
   font-weight: 600;
 }
 .current[data-signal="go"] .kind {
-  color: var(--go);
+  color: var(--go-text);
 }
 .current[data-signal="stop"] .kind {
-  color: var(--stop);
+  color: var(--stop-text);
 }
 .current[data-signal="caution"] .kind {
-  color: var(--caution);
+  color: var(--caution-text);
 }
 .current[data-signal="run"] .kind {
-  color: var(--run);
+  color: var(--run-text);
 }
 .current[data-signal="recall"] .kind {
-  color: var(--recall);
+  color: var(--recall-text);
 }
 
 @media (max-width: 640px) {

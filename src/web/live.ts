@@ -1,65 +1,81 @@
 // One WebSocket per repo (PLAN.md §12): ops accumulate in arrival order and every view derives
-// its state from them with the shared reducers. Reconnects resume from the last seq; no polling.
+// its state from them with the shared reducers. A closed socket resumes from the last seq, unless the repo
+// was reset (stream.ts decides); no polling.
 import { useEffect, useRef, useState } from "react";
-import { apply, initial, type LineState } from "../shared/reducers";
+import type { LineState } from "../shared/reducers";
 import type { Op } from "../shared/types";
+import { closed, newFeed, openSocket, receive, type Feed } from "./stream";
 
-export type Live = { ops: Op[]; state: LineState; connected: boolean; version: number };
+// `epoch` changes whenever the log was thrown away (swarm --fresh, a repo delete), so a view that fetched
+// its own copy of the history knows that copy is of a run that no longer exists.
+export type Live = { ops: Op[]; state: LineState; connected: boolean; version: number; epoch: number };
 
 export function useLive(repo: string, enabled = true): Live {
   const [version, setVersion] = useState(0);
   const [connected, setConnected] = useState(false);
-  const store = useRef<{ ops: Op[]; state: LineState; repo: string }>({ ops: [], state: initial(), repo });
-  if (store.current.repo !== repo) store.current = { ops: [], state: initial(), repo };
+  const held = useRef<{ feed: Feed; repo: string }>({ feed: newFeed(), repo });
+  if (held.current.repo !== repo) held.current = { feed: newFeed(), repo };
+  const feed = held.current.feed;
 
   useEffect(() => {
     if (!enabled) return;
     let ws: WebSocket | null = null;
-    let closed = false;
+    let stopped = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let pending = false;
+    // Coalesce bursts into one render per animation frame.
+    const render = () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        setVersion((v) => v + 1);
+      });
+    };
     const connect = () => {
-      const after = store.current.ops.at(-1)?.seq ?? 0;
+      const after = openSocket(feed);
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/api/repos/${encodeURIComponent(repo)}/stream?after=${after}`);
-      ws.onopen = () => setConnected(true);
-      ws.onmessage = (e) => {
+      const sock = new WebSocket(`${proto}://${location.host}/api/repos/${encodeURIComponent(repo)}/stream?after=${after}`);
+      ws = sock;
+      sock.onopen = () => setConnected(true);
+      sock.onmessage = (e) => {
         if (typeof e.data !== "string" || e.data === "pong") return;
         const frame = JSON.parse(e.data) as { ops: Op[] };
-        for (const op of frame.ops) {
-          if (op.seq <= (store.current.ops.at(-1)?.seq ?? 0)) continue;
-          store.current.ops.push(op);
-          apply(store.current.state, op);
+        if (receive(feed, frame.ops) === "reset") {
+          // The log started over while this socket was away: what it delivers is only the tail of the new run,
+          // so drop it and ask again from 0 instead of waiting out a backoff (nothing went wrong).
+          sock.onmessage = null;
+          sock.onclose = null;
+          sock.close();
+          render();
+          connect();
+          return;
         }
-        // Coalesce bursts into one render per animation frame.
-        if (!pending) {
-          pending = true;
-          requestAnimationFrame(() => {
-            pending = false;
-            setVersion((v) => v + 1);
-          });
-        }
+        render();
       };
-      ws.onclose = () => {
+      sock.onclose = (e) => {
         setConnected(false);
-        if (!closed) retry = setTimeout(connect, 1000);
+        if (stopped) return;
+        const wait = closed(feed, e.code);
+        render();
+        retry = setTimeout(connect, wait);
       };
     };
     connect();
     return () => {
-      closed = true;
+      stopped = true;
       clearTimeout(retry);
       // Closing a socket that is still connecting logs a browser warning (StrictMode mounts twice).
       if (ws?.readyState === WebSocket.CONNECTING) {
-        const pending = ws;
-        pending.onmessage = null;
-        pending.onclose = null;
-        pending.onopen = () => pending.close();
+        const connecting = ws;
+        connecting.onmessage = null;
+        connecting.onclose = null;
+        connecting.onopen = () => connecting.close();
       } else ws?.close();
     };
-  }, [repo, enabled]);
+  }, [repo, enabled, feed]);
 
-  return { ops: store.current.ops, state: store.current.state, connected, version };
+  return { ops: feed.ops, state: feed.state, connected, version, epoch: feed.epoch };
 }
 
 export function adminToken(): string | null {

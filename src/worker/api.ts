@@ -64,6 +64,32 @@ api.get("/health", (c) => c.json({ ok: true }));
 // Bundled at build time: the bench runs on a developer machine and its committed JSON ships with the Worker.
 api.get("/bench", (c) => c.json(latestBench));
 
+// Same pattern as `evidenceUrl` in src/web/views/txn/format.ts, which builds the links to this route: a name
+// with a separator or a leading dot never reaches the runner.
+const EVIDENCE_FILE = /^[A-Za-z0-9_-][\w.-]*\.png$/i;
+
+// Verify screenshots (§12 view 2) live on the local runner's disk. The container runner has no store for them
+// yet (DECISIONS.md, M2), so there the route says so instead of pretending. The bytes are served as an image
+// the browser may not sniff into anything else, because a verify job writes them and runs agent-written code.
+api.get("/evidence/:file", async (c) => {
+  const file = c.req.param("file");
+  if (!EVIDENCE_FILE.test(file)) return c.json({ error: "evidence file names look like <id>.png" }, 422);
+  if (c.env.RYKE_RUNNER === "container") return c.json({ error: "evidence screenshots are served only by the local runner" }, 404);
+  let upstream: Response;
+  try {
+    // A runner has no reason to redirect; following one would send this request wherever it points.
+    upstream = await fetch(`${c.env.RYKE_RUNNER_URL}/v1/evidence/${encodeURIComponent(file)}`, { redirect: "manual" });
+  } catch {
+    return c.json({ error: "the runner did not serve the screenshot" }, 503);
+  }
+  if (upstream.status === 404) return c.json({ error: "no such evidence file" }, 404);
+  if (upstream.status !== 200) return c.json({ error: "the runner did not serve the screenshot" }, 503);
+  // A job id is never reused, so the file behind this name never changes.
+  return new Response(upstream.body, {
+    headers: { "content-type": "image/png", "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" },
+  });
+});
+
 api.post("/repos", async (c) => {
   const b = await body(c);
   if (!b) return c.json({ error: "body must be a JSON object" }, 422);

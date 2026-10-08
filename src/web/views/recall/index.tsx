@@ -7,9 +7,11 @@ import { adminFetch, adminToken, setAdminToken } from "../../live";
 import {
   buildSelector,
   candidates,
+  canDismiss,
   describeSelector,
   flowStep,
   initialFlow,
+  optionText,
   outcomeRows,
   parseDryRun,
   parseExecuted,
@@ -69,9 +71,11 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
   const [pick, setPick] = useState("");
   const [pasted, setPasted] = useState("");
   const [flow, dispatch] = useReducer(flowStep, initialFlow);
-  // The document listener below is installed once; it must still call the newest onClose.
+  // The document listener below is installed once; it must still call the newest onClose and see the newest flow.
   const close = useRef(onClose);
   close.current = onClose;
+  const dismissible = useRef(true);
+  dismissible.current = canDismiss(flow);
 
   const known = candidates(state.txns.values());
   const options = kind === "agent" ? known.agents : known.models;
@@ -89,7 +93,7 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
     const on = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        close.current();
+        if (dismissible.current) close.current();
         return;
       }
       if (e.key !== "Tab" || !box.current) return;
@@ -178,7 +182,7 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
       className="recall-scrim"
       onMouseDown={(e) => {
         // Only a press on the backdrop itself closes it, and never while a recall is running.
-        if (e.target === e.currentTarget && flow.phase !== "executing") onClose();
+        if (e.target === e.currentTarget && canDismiss(flow)) onClose();
       }}
     >
       <div className="recall" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={box} tabIndex={-1}>
@@ -239,10 +243,10 @@ function RecallDialog({ repo, state, onClose }: { repo: string; state: LineState
                 <span className="recall-label">{kind === "agent" ? "Agent" : "Model"}</span>
                 <select value={pick} disabled={busy} data-autofocus={token ? "" : undefined} onChange={(e) => choose(kind, e.target.value, pasted)}>
                   <option value="">{options.length === 0 ? `no ${kind} with a landed transaction` : `choose a ${kind}…`}</option>
-                  {absent && <option value={pick}>{pick} · 0 landed</option>}
+                  {absent && <option value={pick}>{optionText(kind, pick, 0)}</option>}
                   {options.map((o) => (
                     <option key={o.value} value={o.value}>
-                      {o.value} · {o.count} landed
+                      {optionText(kind, o.value, o.count)}
                     </option>
                   ))}
                 </select>

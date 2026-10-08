@@ -169,3 +169,150 @@ describe("refresh", () => {
     expect(s.txns.get("t")!.state).toBe("submitted");
   });
 });
+
+describe("a recall's revert commit", () => {
+  const seed = op("trunk.advanced", 0, { seq: 0, sha: "s0", txns: [], train: null });
+  const landed = (txn: string, at: number, seq: number) => op("trunk.advanced", at, { seq, sha: `s${seq}`, txns: [{ txn, sha: `s${seq}`, seq }], train: `tr${seq}` });
+
+  it("is a tick of its own that carries the recall's id, not the seed's empty slot", () => {
+    const s = fold([seed, landed("t1", 10, 1), op("trunk.advanced", 20, { seq: 2, sha: "s2", txns: [], train: null, recall: "rc_1" })]);
+    expect(s.ticks).toEqual([
+      { seq: 0, sha: "s0", txn: null, train: null, recall: null, at: 0 },
+      { seq: 1, sha: "s1", txn: "t1", train: "tr1", recall: null, at: 10 },
+      { seq: 2, sha: "s2", txn: null, train: null, recall: "rc_1", at: 20 },
+    ]);
+    expect(s.head).toEqual({ sha: "s2", seq: 2 });
+  });
+
+  it("is not counted as a landing, so landed and landed-per-minute stay about transactions", () => {
+    const s = fold([seed, landed("t1", 10, 1), op("trunk.advanced", 20, { seq: 2, sha: "s2", txns: [], train: null, recall: "rc_1" })]);
+    expect(counters(s, 30)).toMatchObject({ landed: 1, landedPerMinute: 1 });
+  });
+
+  it("leaves the seed without a recall", () => {
+    expect(fold([seed]).ticks[0]!.recall).toBeNull();
+  });
+
+  it("keeps a train's ticks free of the recall field", () => {
+    const s = fold([landed("t1", 10, 1)]);
+    expect(s.ticks.map((t) => t.recall)).toEqual([null]);
+  });
+});
+
+describe("a transaction that waits for a human", () => {
+  const flow = [open("t", "a", 1), move("txn.submitted", "t", "a", 2), move("txn.ready", "t", "a", 3), move("txn.verifying", "t", "a", 4, { train: "tr" })];
+
+  it("draws needs_human as its own open segment and counts the transaction as in flight", () => {
+    const s = fold([...flow, move("txn.needs_human", "t", "a", 5, { reason: "human_path" })]);
+    const t = s.txns.get("t")!;
+    expect(t.state).toBe("needs_human");
+    expect(t.reason).toBe("human_path");
+    expect(t.attempts[0]!.segments.at(-1)).toEqual({ state: "needs_human", from: 5, to: null });
+    expect(t.attempts[0]!.segments.at(-2)).toEqual({ state: "verifying", from: 4, to: 5 });
+    expect(t.attempts[0]!.outcome).toBeNull();
+    expect(counters(s).inflight).toBe(1);
+  });
+
+  it("closes the segment when the human approves and the transaction goes back to ready", () => {
+    const s = fold([...flow, move("txn.needs_human", "t", "a", 5), move("txn.ready", "t", "a", 9, { approved: true })]);
+    expect(s.txns.get("t")!.attempts[0]!.segments.slice(-2)).toEqual([
+      { state: "needs_human", from: 5, to: 9 },
+      { state: "ready", from: 9, to: null },
+    ]);
+  });
+
+  it("closes it when the human rejects", () => {
+    const s = fold([...flow, move("txn.needs_human", "t", "a", 5), move("txn.rejected", "t", "a", 8, { reason: "rejected_by_human" })]);
+    const a = s.txns.get("t")!.attempts[0]!;
+    expect(a.segments.at(-1)).toEqual({ state: "needs_human", from: 5, to: 8 });
+    expect(a).toMatchObject({ outcome: "rejected", reason: "rejected_by_human", end: 8 });
+  });
+});
+
+describe("lease.released", () => {
+  // Built inside each test: `apply` ignores an op whose seq is not past the last one, and seq counts creation order.
+  const granted = () => op("lease.granted", 2, { path: "src/format.ts", expires: 90 }, "holder", "a1");
+
+  it("deletes the lease when its holder lets go", () => {
+    expect(fold([open("holder", "a1", 1), granted()]).leases.size).toBe(1);
+    const s = fold([open("holder", "a1", 1), granted(), op("lease.released", 5, { path: "src/format.ts", txn: "holder" })]);
+    expect(s.leases.size).toBe(0);
+  });
+
+  it("does not delete the holder's lease when another transaction's release arrives", () => {
+    const s = fold([open("holder", "a1", 1), granted(), op("lease.released", 5, { path: "src/format.ts", txn: "someone-else" })]);
+    expect(s.leases.get("src/format.ts")).toEqual({ txn: "holder", expires: 90 });
+  });
+
+  it("ignores a release for a path nobody holds", () => {
+    const s = fold([op("lease.released", 5, { path: "src/none.ts", txn: "t" })]);
+    expect(s.leases.size).toBe(0);
+  });
+
+  it("deletes an expired lease: the release names the holder it expired from", () => {
+    const s = fold([open("holder", "a1", 1), granted(), op("lease.released", 95, { path: "src/format.ts", txn: "holder", expired: true })]);
+    expect(s.leases.size).toBe(0);
+  });
+});
+
+describe("txn.failed", () => {
+  it.each([
+    ["verify_failed", "failed_verify"],
+    ["tests_failed", "failed_verify"],
+    ["tests", "failed_verify"],
+    ["land_error", "land_error"],
+    ["criterion_unmet", "criterion_unmet"],
+  ])("counts the reason %s as the abort cause %s", (reason, cause) => {
+    const s = fold([open("t", "a", 1), move("txn.failed", "t", "a", 2, { reason })]);
+    expect(s.aborts).toEqual({ [cause]: 1 });
+    expect(s.txns.get("t")).toMatchObject({ state: "failed", reason });
+    expect(s.txns.get("t")!.attempts[0]).toMatchObject({ outcome: "failed", reason });
+  });
+
+  it("counts a failure without a reason as a plain failure and keeps the reason null", () => {
+    const s = fold([open("t", "a", 1), move("txn.failed", "t", "a", 2)]);
+    expect(s.aborts).toEqual({ failed: 1 });
+    expect(s.txns.get("t")!.reason).toBeNull();
+    expect(s.txns.get("t")!.attempts[0]!.reason).toBeNull();
+  });
+
+  it("adds up failures of different reasons under their own causes", () => {
+    const s = fold([open("a", "x", 1), open("b", "y", 1), move("txn.failed", "a", "x", 2, { reason: "verify_failed" }), move("txn.failed", "b", "y", 2, { reason: "tests_failed" }), open("c", "z", 1), move("txn.failed", "c", "z", 2)]);
+    expect(s.aborts).toEqual({ failed_verify: 2, failed: 1 });
+  });
+});
+
+describe("refresh drops the stale warnings of the snapshot it replaced", () => {
+  const refresh = (at: number, snapshot: string) => op("txn.open", at, { attempt: 1, refresh: true, snapshot }, "t", "a");
+  const warn = (at: number, paths: string[]) => op("stale.warning", at, { paths, seq: at }, "t", "a");
+
+  it("clears the warnings that were about reads of the old snapshot", () => {
+    const s = fold([open("t", "a", 1), warn(2, ["src/format.ts"]), warn(3, ["src/ui/layout.ts"]), refresh(4, "s2")]);
+    expect(s.txns.get("t")!.attempts[0]!.warnings).toEqual([]);
+  });
+
+  it("keeps warnings that arrive after the refresh: they are about the new snapshot", () => {
+    const s = fold([open("t", "a", 1), warn(2, ["src/format.ts"]), refresh(4, "s2"), warn(6, ["src/index.ts"])]);
+    expect(s.txns.get("t")!.attempts[0]!.warnings).toEqual([{ at: 6, paths: ["src/index.ts"] }]);
+  });
+
+  it("only touches the attempt that was refreshed", () => {
+    const s = fold([
+      open("t", "a", 1),
+      warn(2, ["src/format.ts"]),
+      move("txn.stale", "t", "a", 3, { reason: "stale_read", paths: [{ path: "src/format.ts", by: "x" }] }),
+      open("t", "a", 5, 2),
+      warn(6, ["src/index.ts"]),
+      op("txn.open", 7, { attempt: 2, refresh: true, snapshot: "s3" }, "t", "a"),
+    ]);
+    const [first, second] = s.txns.get("t")!.attempts;
+    expect(first!.warnings).toEqual([{ at: 2, paths: ["src/format.ts"] }]);
+    expect(second!.warnings).toEqual([]);
+  });
+
+  it("is harmless when there is nothing to clear", () => {
+    const s = fold([open("t", "a", 1), refresh(2, "s2")]);
+    expect(s.txns.get("t")!.attempts).toHaveLength(1);
+    expect(s.txns.get("t")!.attempts[0]!.warnings).toEqual([]);
+  });
+});
