@@ -19,6 +19,10 @@ import {
   spreadLabels,
   stackLayout,
   tableRows,
+  peaks,
+  POLICY_NAME,
+  ratio,
+  noteDetail,
 } from "../src/web/views/bench/chart";
 import sample from "./fixtures/bench/sample.json";
 
@@ -464,4 +468,41 @@ describe("headline", () => {
     expect(headline([cell({ policy: "lock" }), cell({ policy: "ryke", agents: 20 })])).toBeNull();
     expect(headline([])).toBeNull();
   });
+});
+
+describe("peaks", () => {
+  it("finds each policy's best throughput and the smallest N that reached it", () => {
+    const cells = [
+      cell({ policy: "ryke", agents: 10, landedPerMinute: 24 }),
+      cell({ policy: "ryke", agents: 100, landedPerMinute: 75.5 }),
+      cell({ policy: "ryke", agents: 200, landedPerMinute: 43 }),
+      cell({ policy: "queue", agents: 10, landedPerMinute: 23 }),
+      cell({ policy: "queue", agents: 50, landedPerMinute: 23 }),
+    ];
+    expect(peaks(cells)).toEqual({ ryke: { agents: 100, value: 75.5 }, queue: { agents: 10, value: 23 }, lock: null });
+  });
+});
+
+describe("ratio", () => {
+  it.each([
+    [43.5, 22, "2.0×"],
+    [75.5, 18.5, "4.1×"],
+    [10, 10, "1.0×"],
+    [10, 0, null],
+    [10, -1, null],
+    [NaN, 10, null],
+  ])("%d over %d -> %s", (r, b, out) => expect(ratio(r, b)).toBe(out));
+});
+
+describe("POLICY_NAME", () => {
+  it("names every policy", () => expect(POLICIES.map((p) => POLICY_NAME[p])).toEqual(["Global lock", "Merge queue", "Ryke"]));
+});
+
+describe("noteDetail", () => {
+  it.each([
+    ["drops the sentence that restates the notice", "Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1, seed 7.", "Time factor 1, seed 7."],
+    ["keeps a note that says something else", "Seed 7 on a 4-vCPU VM.", "Seed 7 on a 4-vCPU VM."],
+    ["leaves nothing when the note only restates it", "Synthetic agents: real git, real merges, real tests, scripted edits.", ""],
+    ["handles an empty note", "", ""],
+  ])("%s", (_n, note, out) => expect(noteDetail(note, BENCH_SYNTHETIC_NOTICE)).toBe(out));
 });

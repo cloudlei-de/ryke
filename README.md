@@ -41,6 +41,53 @@ Node 22.18 or later (tested on 22.22) and git 2.40 or later (tested on 2.43; tra
 `TYPESAFE_API_KEY` is set in your environment. Without it the evidence gate runs only its hard checks
 and begin screening is off, so duplicates are not flagged at begin.
 
+## Dashboard
+
+![The Line during a scripted swarm](docs/shots/line-mid-1440-light.png)
+
+The **Line** (`#/`) puts every agent's transactions on one time axis under trunk: grey while the agent
+works, striped while it waits for a train, blue under test, green when it lands. A red notch is a read
+that went stale; a guide drops from the landing that caused it, with a branch to every change it caught.
+Counters, the hot files and a feed of what just happened sit beside it; hover a bar for its story, click
+it for the **Transaction** (`#/t/:id`): each attempt, the read and write sets with the trunk delta of a
+stale path, the judge's verdict on each acceptance criterion, the tests and the verify screenshot.
+**Replay** (`#/replay`) draws the Line at any point of the op log at 1×, 4× or 16×, **Bench** (`#/bench`)
+compares the three landing policies, and **Recall…** plans and runs a recall. Light and dark follow the
+system, or the switch in the top bar. Every view, both sizes and both schemes: [docs/shots](docs/shots).
+
+## Real agents: Claude Code or Codex, on your own subscription or key
+
+`--mode claude` runs Claude Code and `--mode codex` runs Codex, each the vendor's own CLI, unmodified,
+one session per transaction attempt. `--auth` says whose account the agents run on:
+
+| `--auth` | Claude Code | Codex |
+|---|---|---|
+| `subscription` | your login on this machine: `claude`, then `/login` with Pro or Max, or `claude setup-token` | `codex login` with your ChatGPT plan |
+| `api-key` | `ANTHROPIC_API_KEY` | `CODEX_API_KEY` or `OPENAI_API_KEY` |
+| `auto` (default) | the key when one is set, otherwise your login | the same |
+
+```sh
+npm i -g @anthropic-ai/claude-code@2.1.293 @openai/codex@0.161.0
+claude                       # once: /login, then /exit     (Codex: codex login)
+npm run swarm -- --mode claude --auth subscription --agents 3 --stack --fresh
+npm run swarm -- --mode codex --auth subscription --agents 3 --stack --fresh
+OPENAI_API_KEY=sk-… npm run swarm -- --mode codex --auth api-key --agents 6 --stack --fresh
+```
+
+Before any transaction begins, the swarm asks the CLI which login it has (`claude auth status`,
+`codex login status`) or tries the key with a free call, and stops with what to fix. A subscription run
+gives its jobs no credential at all: the CLI uses the login it already has. Ryke never reads, stores or
+forwards that login, takes every key out of the CLI's environment so it cannot fall back on one, and
+refuses a subscription on a runner that is not this machine or inside a Ryke container. This is for one
+person running agents on their own work, which is what Anthropic's terms allow for a Claude
+subscription ([DECISIONS.md](DECISIONS.md)). All agents of a swarm share that one plan's usage limits,
+so a subscription swarm is a few agents, not fifty. Hosted Ryke runs agents on the operator's API keys
+only, and the gateway attaches them.
+
+Codex has no hooks Ryke installs. Ryke takes its reads from the commands it runs (`cat`, `sed -n`,
+`rg`, `find`) and their output, and reports each file it patches as a write intent. Codex never waits
+for a lease. `npm run e2e:claude` and `npm run e2e:codex` run both modes against stubs of the CLIs.
+
 ## Architecture
 
 ```mermaid
@@ -99,10 +146,11 @@ Two parts of Ryke switched off one at a time, on the same bench
 | `npm run e2e:land` | Trains, a stale abort with its delta, bisection of a broken change, green trunk |
 | `npm run e2e:recall` | A full swarm, then recall of `sloppy-v0` with cascade and re-queue, green trunk |
 | `npm run swarm -- --mode scripted --agents 12 --fresh` | The demo run (`--speed`, `--contention on|off`, `--stack`) |
-| `npm run swarm -- --mode claude --agents 3 --stub` | The Claude Code agent mode with its hooks, against a stub binary |
+| `npm run swarm -- --mode claude --agents 3 --stub` | The Claude Code agent mode with its hooks, against a stub binary (`--mode codex` for Codex; `--auth subscription\|api-key\|auto`) |
+| `npm run e2e:claude`, `npm run e2e:codex` | Both agent modes end to end against their stubs: landings, retries, the protected-path rejection, green trunk |
 | `npm run bench` | Lock vs merge queue vs Ryke at 10–200 synthetic agents |
 | `npm run jev:calibrate` | Jev accuracy on labelled cases → [docs/jev-calibration.md](docs/jev-calibration.md) |
-| `npm run shots` | Dashboard screenshots of every view, failing on any console or page error (a blocked Google Fonts request excepted) → [docs/shots](docs/shots) |
+| `npm run shots` | Dashboard screenshots of every view at 1440×900 and 390×844, light and dark, failing on any console or page error → [docs/shots](docs/shots) |
 | `npm run deploy:dry` | Production build and `wrangler deploy --dry-run` |
 
 ## Honest limits
@@ -110,11 +158,17 @@ Two parts of Ryke switched off one at a time, on the same bench
 - Workers Paid was not active while this was built: the Artifacts adapter, the container Runner and
   the ingest trigger are tested against fakes and the local stand-ins, not against Cloudflare
   ([BLOCKERS.md](BLOCKERS.md)).
-- Read tracking is per file. An agent that reads through `cat` in a shell instead of the Read tool is
-  not tracked; untracked transactions are treated as having read every file next to what they wrote.
-- The scripted demo agents apply prepared patches. Claude Code agents use the same API and hooks; here
-  they ran only against a stub, plus three short runs of the real CLI to check the hook format. A real
-  Claude swarm needs an Anthropic key ([BLOCKERS.md](BLOCKERS.md)).
+- Read tracking is per file. A Claude agent that reads through `cat` in a shell instead of the Read
+  tool is not tracked. A Codex agent is tracked only through the files its commands name or print, so
+  a script that opens files on its own is missed. Untracked transactions are treated as having read
+  every file next to what they wrote.
+- The scripted demo agents apply prepared patches. Claude Code and Codex agents use the same API; here
+  they ran only against stubs. The real Claude CLI ran three short sessions to check the hook format;
+  the real Codex 0.161.0 CLI was run only to check its flags, `login status` and event stream, because
+  this VM cannot reach OpenAI. A real swarm needs your own login or key ([BLOCKERS.md](BLOCKERS.md)).
+- In process mode jobs run as you. The code your agents write and test can read your CLI login under
+  your home directory, as it can when you run the CLI yourself. Only container mode keeps a job away
+  from its host.
 
 ## License
 

@@ -215,3 +215,32 @@ export function headline(cells: readonly BenchCell[]): { agents: number; values:
   }
   return null;
 }
+
+export const POLICY_NAME: Record<BenchPolicy, string> = { lock: "Global lock", queue: "Merge queue", ryke: "Ryke" };
+
+// Each policy's best throughput and where it was measured, for the cards over the charts.
+export function peaks(cells: readonly BenchCell[]): Record<BenchPolicy, { agents: number; value: number } | null> {
+  const out = { lock: null, queue: null, ryke: null } as Record<BenchPolicy, { agents: number; value: number } | null>;
+  for (const c of cells) {
+    const best = out[c.policy];
+    if (!best || c.landedPerMinute > best.value || (c.landedPerMinute === best.value && c.agents < best.agents)) out[c.policy] = { agents: c.agents, value: c.landedPerMinute };
+  }
+  return out;
+}
+
+// "2.0×": how many times the baseline Ryke lands; null when the baseline landed nothing to compare with.
+export function ratio(ryke: number, baseline: number): string | null {
+  if (!(baseline > 0) || !Number.isFinite(ryke)) return null;
+  return `${(ryke / baseline).toFixed(1)}×`;
+}
+
+// The page states BENCH_SYNTHETIC_NOTICE itself, so the results file's note loses any sentence that only says it
+// again ("Synthetic agents: real git, …"); the run settings after it stay.
+export function noteDetail(note: string, notice: string): string {
+  const tail = notice.slice(notice.indexOf(":") + 1).trim().toLowerCase();
+  return note
+    .split(/(?<=\.)\s+/)
+    .filter((sentence) => !(tail && sentence.trim().toLowerCase().endsWith(tail)))
+    .join(" ")
+    .trim();
+}

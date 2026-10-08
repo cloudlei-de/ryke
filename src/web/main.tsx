@@ -1,7 +1,10 @@
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useLive } from "./live";
 import "./styles.css";
+import { Icon, Logo, THEME_ICON, useTheme, type IconName } from "./ui";
 import { BenchView } from "./views/bench";
 import { LineView } from "./views/line";
 import { ReplayView } from "./views/replay";
@@ -32,35 +35,51 @@ export function repoName(): string {
   return new URLSearchParams(location.search).get("repo") ?? "convert";
 }
 
+const THEME_LABEL = { system: "Theme: follows the system", light: "Theme: light", dark: "Theme: dark" };
+
 function App() {
   const route = useRoute();
   const repo = repoName();
   const live = useLive(repo, route.name !== "bench");
-  const link = (href: string, label: string, active: boolean) => (
-    <a href={href} aria-current={active ? "page" : undefined}>
+  const [theme, cycleTheme] = useTheme();
+  // A transaction is opened from the Line, so the Line tab stays current under it.
+  const current = route.name === "txn" ? "line" : route.name;
+  const tab = (href: string, name: Route["name"], label: string, icon: IconName) => (
+    <a href={href} aria-current={current === name ? (route.name === "txn" ? "location" : "page") : undefined}>
+      <Icon name={icon} size={15} className="tab-icon" />
       {label}
     </a>
   );
   return (
-    <div className="shell">
-      <header className="masthead">
-        <span className="brand">Ryke</span>
-        <span className="mono muted">{repo}</span>
-        <nav>
-          {link("#/", "Line", route.name === "line")}
-          {link("#/replay", "Replay", route.name === "replay")}
-          {link("#/bench", "Bench", route.name === "bench")}
+    <div className="app">
+      <header className="topbar">
+        <a className="brand" href="#/" aria-label="Ryke, the Line">
+          <Logo />
+          <span className="brand-name">Ryke</span>
+        </a>
+        <span className="crumb">
+          <span className="slash">/</span>
+          <Icon name="repo" size={15} />
+          <span>{repo}</span>
+        </span>
+        <nav className="tabs" aria-label="Views">
+          {tab("#/", "line", "Line", "git")}
+          {tab("#/replay", "replay", "Replay", "clock")}
+          {tab("#/bench", "bench", "Bench", "pulse")}
         </nav>
         <span className="spacer" />
         {route.name !== "bench" && (
-          <span className="muted">
+          <span className="conn" title={live.connected ? "Receiving the op stream" : "Not connected to the op stream; retrying"}>
             <span className="status-dot" data-live={String(live.connected)} />
-            {live.connected ? "live" : "offline"}
+            <span className="conn-text">{live.connected ? "Live" : "Reconnecting"}</span>
           </span>
         )}
+        <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={cycleTheme} title={THEME_LABEL[theme]} aria-label={THEME_LABEL[theme]}>
+          <Icon name={THEME_ICON[theme]} size={16} />
+        </button>
       </header>
-      <main className="view">
-        {route.name === "line" && <LineView repo={repo} state={live.state} ops={live.ops} mode="live" />}
+      <main className="view" data-route={route.name}>
+        {route.name === "line" && <LineView repo={repo} state={live.state} ops={live.ops} mode="live" connected={live.connected} />}
         {route.name === "txn" && <TxnView repo={repo} id={route.id} live={live} />}
         {route.name === "bench" && <BenchView />}
         {route.name === "replay" && <ReplayView repo={repo} live={live} />}

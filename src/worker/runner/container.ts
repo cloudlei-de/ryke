@@ -729,12 +729,15 @@ export class ContainerRunner implements RunnerClient {
 // What this container's gateway lets through. `allow` maps repos to the strongest access any job in
 // the container was granted; a repo that is absent is not served, and so is every repo when `allow`
 // itself is absent. `egress: "closed"` serves Artifacts and nothing else; anything but "closed" keeps
-// the pass-through (and the Anthropic key swap) the agents need. Interception is registered per
+// the pass-through (and the Anthropic and OpenAI key swaps) the agents need. Interception is registered per
 // container, so this is per container as well (see desiredGateway).
 export type OutboundProps = { allow?: RepoAccess; egress?: "open" | "closed" };
 
 export const ARTIFACTS_SUFFIX = ".artifacts.cloudflare.net";
 export const ANTHROPIC_HOST = "api.anthropic.com";
+// Codex on an API key (containers/runner/lib/agent.mjs). A subscription is never used in a container, so
+// chatgpt.com, where a ChatGPT login would go, gets no credential from here.
+export const OPENAI_HOST = "api.openai.com";
 
 const GIT_PATH = /^\/git\/([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)\.git(?:\/|$)/;
 // The three paths of git smart HTTP, anchored at both ends: one request, one repo, one operation.
@@ -806,6 +809,11 @@ export class Outbound extends WorkerEntrypoint<Env, OutboundProps> {
       // Fail closed: forwarding the container's placeholder key would only fail slower, after retries.
       if (!key) return deny(503, "ANTHROPIC_API_KEY is not configured on the gateway");
       return forward(request, url, (h) => h.set("x-api-key", key));
+    }
+    if (url.hostname === OPENAI_HOST) {
+      const key = (this.env as unknown as { OPENAI_API_KEY?: string }).OPENAI_API_KEY;
+      if (!key) return deny(503, "OPENAI_API_KEY is not configured on the gateway");
+      return forward(request, url, (h) => h.set("authorization", `Bearer ${key}`));
     }
     return fetch(request);
   }

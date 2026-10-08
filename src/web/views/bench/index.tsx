@@ -2,6 +2,7 @@
 // table of every cell. Charts are hand-written SVG sized to their container, so text stays at its real size.
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { BENCH_SYNTHETIC_NOTICE, parseBench, POLICIES, type BenchCell, type BenchPolicy, type BenchResults } from "../../../shared/bench";
+import { Icon } from "../../ui";
 import {
   abortCauses,
   abortSegments,
@@ -16,6 +17,10 @@ import {
   makeXScale,
   measuredAgents,
   niceTicks,
+  noteDetail,
+  peaks,
+  POLICY_NAME,
+  ratio,
   seriesByPolicy,
   spreadLabels,
   stackLayout,
@@ -78,11 +83,11 @@ function useWide(): boolean {
   return wide;
 }
 
-// Ryke is the story, so it is the only ink line; the baselines share the muted tone and differ by dash and marker.
+// Ryke is the story, so it is the one coloured line; the baselines share a grey and differ by dash and marker.
 const LINE_STYLE: Record<BenchPolicy, { stroke: string; width: number; dash?: string }> = {
-  lock: { stroke: "var(--muted)", width: 1.5, dash: "5 3" },
-  queue: { stroke: "var(--muted)", width: 1.5 },
-  ryke: { stroke: "var(--ink)", width: 2.75 },
+  lock: { stroke: "var(--text-3)", width: 1.75, dash: "5 4" },
+  queue: { stroke: "var(--text-2)", width: 1.75 },
+  ryke: { stroke: "var(--run)", width: 2.75 },
 };
 
 function Marker({ policy, x, y }: { policy: BenchPolicy; x: number; y: number }) {
@@ -291,14 +296,32 @@ function PatternKey({ id, causes }: { id: string; causes: string[] }) {
   );
 }
 
-function Figure({ title, note, children }: { title: string; note: string; children: ReactNode }) {
+function LineKey() {
   return (
-    <figure className="bench-fig">
-      <figcaption>
-        <span className="fig-title">{title}</span>
-        <span className="muted">{note}</span>
+    <ul className="line-key" aria-label="Policies">
+      {[...POLICIES].reverse().map((p) => (
+        <li key={p} data-policy={p}>
+          <svg width="22" height="8" aria-hidden="true">
+            <line x1="1" x2="21" y1="4" y2="4" style={{ stroke: LINE_STYLE[p].stroke, strokeWidth: LINE_STYLE[p].width, strokeDasharray: LINE_STYLE[p].dash }} strokeLinecap="round" />
+          </svg>
+          {POLICY_NAME[p]}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Figure({ title, note, keyed, children }: { title: string; note: string; keyed?: boolean; children: ReactNode }) {
+  return (
+    <figure className="bench-fig card">
+      <figcaption className="card-head">
+        <div>
+          <h2>{title}</h2>
+          <p className="muted fig-note">{note}</p>
+        </div>
+        {keyed && <LineKey />}
       </figcaption>
-      {children}
+      <div className="fig-body">{children}</div>
     </figure>
   );
 }
@@ -307,6 +330,7 @@ function Results({ data }: { data: BenchResults }) {
   const causes = useMemo(() => abortCauses(data.cells), [data.cells]);
   const rows = useMemo(() => tableRows(data.cells), [data.cells]);
   const lead = useMemo(() => headline(data.cells), [data.cells]);
+  const best = useMemo(() => peaks(data.cells), [data.cells]);
   const broken = rows.filter((r) => r.breakages > 0);
   const wide = useWide();
   const landed = (c: BenchCell) => c.landedPerMinute;
@@ -316,31 +340,51 @@ function Results({ data }: { data: BenchResults }) {
   return (
     <>
       {lead && (
-        <p className="bench-lead">
-          <span className="muted">At {lead.agents} agents, landed per minute</span>
-          {[...POLICIES].reverse().map((p) => (
-            <span key={p} className={p === "ryke" ? "lead-item ryke" : "lead-item"}>
-              <span className="lead-name">{p}</span>
-              <span className="mono lead-num">{fmtNum(lead.values[p], 1)}</span>
-            </span>
-          ))}
-        </p>
+        <section className="bench-lead" aria-label={`Landed per minute at ${lead.agents} agents`}>
+          {[...POLICIES].reverse().map((p) => {
+            const peak = best[p];
+            const x = p === "ryke" ? ratio(lead.values.ryke, lead.values.queue) : null;
+            return (
+              <div key={p} className="lead-card card" data-policy={p}>
+                <div className="lead-label">
+                  <span className="lead-swatch" aria-hidden="true" />
+                  {POLICY_NAME[p]}
+                </div>
+                <div className="lead-value">
+                  <span className="num">{fmtNum(lead.values[p], 1)}</span>
+                  <span className="lead-unit">landed / min at {lead.agents} agents</span>
+                </div>
+                <div className="lead-sub">
+                  {x && <span className="lead-ratio">{x} the merge queue</span>}
+                  {peak && (
+                    <span className="muted">
+                      peak {fmtNum(peak.value, 1)} at {peak.agents} agents
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </section>
       )}
       <div className="bench-grid">
-        <Figure title="Throughput" note="landed changes per minute, by number of agents">
-          <LineChart cells={data.cells} metric={landed} unit="landed/min" height={wide ? 392 : 300} digits={1} gutter={endGutter(data.cells, landed, 1)} />
+        <Figure title="Throughput" note="Landed changes per minute, by number of agents" keyed>
+          <LineChart cells={data.cells} metric={landed} unit="landed/min" height={wide ? 400 : 300} digits={1} gutter={endGutter(data.cells, landed, 1)} />
         </Figure>
         <div className="bench-side">
-          <Figure title="Aborts" note="attempts sent back, stacked by cause · bars: lock, queue, ryke">
-            <AbortsChart cells={data.cells} causes={causes} height={wide ? 190 : 220} gutter={sideGutter} />
+          <Figure title="Aborts" note="Attempts sent back, stacked by cause · bars: lock, queue, ryke">
+            <AbortsChart cells={data.cells} causes={causes} height={wide ? 178 : 220} gutter={sideGutter} />
           </Figure>
-          <Figure title="Wasted agent-seconds" note="think time of attempts that did not land">
+          <Figure title="Wasted agent-seconds" note="Think time of attempts that did not land" keyed>
             <LineChart cells={data.cells} metric={wasted} unit="agent-s" height={wide ? 170 : 200} digits={0} gutter={sideGutter} />
           </Figure>
         </div>
       </div>
-      <section className="bench-table" aria-label="Every cell">
-        <h2>Every cell</h2>
+      <section className="bench-table card" aria-label="Every cell">
+        <header className="card-head">
+          <h2>Every cell</h2>
+          <span className="count">{rows.length}</span>
+        </header>
         <div className="table-wrap">
           <table>
             <thead>
@@ -360,16 +404,21 @@ function Results({ data }: { data: BenchResults }) {
             <tbody>
               {rows.map((r, i) => (
                 <tr key={r.key} className={[r.policy === "ryke" ? "ryke" : "", i > 0 && rows[i - 1]!.agents !== r.agents ? "group" : ""].join(" ").trim()}>
-                  <td className="l">{r.policy}</td>
-                  <td className="mono">{r.agents}</td>
-                  <td className="mono">{r.landed}</td>
-                  <td className="mono">{r.perMinute}</td>
-                  <td className="mono">{r.p50}</td>
-                  <td className="mono">{r.p95}</td>
+                  <td className="l">
+                    <span className="policy" data-policy={r.policy}>
+                      <span className="lead-swatch" aria-hidden="true" />
+                      {POLICY_NAME[r.policy]}
+                    </span>
+                  </td>
+                  <td className="num">{r.agents}</td>
+                  <td className="num">{r.landed}</td>
+                  <td className="num strong">{r.perMinute}</td>
+                  <td className="num">{r.p50}</td>
+                  <td className="num">{r.p95}</td>
                   <td className="l aborts">{r.aborts}</td>
-                  <td className="mono">{r.verifyRuns}</td>
-                  <td className="mono">{r.wasted}</td>
-                  <td className={r.breakages > 0 ? "mono bad" : "mono"}>{r.breakages}</td>
+                  <td className="num">{r.verifyRuns}</td>
+                  <td className="num">{r.wasted}</td>
+                  <td className={r.breakages > 0 ? "num bad" : "num ok"}>{r.breakages}</td>
                 </tr>
               ))}
             </tbody>
@@ -390,28 +439,34 @@ export function BenchView() {
   return (
     <section className="bench">
       <header className="bench-head">
-        <h1>Bench</h1>
-        <p className="muted">Three ways to land concurrent agents on one trunk: a global lock, a merge queue, and Ryke.</p>
-      </header>
-      <aside className="bench-note" role="note">
-        <p className="notice">{BENCH_SYNTHETIC_NOTICE}</p>
+        <div>
+          <h1>Bench</h1>
+          <p className="muted">Three ways to land concurrent agents on one trunk: a global lock, a merge queue, and Ryke.</p>
+        </div>
         {data && (
-          <p className="muted">
-            {data.note}
-            <span className="mono"> · {data.generatedAt === null ? "not generated yet" : `generated ${fmtGenerated(data.generatedAt)}`}</span>
-            {data.durationSeconds > 0 && <span className="mono"> · {fmtNum(data.durationSeconds, 0)} s per cell</span>}
+          <p className="bench-meta muted">
+            {data.generatedAt === null ? "not generated yet" : `Generated ${fmtGenerated(data.generatedAt)}`}
+            {data.durationSeconds > 0 && ` · ${fmtNum(data.durationSeconds, 0)} s per cell`}
           </p>
         )}
+      </header>
+      <aside className="callout bench-note" role="note">
+        <Icon name="info" size={15} />
+        <div>
+          <p className="notice">{BENCH_SYNTHETIC_NOTICE}</p>
+          {data && noteDetail(data.note, BENCH_SYNTHETIC_NOTICE) && <p>{noteDetail(data.note, BENCH_SYNTHETIC_NOTICE)}</p>}
+        </div>
       </aside>
       {load.status === "loading" && <p className="muted bench-status">Loading the latest bench run.</p>}
       {load.status === "error" && (
-        <p className="bench-status bad" role="alert">
+        <p className="callout bench-status" data-tone="stop" role="alert">
+          <Icon name="alert" size={15} />
           Could not load the bench: {load.message}
         </p>
       )}
       {data && data.cells.length === 0 && (
-        <div className="bench-empty">
-          <p>No bench run yet.</p>
+        <div className="bench-empty card">
+          <p className="bench-empty-title">No bench run yet</p>
           <p className="muted">
             Run <code>npm run bench -- --agents 10,50,100,200 --policy lock,queue,ryke --duration 300</code> and commit <code>bench/results/latest.json</code>.
           </p>

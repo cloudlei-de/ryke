@@ -1,199 +1,242 @@
-/* Replay view: the Line above, a transport bar below. Hairlines and mono numbers, like the rest of the sheet. */
+/* Replay (PLAN.md §12 view 5): the Line at any point of the op log, with a transport bar under it. Felix records
+   the demo video from here, so the bar stays one compact card and the Line keeps the room. */
 .replay {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
-  min-height: 0;
 }
 .replay-stage {
-  flex: 1;
   min-height: 0;
-  overflow: auto;
-  position: relative;
+}
+.replay-stage .line {
+  padding-bottom: 12px;
 }
 .replay-empty {
-  margin: 48px 24px;
-  font-size: 16px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 40px 20px;
+  color: var(--text-3);
+  text-align: center;
 }
-
+.replay-empty-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
 .scrubber {
-  flex: none;
-  padding: 10px 16px 12px;
-  border-top: var(--hair) solid var(--rule);
-  background: var(--paper);
+  display: grid;
+  gap: 8px;
+  margin: 0 20px 16px;
+  padding: 10px 16px 10px;
 }
 .controls {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
+  gap: 14px;
+  min-width: 0;
 }
-.controls .group {
-  display: inline-flex;
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
-.controls .group button {
-  min-width: 34px;
-  height: 28px;
-  margin-left: -1px;
-  font-family: var(--mono);
-  font-size: 13px;
+.play {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin: 0 4px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--surface);
+  cursor: pointer;
+  transition: transform 120ms;
 }
-.controls .group button:first-child {
-  margin-left: 0;
+.play:hover:not(:disabled) {
+  transform: scale(1.06);
 }
-.controls .group button.play {
-  min-width: 72px;
-  font-family: var(--sans);
-  font-weight: 600;
-  background: var(--ink);
-  color: var(--paper);
-}
-.controls .group button.play:hover {
-  background: transparent;
-  color: var(--ink);
-}
-.controls .group button[aria-pressed="true"]:not(.play) {
-  background: var(--ink);
-  color: var(--paper);
-}
-.controls button:disabled {
+.play:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: not-allowed;
 }
-.controls button:focus-visible,
-.track input:focus-visible {
-  outline: 2px solid var(--run);
-  outline-offset: 2px;
+.play svg {
+  margin-left: 1px;
+}
+.play[aria-pressed="true"] svg {
+  margin-left: 0;
 }
 .readout {
   font-size: 13px;
   white-space: nowrap;
 }
 .readout .elapsed {
-  font-size: 22px;
-  font-weight: 500;
+  font-weight: 600;
 }
-.controls .spacer {
+.current {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   flex: 1;
+  min-width: 0;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+  font-size: 12.5px;
 }
-.controls .status {
+.current-seq {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.current[data-tone="go"] .current-seq {
+  color: var(--go-text);
+}
+.current[data-tone="stop"] .current-seq {
+  color: var(--stop-text);
+}
+.current[data-tone="caution"] .current-seq {
+  color: var(--caution-text);
+}
+.current[data-tone="run"] .current-seq {
+  color: var(--run-text);
+}
+.current[data-tone="recall"] .current-seq {
+  color: var(--recall-text);
+}
+.current-text {
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status {
   font-size: 12px;
   white-space: nowrap;
 }
 
-.track {
+/* the track: event marks above a slim range input whose played part is filled */
+.scrub-track {
   position: relative;
-  margin-top: 8px;
+  display: grid;
+  gap: 2px;
+  padding-top: 10px;
 }
-/* Ticks sit above the rail where the run landed, went stale or was recalled; the thumb is 10 px wide, so
-   positions are inset by half of it to line up with the thumb centre. */
 .marks {
-  position: relative;
-  height: 9px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+  pointer-events: none;
 }
 .marks i {
   position: absolute;
-  bottom: 0;
+  top: 1px;
   width: 2px;
-  height: 9px;
+  height: 7px;
   margin-left: -1px;
-  background: var(--muted);
+  border-radius: 1px;
+  background: var(--text-3);
+  opacity: 0.8;
 }
 .marks i[data-tone="go"] {
   background: var(--go);
 }
 .marks i[data-tone="stop"] {
   background: var(--stop);
-  height: 6px;
 }
 .marks i[data-tone="recall"] {
   background: var(--recall);
-  height: 6px;
+  height: 9px;
+  top: 0;
 }
-.track input[type="range"] {
-  display: block;
+.scrub-track input[type="range"] {
   width: 100%;
-  height: 22px;
+  height: 16px;
   margin: 0;
-  padding: 0;
-  border: 0;
   background: transparent;
-  -webkit-appearance: none;
   appearance: none;
   cursor: pointer;
 }
-.track input[type="range"]:disabled {
-  cursor: default;
-  opacity: 0.4;
+.scrub-track input[type="range"]:focus-visible {
+  outline: none;
 }
-.track input[type="range"]::-webkit-slider-runnable-track {
-  height: 1px;
-  background: var(--ink);
+.scrub-track input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 45%, transparent);
 }
-.track input[type="range"]::-moz-range-track {
-  height: 1px;
-  background: var(--ink);
+.scrub-track input[type="range"]:disabled {
+  cursor: not-allowed;
 }
-.track input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 10px;
-  height: 20px;
-  margin-top: -10px;
-  border: var(--hair) solid var(--ink);
-  border-radius: 0;
-  background: var(--paper);
-  box-shadow: inset 0 0 0 3px var(--ink);
+.scrub-track input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--text) var(--fill, 0%), var(--surface-3) var(--fill, 0%));
 }
-.track input[type="range"]::-moz-range-thumb {
-  box-sizing: border-box;
-  width: 10px;
-  height: 20px;
-  border: var(--hair) solid var(--ink);
-  border-radius: 0;
-  background: var(--ink);
+.scrub-track input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+.scrub-track input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--text);
+}
+.scrub-track input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 1px var(--border-strong);
+  appearance: none;
+}
+.scrub-track input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--text);
 }
 .ends {
   display: flex;
   justify-content: space-between;
-  margin-top: 2px;
+  color: var(--text-3);
   font-size: 11px;
 }
-
-.current {
-  margin: 8px 0 0;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.current .sep {
-  margin: 0 8px;
-  color: var(--muted);
-}
-.current .kind {
-  font-weight: 600;
-}
-.current[data-signal="go"] .kind {
-  color: var(--go-text);
-}
-.current[data-signal="stop"] .kind {
-  color: var(--stop-text);
-}
-.current[data-signal="caution"] .kind {
-  color: var(--caution-text);
-}
-.current[data-signal="run"] .kind {
-  color: var(--run-text);
-}
-.current[data-signal="recall"] .kind {
-  color: var(--recall-text);
+.ends span:nth-child(2) {
+  color: var(--text-2);
+  font-weight: 500;
 }
 
-@media (max-width: 640px) {
-  .scrubber {
-    padding: 10px 16px 12px;
+@media (max-width: 1080px) {
+  .replay {
+    display: block;
+    height: auto;
   }
-  .controls .spacer {
-    display: none;
+  .scrubber {
+    position: sticky;
+    bottom: 8px;
+    margin: 0 12px 12px;
+    box-shadow: var(--shadow-lg);
+  }
+}
+@media (max-width: 640px) {
+  .controls {
+    flex-wrap: wrap;
+    gap: 8px 10px;
+  }
+  .current {
+    order: 5;
+    flex-basis: 100%;
+    padding-left: 0;
+    border-left: 0;
+  }
+  .status {
+    margin-left: auto;
   }
 }

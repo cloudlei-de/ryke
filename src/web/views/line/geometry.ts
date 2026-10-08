@@ -4,19 +4,21 @@ import { HOT } from "../../../worker/ledger/heat";
 import type { AttemptView, LineState, Segment, Tick, TxnView } from "../../../shared/reducers";
 import type { Op, OpKind } from "../../../shared/types";
 import { modelLabel } from "../../agents";
+import { duration, reasonLabel } from "../txn/format";
 
-export const ROW_H = 18;
-export const ROW_MAX = 32;
-export const BAR_H = 10;
-export const AXIS_H = 24;
+export const ROW_H = 16;
+export const ROW_MAX = 34;
+export const AXIS_H = 26;
 export const MIN_BAR_W = 3;
-// How far the landing diagonal climbs toward the main line, and how far it leans right.
-export const DIAG_DX = 7;
-// IBM Plex Mono advances 0.6em, so a 10 px label is 6 px per character; labels are sized before drawing.
+// Geist at the bars' 11 px label size advances about 6 px a character; labels are sized before drawing.
 export const CHAR_W = 6;
-export const LABEL_GAP = 6;
-export const TICK_GAP = 5;
-export const BLOCK_GAP = 8;
+// A label needs this much of the working stretch to say anything (six characters and the padding).
+export const LABEL_MIN_W = 56;
+export const DOT_GAP = 9;
+export const BLOCK_GAP = 12;
+// How far right of its time a crowded commit may be pushed. Past it, dots overlap instead: a commit drawn after
+// "now", or far from the bars that landed it, would tell the time wrong.
+export const TRUNK_PUSH_MAX = 16;
 export const SWARM_CMD = "npm run swarm -- --mode scripted --agents 12 --fresh";
 
 // ---------------------------------------------------------------- time axis
@@ -34,11 +36,13 @@ export function clampX(s: Scale, x: number): number {
   return Math.min(Math.max(x, s.x0), s.x1);
 }
 
-// The label gutter shrinks on a phone so the time axis keeps most of the width. The right margin is half
-// a clock label, so the last tick's label is never cut off.
+// The label gutter shrinks on a phone so the time axis keeps most of the width. The bars start a little right
+// of the gutter so the first one never touches an agent's name; the right margin is half a clock label, so the
+// last tick's label is never cut off.
 export function plotBox(width: number): { labelW: number; x0: number; x1: number } {
-  const labelW = width < 640 ? 64 : 96;
-  return { labelW, x0: labelW, x1: Math.max(labelW + 40, width - 28) };
+  const labelW = width < 640 ? 84 : 150;
+  const x0 = labelW + 10;
+  return { labelW, x0, x1: Math.max(x0 + 40, width - 24) };
 }
 
 // Fine enough that the blank margin on the right stays under a third; coarse enough that the scale holds still for a while.
@@ -73,6 +77,14 @@ export function liveWindow(now: number, first: number | null): TimeWindow {
   }
   const end = now + LIVE_MAX_MS * RIGHT_MARGIN;
   return { start: end - LIVE_MAX_MS, end };
+}
+
+// A repo nobody has touched for longer than the live window would show empty rows. It shows its last activity
+// instead, framed as if "now" were its last op, and says how long it has been quiet. null while anything is on screen.
+export function idleView(state: LineState, now: number): { window: TimeWindow; last: number } | null {
+  if (state.txns.size === 0 || activityStart(state, now - LIVE_MAX_MS) !== null) return null;
+  const last = state.now;
+  return { window: liveWindow(last, activityStart(state, last - LIVE_MAX_MS)), last };
 }
 
 // Replay: fit the whole recording once, so scrubbing moves a cursor instead of rescaling the picture.
@@ -139,28 +151,6 @@ export function staleLabel(stale: readonly { path: string; by: string | null }[]
   return detail ? `stale · ${detail}` : "stale";
 }
 
-// Put the label on the side of the mark with room; if neither side fits, take the roomier one and clip.
-export function placeLabel(x: number, text: string, x0: number, x1: number): { text: string; anchor: "start" | "end"; x: number } {
-  const right = x1 - (x + LABEL_GAP);
-  const left = x - LABEL_GAP - x0;
-  const need = text.length * CHAR_W;
-  if (need <= right) return { text, anchor: "start", x: x + LABEL_GAP };
-  if (need <= left) return { text, anchor: "end", x: x - LABEL_GAP };
-  const onRight = right >= left;
-  return { text: clipText(text, Math.floor(Math.max(right, left) / CHAR_W)), anchor: onRight ? "start" : "end", x: onRight ? x + LABEL_GAP : x - LABEL_GAP };
-}
-
-// A label that must stop before `limitX` (the next label on the same row): clipped to the room, or dropped
-// when fewer than `min` characters would remain (the bar's tooltip still has the whole text).
-export function fitLabel(text: string, startX: number, limitX: number, min = 4): string {
-  const chars = Math.floor((limitX - startX) / CHAR_W);
-  if (text.length <= chars) return text;
-  return chars < min ? "" : clipText(text, chars);
-}
-
-// "stale · src/…" is about as little as still says what went stale; a stub like "sta…" over a retry bar is noise.
-export const STALE_LABEL_MIN = 12;
-
 // ---------------------------------------------------------------- sidings
 
 export type Tone = "open" | "queued" | "verify" | "landed" | "human" | "lease";
@@ -199,15 +189,15 @@ export function assignLanes(items: readonly { key: string; from: number; to: num
   return { lane, count: Math.max(1, ends.length) };
 }
 
-// 30 agents must fit a 1440x900 screen at the minimum height; with fewer agents the rows grow into the
-// free space (up to ROW_MAX) so the bars and their labels are easier to read.
+// 30 agents must fit a 1440x900 screen at the minimum height (about 500 px of rows under the counters); with fewer
+// agents the rows grow into the free space (up to ROW_MAX) so the bars and the intents on them are easier to read.
 export function rowHeight(count: number, availablePx: number): number {
   if (count <= 0 || !(availablePx > 0)) return ROW_H;
   return Math.min(ROW_MAX, Math.max(ROW_H, Math.floor(availablePx / count)));
 }
 
 export function barHeight(rowH: number): number {
-  return Math.min(16, Math.max(BAR_H, Math.round(rowH * 0.55)));
+  return Math.min(20, Math.max(10, Math.round(rowH * 0.6)));
 }
 
 export function laneBox(lane: number, lanes: number, rowH = ROW_H): { y: number; h: number } {
@@ -221,11 +211,11 @@ export function laneBox(lane: number, lanes: number, rowH = ROW_H): { y: number;
   return { y: pad + lane * (h + gap), h };
 }
 
+// Bars this tall have room for an 11 px label inside them.
+export const LABEL_MIN_H = 14;
+
 export type BarPart = { tone: Tone; x: number; w: number };
-export type Mark =
-  | { kind: "landed"; x: number }
-  | { kind: "stale"; x: number; label: string; full: string; labelX: number; anchor: "start" | "end" }
-  | { kind: "failed" | "rejected" | "aborted"; x: number };
+export type Mark = { kind: "landed" | "stale" | "failed" | "rejected" | "aborted"; x: number };
 export type AttemptBar = {
   key: string;
   txn: string;
@@ -239,6 +229,10 @@ export type AttemptBar = {
   strike: { x1: number; x2: number } | null;
   warnings: number[];
   running: boolean;
+  // The intent, written inside the stretch where the agent was working, when it is wide enough to say something.
+  label: { text: string; x: number; w: number } | null;
+  // What made a stale attempt stale: the paths and the transactions that changed them.
+  stale: { path: string; by: string | null }[];
   title: string;
   href: string;
 };
@@ -246,13 +240,20 @@ export type Row = { agent: string; index: number; bars: AttemptBar[] };
 
 export const txnHref = (id: string): string => `#/t/${encodeURIComponent(id)}`;
 
-function barTitle(txn: TxnView, a: AttemptView, label: string | null): string {
+// The accessible name of a bar; the hover card (tipFor) shows the same facts laid out.
+function barTitle(txn: TxnView, a: AttemptView): string {
   const status = a.outcome ?? a.segments.at(-1)?.state ?? "open";
   // The model is there so a scripted or stub agent is never mistaken for a language model (§0.10).
   const lines = [`${txn.id} · attempt ${a.attempt} · ${stateLabel(status)}${a.reason ? ` (${a.reason})` : ""}`, txn.model ? `${txn.agent} · ${modelLabel(txn.model)}` : txn.agent, txn.intent];
-  if (label) lines.push(label);
+  if (a.outcome === "stale") lines.push(staleLabel(a.stale, a.reason));
   for (const w of a.warnings) lines.push(`warning: ${w.paths.join(", ")}`);
   return lines.join("\n");
+}
+
+export function barLabel(intent: string, first: BarPart | undefined): AttemptBar["label"] {
+  if (!first || first.tone !== "open" || first.w < LABEL_MIN_W || intent.trim() === "") return null;
+  const text = clipText(intent.trim(), Math.floor((first.w - 12) / CHAR_W));
+  return text.length < 6 ? null : { text, x: first.x + 6, w: first.w - 8 };
 }
 
 export function layoutBar(args: { txn: TxnView; attempt: AttemptView; lane: number; lanes: number; scale: Scale; now: number }): AttemptBar | null {
@@ -276,27 +277,8 @@ export function layoutBar(args: { txn: TxnView; attempt: AttemptView; lane: numb
   }
   const x = parts[0]!.x;
   const end = parts.at(-1)!.x + parts.at(-1)!.w;
-
-  let mark: Mark | null = null;
-  let label: string | null = null;
-  switch (a.outcome) {
-    case "landed":
-      mark = { kind: "landed", x: end };
-      break;
-    case "stale": {
-      label = staleLabel(a.stale, a.reason);
-      const p = placeLabel(end, label, scale.x0, scale.x1);
-      mark = { kind: "stale", x: end, label: p.text, full: label, labelX: p.x, anchor: p.anchor };
-      break;
-    }
-    case "failed":
-    case "rejected":
-    case "aborted":
-      mark = { kind: a.outcome, x: end };
-      break;
-    default:
-      break;
-  }
+  const outcome = a.outcome;
+  const mark: Mark | null = outcome === "landed" || outcome === "stale" || outcome === "failed" || outcome === "rejected" || outcome === "aborted" ? { kind: outcome, x: end } : null;
 
   return {
     key: `${txn.id}#${a.attempt}`,
@@ -308,11 +290,13 @@ export function layoutBar(args: { txn: TxnView; attempt: AttemptView; lane: numb
     w: end - x,
     parts,
     mark,
-    // A recalled transaction landed first; the strike runs over the green bar and its diagonal.
-    strike: txn.state === "recalled" && landed ? { x1: x, x2: end + DIAG_DX } : null,
+    // A recalled transaction landed first; the strike runs over the green bar.
+    strike: txn.state === "recalled" && landed ? { x1: x, x2: end } : null,
     warnings: a.warnings.map((w) => toX(scale, w.at)).filter((wx) => wx >= scale.x0 && wx <= scale.x1),
     running: a.end === null,
-    title: barTitle(txn, a, label),
+    label: barLabel(txn.intent, parts[0]),
+    stale: outcome === "stale" ? a.stale : [],
+    title: barTitle(txn, a),
     href: txnHref(txn.id),
   };
 }
@@ -336,21 +320,19 @@ export function buildRows(state: LineState, scale: Scale, now: number): Row[] {
       const bar = layoutBar({ txn: r.txn, attempt: r.attempt, lane: lane.get(keyOf(r)) ?? 0, lanes: count, scale, now });
       if (bar) bars.push(bar);
     }
-    // A stale label is drawn to the right of its notch, where the retry bar already runs. It may stay as long as it
-    // fits before the end of that bar, the next stale notch, or the edge of the plot; one that does not is hidden
-    // rather than printed over the retry and the landing (a phone's plot is too narrow for most of them).
-    const stale = bars.filter((b) => b.mark?.kind === "stale").sort((p, q) => p.mark!.x - q.mark!.x);
-    stale.forEach((b, i) => {
-      const m = b.mark;
-      if (m?.kind !== "stale" || m.anchor === "end") return;
-      // Same lane only: an attempt of another transaction in another lane does not stand where the label does.
-      const retry = bars.filter((o) => o !== b && o.lane === b.lane && o.x >= m.x - 1).sort((p, q) => p.x - q.x)[0];
-      const next = stale[i + 1]?.mark;
-      const limit = Math.min(retry ? retry.x + retry.w : scale.x1, next ? next.x - LABEL_GAP : scale.x1);
-      b.mark = { ...m, label: fitLabel(m.full, m.labelX, limit, STALE_LABEL_MIN) };
-    });
     return { agent, index, bars };
   });
+}
+
+// What an agent's row says about it next to its name: the state of its newest transaction.
+export function agentStatus(state: LineState, agent: string): { state: string; txn: string } | null {
+  let newest: TxnView | null = null;
+  for (const t of state.txns.values()) {
+    if (t.agent !== agent) continue;
+    const start = t.attempts.at(-1)?.start ?? 0;
+    if (!newest || start >= (newest.attempts.at(-1)?.start ?? 0)) newest = t;
+  }
+  return newest ? { state: newest.state, txn: newest.id } : null;
 }
 
 // ---------------------------------------------------------------- trunk
@@ -358,9 +340,10 @@ export function buildRows(state: LineState, scale: Scale, now: number): Row[] {
 export type TrunkTick = { key: string; x: number; seq: number; sha: string; txn: string | null; recall: string | null; title: string };
 export type TrunkBlock = { key: string; train: string | null; at: number; x: number; w: number; ticks: TrunkTick[] };
 
-// Ticks of one train land at the same instant, so on a time axis they would be one pixel. A train is
-// drawn as a block of evenly spaced ticks; blocks that would collide are pushed right, never reordered.
-export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] {
+// Commits of one train land at the same instant, so on a time axis they would be one dot. A train is
+// drawn as a capsule of `gap`-spaced dots; blocks that would collide are pushed right, never reordered, and never
+// more than TRUNK_PUSH_MAX past their time. A narrow plot passes a smaller gap.
+export function layoutTrunk(ticks: readonly Tick[], scale: Scale, gap = DOT_GAP): TrunkBlock[] {
   const groups = new Map<string, Tick[]>();
   for (const k of [...ticks].sort((a, b) => a.at - b.at || a.seq - b.seq)) {
     if (k.at < scale.t0 || k.at > scale.t1) continue;
@@ -371,10 +354,15 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
   }
   const blocks: TrunkBlock[] = [];
   let cursor = -Infinity;
+  let prev = -Infinity;
+  const space = gap + (BLOCK_GAP - DOT_GAP);
   for (const [key, g] of groups) {
-    const w = (g.length - 1) * TICK_GAP;
-    const x = Math.min(Math.max(toX(scale, g[0]!.at), cursor + BLOCK_GAP), Math.max(scale.x1 - w, scale.x0));
+    const w = (g.length - 1) * gap;
+    const t = toX(scale, g[0]!.at);
+    const pushed = Math.max(prev, Math.min(Math.max(t, cursor + space), t + TRUNK_PUSH_MAX));
+    const x = Math.min(pushed, Math.max(scale.x1 - w, scale.x0));
     cursor = x + w;
+    prev = x;
     blocks.push({
       key,
       train: g[0]!.train,
@@ -383,7 +371,7 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
       w,
       ticks: g.map((k, i) => ({
         key: `${k.seq}:${k.sha}`,
-        x: x + i * TICK_GAP,
+        x: x + i * gap,
         seq: k.seq,
         sha: k.sha,
         txn: k.txn,
@@ -394,6 +382,32 @@ export function layoutTrunk(ticks: readonly Tick[], scale: Scale): TrunkBlock[] 
     });
   }
   return blocks;
+}
+
+// A landing that made other transactions stale, drawn as a guide from its commit on the trunk with a branch to
+// the stale notch of each attempt it caught: read-set validation, visible. A notch falls when its attempt learns it
+// is stale (at the landing if it was waiting, at its own submit if it was still working), so each branch runs from
+// the culprit's commit to wherever its notch fell. `x` is the commit's dot; `bottom` is the lowest row reached.
+export type Wave = { culprit: string; x: number; victims: { row: number; lane: number; lanes: number; x: number }[]; bottom: number };
+
+export function staleWaves(rows: readonly Row[], blocks: readonly TrunkBlock[]): Wave[] {
+  const dots = new Map<string, number>();
+  for (const b of blocks) for (const t of b.ticks) if (t.txn) dots.set(t.txn, t.x);
+  const found = new Map<string, Wave>();
+  for (const row of rows) {
+    for (const bar of row.bars) {
+      if (bar.mark?.kind !== "stale") continue;
+      for (const by of new Set(bar.stale.map((p) => p.by))) {
+        const x = by ? dots.get(by) : undefined;
+        if (!by || x === undefined) continue;
+        const w = found.get(by) ?? { culprit: by, x, victims: [], bottom: row.index };
+        w.victims.push({ row: row.index, lane: bar.lane, lanes: bar.lanes, x: bar.mark.x });
+        w.bottom = Math.max(w.bottom, row.index);
+        found.set(by, w);
+      }
+    }
+  }
+  return [...found.values()].sort((a, b) => a.x - b.x);
 }
 
 // A block counts as arriving for a moment after it lands; the CSS animation runs once, when the class first appears.
@@ -567,4 +581,32 @@ export function shortData(op: Op): string {
 
 export function tickerLine(op: Op): { seq: string; kind: string; txn: string; agent: string; data: string; signal: Signal | null } {
   return { seq: String(op.seq), kind: op.kind, txn: op.txn ?? "", agent: op.agent ?? "", data: clipText(shortData(op), 160), signal: kindSignal(op.kind) };
+}
+
+// ---------------------------------------------------------------- hover card
+
+export type Tip = { id: string; attempt: number; status: string; intent: string; rows: [string, string][]; staleBy: string | null };
+
+const SEGMENT_NAME: Record<string, string> = { open: "working", submitted: "queued", ready: "queued", verifying: "verifying", needs_human: "with a human", lease_wait: "waiting for a lease" };
+
+// What the card on a hovered bar says: who, what, how long, where the time went and how it ended.
+export function tipFor(txn: TxnView, a: AttemptView, now: number): Tip {
+  const end = a.end ?? now;
+  const status = a.outcome ?? a.segments.at(-1)?.state ?? "open";
+  const spent = new Map<string, number>();
+  for (const seg of a.segments) {
+    const name = SEGMENT_NAME[seg.state] ?? seg.state;
+    spent.set(name, (spent.get(name) ?? 0) + Math.max(0, (seg.to ?? end) - seg.from));
+  }
+  const rows: [string, string][] = [["Agent", txn.model ? `${txn.agent} · ${modelLabel(txn.model)}` : txn.agent]];
+  rows.push(["Time", `${duration(end - a.start)}${a.end === null ? " so far" : ""}`]);
+  const split = [...spent].filter(([, ms]) => ms >= 50).map(([name, ms]) => `${name} ${duration(ms)}`);
+  if (split.length > 1) rows.push(["Spent", split.join(" · ")]);
+  if (a.outcome === "stale") {
+    const detail = staleDetail(a.stale, a.reason);
+    if (detail) rows.push(["Stale", detail]);
+  } else if (a.reason) rows.push(["Reason", reasonLabel(a.reason)]);
+  if (a.warnings.length > 0) rows.push(["Warned", [...new Set(a.warnings.flatMap((w) => w.paths))].join(", ") || `${a.warnings.length}×`]);
+  if (txn.state === "recalled") rows.push(["Recalled", txn.reason ? reasonLabel(txn.reason) : "reverted from trunk"]);
+  return { id: txn.id, attempt: a.attempt, status: txn.state === "recalled" && a.outcome === "landed" ? "recalled" : status, intent: txn.intent, rows, staleBy: a.stale[0]?.by ?? null };
 }

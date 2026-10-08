@@ -1,13 +1,12 @@
 // The pure parts of `npm run shots` (harness/shots.mjs): which transactions the Transaction shots open,
-// when the mid-run shot may be taken, the file names, and which browser errors are ignored. The browser run
-// itself is the M4 acceptance, not a unit test.
+// when the mid-run shot may be taken, the file names, and what the Line must show before it is shot. The browser
+// run itself is the M4 acceptance, not a unit test.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   captureHeight,
   checkVariants,
-  isFontFailure,
   LINE_CHECKS,
   midRunReady,
   OPTIONAL_VARIANTS,
@@ -87,25 +86,6 @@ describe("midRunReady", () => {
   ];
   for (const [name, input, want] of cases) {
     it(name, () => assert.equal(midRunReady(input), want));
-  }
-});
-
-describe("isFontFailure", () => {
-  const cases = [
-    ["the Google Fonts stylesheet", "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap", true],
-    ["a font file", "https://fonts.gstatic.com/s/ibmplexmono/v19/abc.woff2", true],
-    ["the dashboard's own module", "http://127.0.0.1:5248/src/web/live.ts", false],
-    ["an API call", "http://127.0.0.1:5248/api/repos/convert/files", false],
-    ["a look-alike host", "https://fonts.googleapis.com.evil.example/css", false],
-    ["a look-alike prefix", "https://evil.example/https://fonts.googleapis.com/css", false],
-    ["another Google host", "https://www.googleapis.com/css", false],
-    ["plain http is not the fonts CDN", "http://fonts.googleapis.com/css", false],
-    ["an empty url", "", false],
-    ["no url", undefined, false],
-    ["a null url", null, false],
-  ];
-  for (const [name, url, want] of cases) {
-    it(name, () => assert.equal(isFontFailure(url), want));
   }
 });
 
@@ -192,9 +172,9 @@ describe("the Line checks", () => {
       LINE_CHECKS.map((c) => [c.selector, c.min]),
       [
         [".trunk .block-box", 1],
-        [".sidings .m-stale", 2],
+        [".timeline .rows .m-stale", 2],
         ['.heat-list li[data-hot="true"]', 1],
-        [".sidings .sim-tag", 1],
+        [".line-head .sim-tag", 1],
       ],
     );
   });
@@ -203,7 +183,7 @@ describe("the Line checks", () => {
     assert.deepEqual(
       RECALLED_CHECKS.map((c) => [c.selector, c.min]),
       [
-        [".sidings .strike", 1],
+        [".timeline .rows .strike", 1],
         [".trunk .tick.recall", 1],
       ],
     );
@@ -211,8 +191,8 @@ describe("the Line checks", () => {
 
   // The selectors are classes of the dashboard's components; if one is renamed the run would wait out its timeout.
   const source = (f) => readFileSync(new URL(`../../src/web/${f}`, import.meta.url), "utf8");
-  const text = [source("views/line/Trunk.tsx"), source("views/line/Sidings.tsx"), source("views/line/Rail.tsx"), source("views/recall/index.tsx"), source("views/txn/parts.tsx")].join("\n");
-  for (const token of ["block-box", "m-stale", "data-hot", "sim-tag", "strike", "tick recall", "recall-outcome", "data-tone", "txn-id", "txn-diff", "txn-shot"]) {
+  const text = [source("views/line/index.tsx"), source("views/line/Timeline.tsx"), source("views/line/Side.tsx"), source("views/recall/index.tsx"), source("views/txn/parts.tsx")].join("\n");
+  for (const token of ["line-head", "timeline", "block-box", "m-stale", "data-hot", "sim-tag", "strike", "tick recall", "recall-outcome", "recall-plan-btn", "Plan recall", "data-tone", "txn-id", "txn-diff", "txn-shot", "txn-picker"]) {
     it(`finds ${token} in the dashboard's source`, () => assert.ok(text.includes(token), token));
   }
 

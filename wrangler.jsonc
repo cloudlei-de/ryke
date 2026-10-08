@@ -29,7 +29,7 @@
   "env": {
     // `npx wrangler deploy --env production` (PLAN.md §13 M9). Needs Workers Paid with Artifacts,
     // Containers and Dynamic Workers; secrets: RYKE_TOKEN, RYKE_INTERNAL_SECRET, TYPESAFE_API_KEY,
-    // ANTHROPIC_API_KEY (docs/deploy.md).
+    // ANTHROPIC_API_KEY and, for Codex agents, OPENAI_API_KEY (docs/deploy.md).
     "production": {
       "routes": [{ "pattern": "ryke.ai", "custom_domain": true }],
       "observability": { "enabled": true },

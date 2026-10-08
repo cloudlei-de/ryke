@@ -31,6 +31,8 @@ export type TrainView = {
   id: string;
   txns: string[];
   base: string;
+  // The train it was formed behind, for a speculative train (PLAN.md §5.6); null for one formed on trunk.
+  after: string | null;
   formedAt: number;
   doneAt: number | null;
   outcome: string | null;
@@ -183,7 +185,7 @@ export function apply(s: LineState, op: Op): LineState {
       break;
     }
     case "train.formed":
-      s.trains.set(d.train, { id: d.train, txns: d.txns ?? [], base: d.base, formedAt: op.at, doneAt: null, outcome: null, probes: [] });
+      s.trains.set(d.train, { id: d.train, txns: d.txns ?? [], base: d.base, after: d.after ?? null, formedAt: op.at, doneAt: null, outcome: null, probes: [] });
       break;
     case "train.bisect":
       s.trains.get(d.train)?.probes.push({ txns: d.probe ?? [], pass: Boolean(d.pass), at: op.at });

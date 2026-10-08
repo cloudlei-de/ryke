@@ -1,68 +1,46 @@
-/* Bench view: a printed results sheet. Ink and muted for data, signal colours only on aborts and breakages. */
+/* Bench (PLAN.md §12 view 3): the three policies side by side. Ryke is the one coloured series; the baselines are
+   greys told apart by dash and marker, and every line is labelled at its end. */
 .bench {
-  max-width: 1480px;
+  --s-ryke: var(--run);
+  --s-queue: var(--text-2);
+  --s-lock: var(--text-3);
+  display: grid;
+  gap: 16px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 20px 24px 56px;
-}
-.bench h1,
-.bench h2 {
-  margin: 0;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-.bench h1 {
-  font-size: 22px;
-}
-.bench h2 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  margin-bottom: 8px;
 }
 .bench-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
-  align-items: baseline;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 24px;
+}
+.bench-head h1 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 .bench-head p {
-  margin: 0;
+  margin-top: 2px;
 }
-
-/* The notice carries a hatched edge: the only tonal step the design allows. */
-.bench-note {
-  position: relative;
-  margin: 14px 0 18px;
-  padding: 8px 12px 8px 22px;
-  border: var(--hair) solid var(--rule);
-}
-.bench-note::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 10px;
-  border-right: var(--hair) solid var(--rule);
-  background: var(--hatch);
-}
-.bench-note p {
-  margin: 0;
+.bench-meta {
+  font-size: 12.5px;
 }
 .bench-note .notice {
+  color: var(--text);
   font-weight: 600;
 }
-.bench-note .muted {
-  font-size: 13px;
+.bench-status {
+  margin: 8px 0;
 }
-
-.bench-status,
 .bench-empty {
-  margin: 24px 0;
+  padding: 24px;
 }
-.bench-empty p {
-  margin: 0 0 6px;
-}
-.bench-empty p:first-child {
-  font-size: 18px;
+.bench-empty-title {
+  margin-bottom: 4px;
+  font-size: 16px;
   font-weight: 600;
 }
 .bench .bad {
@@ -70,66 +48,122 @@
   font-weight: 600;
 }
 
+/* ------------------------------------------------------------------ the three cards */
+
 .bench-lead {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.lead-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+}
+.lead-card[data-policy="ryke"] {
+  border-color: color-mix(in srgb, var(--s-ryke) 45%, var(--border));
+  box-shadow:
+    inset 0 3px 0 var(--s-ryke),
+    var(--shadow-sm);
+}
+.lead-label,
+.policy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.lead-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--s-lock);
+}
+[data-policy="queue"] .lead-swatch {
+  background: var(--s-queue);
+}
+[data-policy="ryke"] .lead-swatch {
+  background: var(--s-ryke);
+  height: 4px;
+}
+[data-policy="lock"] .lead-swatch {
+  background: repeating-linear-gradient(90deg, var(--s-lock) 0 5px, transparent 5px 8px);
+}
+.lead-value {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.lead-value .num {
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.lead-card[data-policy="ryke"] .lead-value .num {
+  color: var(--run-text);
+}
+.lead-unit {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.lead-sub {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 28px;
-  margin: 0 0 18px;
+  gap: 4px 12px;
+  font-size: 12.5px;
 }
-.lead-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  color: var(--muted);
-}
-.lead-num {
-  font-size: 20px;
-  color: var(--muted);
-}
-.lead-item.ryke,
-.lead-item.ryke .lead-num {
-  color: var(--ink);
+.lead-ratio {
+  color: var(--run-text);
   font-weight: 600;
 }
-.lead-item.ryke .lead-num {
-  font-size: 30px;
-}
+
+/* ------------------------------------------------------------------ charts */
 
 .bench-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 28px 40px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
 }
 .bench-side {
   display: grid;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
 }
 .bench-fig {
   margin: 0;
-  min-width: 0;
 }
-.bench-fig figcaption {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 10px;
-  padding-bottom: 6px;
-  border-bottom: var(--hair) solid var(--rule);
-  margin-bottom: 6px;
+.bench-fig .card-head {
+  align-items: flex-start;
+  justify-content: space-between;
 }
-.fig-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-}
-.bench-fig figcaption .muted {
+.fig-note {
+  margin-top: 1px;
   font-size: 12px;
 }
-
+.fig-body {
+  padding: 8px 14px 12px 6px;
+}
+.line-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.line-key li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .chart {
   width: 100%;
 }
@@ -138,71 +172,65 @@
   overflow: visible;
 }
 .chart .tick {
-  font: 10.5px var(--mono);
-  fill: var(--muted);
+  font: 11px var(--mono);
+  fill: var(--text-3);
 }
 .chart .tick.unit {
   font-family: var(--sans);
-  font-size: 11px;
 }
 .chart .grid {
-  stroke: var(--ink);
-  stroke-opacity: 0.13;
-  stroke-width: 1;
+  stroke: var(--border);
 }
 .chart .axis {
-  stroke: var(--ink);
-  stroke-width: 1;
+  stroke: var(--border-strong);
 }
 .chart .m-ryke {
-  fill: var(--ink);
-  stroke: var(--paper);
+  fill: var(--s-ryke);
+  stroke: var(--surface);
   stroke-width: 2;
 }
 .chart .m-base {
-  fill: var(--paper);
-  stroke: var(--muted);
+  fill: var(--surface);
+  stroke: var(--text-3);
   stroke-width: 1.5;
 }
 .chart .hit {
   fill: transparent;
 }
 .chart .leader {
-  stroke: var(--muted);
-  stroke-width: 1;
-}
-.chart .end.ryke .leader {
-  stroke: var(--ink);
+  stroke: var(--border-strong);
 }
 .chart .end text {
   font: 12px var(--sans);
-  fill: var(--muted);
+  fill: var(--text-2);
 }
 .chart .end .end-value {
-  font: 11px var(--mono);
+  font: 11.5px var(--mono);
+}
+.chart .end.ryke .leader {
+  stroke: var(--s-ryke);
 }
 .chart .end.ryke text {
-  fill: var(--ink);
+  fill: var(--run-text);
   font-weight: 600;
 }
 .chart .bar-total {
-  font: 9.5px var(--mono);
-  fill: var(--muted);
+  font: 10px var(--mono);
+  fill: var(--text-3);
 }
 .chart .bar-total.ryke {
-  fill: var(--ink);
+  fill: var(--text);
   font-weight: 600;
 }
-
 .cause-key {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 14px;
-  list-style: none;
-  margin: 2px 0 0 44px;
+  gap: 4px 14px;
+  margin: 4px 0 0 44px;
   padding: 0;
+  list-style: none;
+  color: var(--text-2);
   font-size: 12px;
-  color: var(--muted);
 }
 .cause-key li {
   display: inline-flex;
@@ -210,63 +238,78 @@
   gap: 6px;
 }
 .cause-key svg {
-  border: var(--hair) solid var(--rule);
+  border-radius: 2px;
+  outline: 1px solid var(--border-strong);
 }
 
-.bench-table {
-  margin-top: 34px;
-}
+/* ------------------------------------------------------------------ table */
+
 .table-wrap {
   overflow-x: auto;
 }
 .bench-table table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 .bench-table th {
-  padding: 6px 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 500;
   text-align: right;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  border-bottom: var(--hair) solid var(--rule);
 }
 .bench-table td {
-  padding: 5px 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   text-align: right;
-  border-bottom: var(--hair) solid color-mix(in srgb, var(--rule) 16%, transparent);
+  font-variant-numeric: tabular-nums;
 }
 .bench-table th.l,
 .bench-table td.l {
   text-align: left;
 }
-.bench-table td.aborts {
-  min-width: 220px;
-  color: var(--muted);
+.bench-table tbody tr:hover td {
+  background: var(--surface-2);
 }
-.bench-table tr.group td {
-  border-top: var(--hair) solid var(--rule);
+.bench-table tr.ryke td {
+  background: color-mix(in srgb, var(--run-soft) 55%, transparent);
 }
-.bench-table tr.ryke td:first-child {
+.bench-table tr.ryke .policy {
+  color: var(--text);
   font-weight: 600;
 }
+.bench-table tr.group td {
+  border-top: 1px solid var(--border-strong);
+}
+.bench-table td.strong {
+  font-weight: 600;
+}
+.bench-table td.aborts {
+  min-width: 220px;
+  color: var(--text-3);
+}
+.bench-table td.ok {
+  color: var(--go-text);
+}
 .bench-table .foot {
-  margin: 10px 0 0;
+  padding: 10px 16px 12px;
   font-size: 12px;
 }
 
 @media (max-width: 959px) {
   .bench {
-    padding: 16px 16px 48px;
+    padding: 14px 12px 40px;
+    gap: 12px;
   }
+  .bench-lead,
   .bench-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .cause-key {
-    margin-left: 0;
+    margin-left: 8px;
   }
 }
