@@ -63,11 +63,21 @@ host processes, which isolate nothing. The Worker, the Ledger, the workflows and
 
 ## Bench
 
-The measured run is pending; results land in [bench/results/latest.md](bench/results/latest.md).
+Landed changes per minute, 120 s per cell on one 4-vCPU VM, zero trunk breakages in every cell
+(`npm run bench -- --agents 10,50,100,200 --policy lock,queue,ryke --duration 120`):
 
-The bench agents are synthetic: real git, real merges, real tests, scripted edits. Full numbers,
-caveats and the ASCII chart: [bench/results/latest.md](bench/results/latest.md); the dashboard's
-`#/bench` view renders the same JSON.
+| agents | lock (global mutex) | queue (merge queue) | ryke |
+| ------ | ------------------- | ------------------- | ---- |
+| 10     | 7                   | 25.5                | 22   |
+| 50     | 5.5                 | 24                  | 58   |
+| 100    | 5.5                 | 19                  | 68   |
+| 200    | 6.5                 | 24.5                | 38.5 |
+
+The bench agents are synthetic: real git, real merges, real tests, scripted edits, about 10 % of
+read-overlapping pairs semantically incompatible. At 10 agents the merge queue is faster. At 200,
+Ryke's throughput falls: one train lands at a time, and 464 of its 466 stale aborts hit changes that
+were already waiting for a train when trunk moved under them. Full numbers, caveats and the chart:
+[bench/results/latest.md](bench/results/latest.md); the dashboard's `#/bench` view renders the same JSON.
 
 ## Commands
 
