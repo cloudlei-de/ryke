@@ -670,22 +670,24 @@ describe("screenIntent", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("answers 'not sure' when there is no recording: it warns about both, rejects nothing, and logs the miss", async () => {
+  it("warns about nothing and rejects nothing when there is no recording, and logs the miss", async () => {
     const live = [{ id: "t_1", intent: "Add a speed gauge to the dashboard header", footprint: ["src/ui/header.ts"] }];
-    const screen = await screenIntent(env, "Add a speed chart to the dashboard header", live);
-    expect(screen.reject).toBeUndefined();
-    expect(screen.warnings).toEqual([
-      { kind: "duplicate", other: "t_1", intent: live[0]!.intent, footprint: ["src/ui/header.ts"], value: 0.5 },
-      { kind: "conflict", other: "t_1", intent: live[0]!.intent, footprint: ["src/ui/header.ts"], score: 1, confidence: 0 },
-    ]);
+    expect(topSimilar("Add a speed chart to the dashboard header", live)).toHaveLength(1);
+    expect(await screenIntent(env, "Add a speed chart to the dashboard header", live)).toEqual({ warnings: [] });
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("with the judge off, still lets the agents coordinate on every similar intent and rejects nothing", async () => {
-    const screen = await run("screen-duplicate", { ...env, RYKE_JEV: "off" });
-    expect(screen.reject).toBeUndefined();
-    expect(screen.warnings.map((w) => w.kind)).toEqual(["duplicate", "conflict"]);
+  it("with the judge off, warns about nothing and rejects nothing, even for a recorded duplicate", async () => {
+    expect((await run("screen-duplicate")).reject).toBeDefined();
+    expect(await run("screen-duplicate", { ...env, RYKE_JEV: "off" })).toEqual({ warnings: [] });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns about nothing when the live API fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ error: "refused" }), { status: 401, headers: { "content-type": "application/json" } }));
+    const screen = await run("screen-duplicate", { ...env, RYKE_JEV: "live", TYPESAFE_API_KEY: "k" });
+    expect(screen).toEqual({ warnings: [] });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

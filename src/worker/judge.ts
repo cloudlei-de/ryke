@@ -81,7 +81,10 @@ export async function screenIntent(env: Env, intent: string, live: { id: string;
   const candidates = topSimilar(intent, live);
   if (candidates.length === 0) return { warnings: [] };
   const { state, questions } = screenQuestions(intent, candidates);
-  const { answers } = await ask(env, state, questions);
+  const { answers, source } = await ask(env, state, questions);
+  // A neutral answer (judge off, no recording, API down) judged nothing. Read through the §7.3 table it
+  // would warn about every similar intent, and agents would learn to ignore warnings.
+  if (source === "off" || source === "neutral") return { warnings: [] };
   const warnings: Warning[] = [];
   let reject: Screen["reject"];
   candidates.forEach((c, i) => {

@@ -311,10 +311,11 @@ describe("ryke_begin", () => {
   it("returns the judge's warnings about similar work in flight", async () => {
     const t = await newRepo();
     const c = await McpClient.connect();
-    const first = await okCall(c, "ryke_begin", { repo: t.name, agent: "a1", intent: "add a velocity converter to the tiles page" });
-    const second = await okCall(c, "ryke_begin", { repo: t.name, agent: "a2", intent: "add a velocity converter to the home page" });
+    // The recorded `screen-conflict` request (test/fixtures/jev), replayed through MCP.
+    const first = await okCall(c, "ryke_begin", { repo: t.name, agent: "a1", intent: "Show Kelvin first in the temperature units" });
+    const second = await okCall(c, "ryke_begin", { repo: t.name, agent: "a2", intent: "Remove Kelvin from temperature and keep only Celsius and Fahrenheit" });
     expect(second.state).toBe("open");
-    expect(second.warnings.length).toBeGreaterThan(0);
+    expect(second.warnings.map((w: { kind: string }) => w.kind)).toContain("conflict");
     for (const w of second.warnings) expect(w).toMatchObject({ other: first.txn });
   });
 

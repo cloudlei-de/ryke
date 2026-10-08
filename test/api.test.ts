@@ -908,14 +908,14 @@ describe("POST /api/repos/:repo/txns", () => {
   });
 
   it("returns the judge's warnings about similar work already in flight", async () => {
-    // The judge answers "unsure" in tests (no recorded fixture for these texts), which still warns.
+    // The recorded `screen-conflict` request (test/fixtures/jev): same intents, so the same judged answer.
     const t = await newRepo();
-    const first = await apiBegin(t.name, "agent-1", "add a velocity converter to the tiles page");
-    const second = await post(`/api/repos/${t.name}/txns`, { agent: "agent-2", intent: "add a velocity converter to the home page" });
+    const first = await apiBegin(t.name, "agent-1", "Show Kelvin first in the temperature units");
+    const second = await post(`/api/repos/${t.name}/txns`, { agent: "agent-2", intent: "Remove Kelvin from temperature and keep only Celsius and Fahrenheit" });
     expect(second.status).toBe(201);
     expect(second.body.state).toBe("open");
-    expect(second.body.warnings.length).toBeGreaterThan(0);
-    for (const w of second.body.warnings) expect(w).toMatchObject({ other: first.txn, intent: "add a velocity converter to the tiles page" });
+    expect(second.body.warnings.map((w: Json) => w.kind)).toContain("conflict");
+    for (const w of second.body.warnings) expect(w).toMatchObject({ other: first.txn, intent: "Show Kelvin first in the temperature units" });
     const kinds = (await opsOf(t)).filter((o) => o.txn === second.body.txn).map((o) => o.kind);
     for (const w of second.body.warnings) expect(kinds).toContain(w.kind === "duplicate" ? "dup.warning" : "conflict.warning");
   });
