@@ -36,15 +36,18 @@ index c88e61e..e60c30b 100644
  function renderConverter(category: Category): string {
 diff --git a/src/ui/favorites.ts b/src/ui/favorites.ts
 new file mode 100644
-index 0000000..e5295d0
+index 0000000..8240d7f
 --- /dev/null
 +++ b/src/ui/favorites.ts
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,42 @@
 +// Favourites live in localStorage so the server stays stateless; the script restores them after load.
 +export function favoriteButton(id: string): string {
 +  return `<button class="fav" type="button" data-fav="${id}" aria-pressed="false" aria-label="Favourite ${id}">☆</button>`;
 +}
 +
++// The script reads the served tile order once, before it moves anything, and lays every tile out from that list on
++// each change; reordering the page as it stands would carry the order of earlier clicks into the next layout.
++// The stored value can be anything (a hand edit, an older script), so only a list of ids counts as saved.
 +export const favoritesScript = `<style>
 +.fav { position: absolute; top: 8px; right: 8px; padding: 2px 8px; border: 0; background: transparent; font-size: 18px; color: var(--muted); }
 +.fav[aria-pressed="true"] { color: var(--accent); }
@@ -54,16 +57,21 @@ index 0000000..e5295d0
 +  var KEY = "convert:favorites";
 +  var saved = [];
 +  try { saved = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) {}
++  saved = Array.isArray(saved) ? saved.filter(function (id) { return typeof id === "string"; }) : [];
 +  var tiles = document.querySelector(".tiles");
++  var stars = Array.from(document.querySelectorAll(".fav"));
++  function starred(btn) { return saved.indexOf(btn.dataset.fav) !== -1; }
 +  function sync() {
-+    document.querySelectorAll(".fav").forEach(function (btn) {
-+      var on = saved.indexOf(btn.dataset.fav) !== -1;
++    stars.forEach(function (btn) {
++      var on = starred(btn);
 +      btn.setAttribute("aria-pressed", String(on));
 +      btn.textContent = on ? "★" : "☆";
-+      if (on) tiles.prepend(btn.closest(".tile"));
++    });
++    stars.filter(starred).concat(stars.filter(function (btn) { return !starred(btn); })).forEach(function (btn) {
++      tiles.append(btn.closest(".tile"));
 +    });
 +  }
-+  document.querySelectorAll(".fav").forEach(function (btn) {
++  stars.forEach(function (btn) {
 +    btn.addEventListener("click", function () {
 +      var i = saved.indexOf(btn.dataset.fav);
 +      if (i === -1) saved.push(btn.dataset.fav); else saved.splice(i, 1);
@@ -76,10 +84,10 @@ index 0000000..e5295d0
 +</script>`;
 diff --git a/test/favorites.test.ts b/test/favorites.test.ts
 new file mode 100644
-index 0000000..7ed8276
+index 0000000..e259d03
 --- /dev/null
 +++ b/test/favorites.test.ts
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,283 @@
 +import assert from "node:assert/strict";
 +import { test } from "node:test";
 +import vm from "node:vm";
@@ -156,7 +164,7 @@ index 0000000..7ed8276
 +  const sandbox: Record<string, unknown> = {
 +    document: {
 +      querySelector: (selector: string) =>
-+        selector === ".tiles" ? { prepend: (tile: Tile) => void (order = [tile, ...order.filter((t) => t !== tile)]) } : null,
++        selector === ".tiles" ? { append: (tile: Tile) => void (order = [...order.filter((t) => t !== tile), tile]) } : null,
 +      // A NodeList is a snapshot in document order, as this copy is.
 +      querySelectorAll: (selector: string) => (selector === ".fav" ? order.map((t) => t.star) : []),
 +    },
@@ -188,6 +196,11 @@ index 0000000..7ed8276
 +// What the page should show for a set of starred ids: those first, the others after them in the order served.
 +function others(starred: string[]): string[] {
 +  return served.filter((id) => !starred.includes(id));
++}
++
++// The same with the starred ones in the order served as well, whichever order they were starred in.
++function catalogueOrder(starred: string[]): string[] {
++  return [...served.filter((id) => starred.includes(id)), ...others(starred)];
 +}
 +
 +test("favoriteButton renders an unpressed star for the category id", () => {
@@ -300,6 +313,52 @@ index 0000000..7ed8276
 +  page.click("mass");
 +  assert.deepEqual(JSON.parse(storage.saved.get(KEY)!), ["mass"]);
 +  assert.equal(page.order()[0], "mass");
++});
++
++test("a saved value that is valid JSON but not a list of ids is ignored, and a list keeps only its ids", () => {
++  const cases: [string, string[]][] = [
++    ["null", []],
++    ["{}", []],
++    ['"mass"', []],
++    ['[1, "mass"]', ["mass"]],
++  ];
++  for (const [value, starred] of cases) {
++    const storage = memoryStorage({ [KEY]: value });
++    const page = loadHome(home, storage);
++    assert.deepEqual(page.pressed(), starred, `${value}: starred on load`);
++    assert.deepEqual(page.order(), catalogueOrder(starred), `${value}: order on load`);
++    page.click("length");
++    assert.deepEqual(JSON.parse(storage.saved.get(KEY)!), [...starred, "length"], `${value}: stored after starring`);
++    assert.deepEqual(page.order(), catalogueOrder([...starred, "length"]), `${value}: order after starring`);
++    page.click("length");
++    assert.deepEqual(JSON.parse(storage.saved.get(KEY)!), starred, `${value}: stored after unstarring`);
++    assert.deepEqual(page.order(), catalogueOrder(starred), `${value}: order after unstarring`);
++  }
++});
++
++test("starred tiles keep the catalogue order among themselves, and unstarred ones keep it after them", () => {
++  const trio = served.filter((id) => ["length", "mass", "temperature"].includes(id));
++  assert.deepEqual(trio, ["length", "mass", "temperature"], "the tiles this test starts are served in this order");
++  const storage = memoryStorage();
++  const page = loadHome(home, storage);
++  const starred: string[] = [];
++  // Each click starts from the order the one before left, and none of them stars the tiles in the order served.
++  for (const id of ["temperature", "length", "mass", "length", "temperature", "length"]) {
++    if (starred.includes(id)) starred.splice(starred.indexOf(id), 1);
++    else starred.push(id);
++    page.click(id);
++    assert.deepEqual(page.order(), catalogueOrder(starred), `after clicking ${id}, starred: ${starred.join(", ") || "none"}`);
++    assert.deepEqual(page.pressed(), served.filter((s) => starred.includes(s)), `after clicking ${id}, the pressed stars`);
++  }
++  assert.deepEqual(starred, ["mass", "length"], "the clicks leave mass starred before length, against the catalogue order");
++  assert.deepEqual(JSON.parse(storage.saved.get(KEY)!), ["mass", "length"]);
++  const next = loadHome(home, storage);
++  assert.deepEqual(next.order(), catalogueOrder(["length", "mass"]), "after a reload");
++  assert.deepEqual(next.pressed(), ["length", "mass"], "the pressed stars after a reload");
++  next.click("temperature");
++  assert.deepEqual(next.order(), catalogueOrder(["length", "mass", "temperature"]), "after one more click");
++  next.click("mass");
++  assert.deepEqual(next.order(), catalogueOrder(["length", "temperature"]), "after unstarring mass");
 +});
 +
 +test("starring still works when localStorage is blocked, it is just not remembered", () => {
