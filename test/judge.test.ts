@@ -23,7 +23,7 @@ import {
 } from "../src/shared/judge-questions";
 import { DEFAULT_POLICY } from "../src/shared/policy";
 import type { Policy } from "../src/shared/types";
-import { ask, evidenceGate, fixtureKey, jevMode, neutral, screenIntent, stable } from "../src/worker/judge";
+import { ask, evidenceGate, fixtureKey, GATE_TIMEOUT_MS, jevMode, neutral, SCREEN_TIMEOUT_MS, screenIntent, stable } from "../src/worker/judge";
 import { topSimilar } from "../src/worker/ledger/similar";
 import requestsJson from "./fixtures/jev/requests.json";
 
@@ -598,6 +598,40 @@ describe("ask", () => {
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]![0])).toContain("jev live call failed");
     });
+
+    // A fetch that answers after `ms` unless the SDK aborts it first, the way a slow API behaves.
+    const slow = (ms: number, answers: unknown) =>
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        (_url, init) =>
+          new Promise<Response>((resolve, reject) => {
+            const t = setTimeout(() => resolve(json(200, { model: MODEL, answers, usage: {} })), ms);
+            (init as RequestInit | undefined)?.signal?.addEventListener("abort", () => {
+              clearTimeout(t);
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+
+    it.each([
+      ["waits for a slow answer within its timeout", 150, 1000, "live"],
+      ["answers neutral once every attempt timed out", 150, 40, "neutral"],
+    ])("%s", async (_name, delay, timeout, source) => {
+      const answers = { q: { type: "noul", noul: 0.8 } };
+      slow(delay, answers);
+      expect((await ask(live, unrecorded.state, unrecorded.questions, timeout)).source).toBe(source);
+    });
+
+    // The gate runs inside the Land workflow, so nobody waits on it; an API answering slower than begin
+    // screening's timeout must still be heard there instead of parking the change at needs_human.
+    it("gives the evidence gate time for an answer slower than begin screening allows", async () => {
+      const g = gate();
+      const { questions } = evidenceQuestions(g);
+      slow(SCREEN_TIMEOUT_MS + 300, Object.fromEntries(Object.keys(questions).map((q) => [q, yes(q === "scope_creep" ? 0.05 : 0.95)])));
+      const got = await evidenceGate(live, g, policy());
+      expect(got.decision).toBe("land");
+      expect(got.verdicts.every((v) => v.detail === "live")).toBe(true);
+      expect(GATE_TIMEOUT_MS).toBeGreaterThan(SCREEN_TIMEOUT_MS);
+    }, 20_000);
 
     it("never reads a fixture while live", async () => {
       const e = entry("screen-duplicate");

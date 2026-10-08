@@ -63,12 +63,18 @@ export function jevMode(env: Env): string {
   return env.RYKE_JEV === "auto" ? (env.TYPESAFE_API_KEY ? "live" : "off") : env.RYKE_JEV;
 }
 
-export async function ask(env: Env, state: Record<string, unknown>, questions: Questions): Promise<Asked> {
+// Per attempt; the SDK retries a timeout twice. Begin screening keeps an agent waiting, the evidence
+// gate runs in the Land workflow and would otherwise park a good change at needs_human whenever the
+// API is merely slow (on 2026-10-08 a whole swarm's gate calls timed out at 3 s).
+export const SCREEN_TIMEOUT_MS = 3000;
+export const GATE_TIMEOUT_MS = 15_000;
+
+export async function ask(env: Env, state: Record<string, unknown>, questions: Questions, timeout = SCREEN_TIMEOUT_MS): Promise<Asked> {
   const mode = jevMode(env);
   if (mode === "off") return { answers: neutral(questions), source: "off" };
   if (mode === "live" && env.TYPESAFE_API_KEY) {
     try {
-      const client = new TypeSafeClient({ apiKey: env.TYPESAFE_API_KEY, defaultModel: MODEL, timeout: 3000 });
+      const client = new TypeSafeClient({ apiKey: env.TYPESAFE_API_KEY, defaultModel: MODEL, timeout });
       const res = await client.systemOne({ model: MODEL, state: state as never, questions });
       return { answers: res.answers as unknown as Record<string, Answer>, source: "live" };
     } catch (e) {
@@ -117,6 +123,6 @@ export async function evidenceGate(env: Env, g: GateInput, policy: Policy): Prom
     };
   }
   const { state, questions } = evidenceQuestions(g);
-  const { answers, source } = await ask(env, state, questions);
+  const { answers, source } = await ask(env, state, questions, GATE_TIMEOUT_MS);
   return gateDecision(g, policy, answers, questions, source);
 }

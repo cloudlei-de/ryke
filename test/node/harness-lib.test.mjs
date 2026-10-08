@@ -645,6 +645,22 @@ describe("report from synthetic logs", () => {
     assert.match(formatReport(r), /transactions   0   none/);
   });
 
+  for (const [name, details, judge, line] of [
+    ["none neutral", ["live", "live", "recorded"], { verdicts: 3, neutral: 0 }, null],
+    ["some neutral: Jev did not answer", ["live", "neutral", "neutral"], { verdicts: 3, neutral: 2 }, "judge          2 of 3 verdicts neutral: Jev did not answer, so those changes went to a human"],
+    ["no verdicts", [], { verdicts: 0, neutral: 0 }, null],
+  ]) {
+    it(`counts the judge's neutral verdicts: ${name}`, () => {
+      const { ops, add } = opLog();
+      for (const [i, detail] of details.entries()) add("judge.verdict", `t_${i}`, { attempt: 1, question: "criterion_1", value: 0.5, confidence: null, detail });
+      const r = buildReport({ ops, tasks: gTasks });
+      assert.deepEqual(r.judge, judge);
+      const text = formatReport(r);
+      if (line) assert.ok(text.includes(`${line}\n`), text);
+      else assert.ok(!text.includes("judge          "), text);
+    });
+  }
+
   it("follows a stale abort by t-precision through to the landed retry", () => {
     const { ops, add } = opLog();
     add("txn.open", P, { attempt: 1, intent: "P" });

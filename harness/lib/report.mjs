@@ -173,6 +173,12 @@ export function buildReport({ ops, summary = null, tasks = [], repo = summary?.r
     landedPerMinuteBuckets: perMinute,
     aborts: abortsByCause(sorted),
     trains: trainStats(sorted),
+    // A verdict whose detail is "neutral" is one Jev did not give (an outage or a timeout): it parks the
+    // change at needs_human, which otherwise looks like the gate doubting the change.
+    judge: {
+      verdicts: sorted.filter((o) => o.kind === "judge.verdict").length,
+      neutral: sorted.filter((o) => o.kind === "judge.verdict" && o.data?.detail === "neutral").length,
+    },
     precision: precisionStats(folded, precisionTxn),
     trunk: null,
     preview: null,
@@ -315,6 +321,7 @@ export function formatReport(report) {
   const spec = report.trains.speculative;
   const pipelined = spec.formed > 0 ? `; ${spec.formed} speculative: ${spec.confirmed} confirmed, ${spec.discarded} discarded` : "";
   line(`trains         ${report.trains.formed} formed (count x size: ${sizes || "none"}), largest ${report.trains.max}, ${report.trains.bisected} bisected${pipelined}`);
+  if (report.judge?.neutral > 0) line(`judge          ${report.judge.neutral} of ${report.judge.verdicts} verdicts neutral: Jev did not answer, so those changes went to a human`);
   if (report.precision) line(`t-precision    ${report.precision.txn}: ${report.precision.staleAborts} stale aborts caused, ${report.precision.landedAfterRetry} landed after the retry`);
   for (const g of ["G3", "G4", "G5", "G6"]) {
     const rows = report.outcomes.filter((o) => o.group === g);
