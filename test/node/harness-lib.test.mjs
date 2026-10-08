@@ -1,6 +1,7 @@
 // The pure helpers behind the swarm and the CLI: queue order, think time, patch variant choice, the
 // end-of-run report, lease patience, argument parsing. No stack needed; test/node/swarm.test.mjs runs the real thing.
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttp } from "node:http";
@@ -9,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { admit, describeWarnings, LEASE_PATIENCE_MS } from "../../harness/agents/scripted.mjs";
+import { promisify } from "node:util";
+import { admit, describeWarnings, LEASE_PATIENCE_MS, runTask } from "../../harness/agents/scripted.mjs";
 import { ApiError } from "../../harness/lib/client.mjs";
 import { buildReport, checkPreview, evaluateCriteria, foldTxns, formatReport, landedCategories } from "../../harness/lib/report.mjs";
 import {
@@ -272,11 +274,78 @@ describe("which patch to try", () => {
     ["v2 fails, v1 does not apply", withV2, ["v2"], [v("v2", true, false), v("v1", false, false)], { abort: "local_tests_fail" }],
     ["a retry after v1 starts with v1", withV2, ["v1"], [], { variant: "v1" }],
     ["the last submission decides", withV2, ["v1", "v2"], [], { variant: "v2" }],
+    ["after falling back to v1, the next retry starts with v1", withV2, ["v2", "v1"], [], { variant: "v1" }],
+    ["v2 does not apply any more: v1", withV2, ["v2"], [v("v2", false, false)], { variant: "v1" }],
+    ["v2 fails, v1 works", withV2, ["v2"], [v("v2", true, false), v("v1", true, true)], { done: true, variant: "v1" }],
+    ["v2 and v1 both fail their tests", withV2, ["v2"], [v("v2", true, false), v("v1", true, false)], { abort: "local_tests_fail" }],
     ["a task without v2 stays on v1", without, ["v1"], [v("v1", true, false)], { abort: "local_tests_fail" }],
   ];
   for (const [name, t, submitted, tried, expected] of retries) {
     it(name, () => assert.deepEqual(nextVariant(t, tried, submitted), expected));
   }
+});
+
+describe("the scripted agent's retry (PLAN.md section 10.4)", () => {
+  const git = (cwd, ...argv) => promisify(execFile)("git", argv, { cwd }).then((r) => r.stdout.trim());
+
+  // One file, two patches that both apply to the base; only v2 passes the (injected) local tests, the
+  // way only a category's v2 passes once t-precision is on trunk. The fake Ledger answers the first
+  // submit with stale and the second with landed.
+  async function setup() {
+    const root = await mkdtemp(join(tmp, "retry-"));
+    const work = join(root, "work");
+    await mkdir(work);
+    await git(work, "init", "-q", "-b", "main");
+    await writeFile(join(work, "a.txt"), "base\n");
+    await git(work, "add", "-A");
+    await git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base");
+    const base = await git(work, "rev-parse", "HEAD");
+    const patch = async (name, text) => {
+      await writeFile(join(work, "a.txt"), `${text}\n`);
+      await writeFile(join(root, name), `${await git(work, "diff")}\n`);
+      await git(work, "checkout", "-q", "--", "a.txt");
+    };
+    await patch("x.patch", "v1");
+    await patch("x.v2.patch", "v2");
+    const fork = join(root, "fork.git");
+    await git(root, "clone", "-q", "--bare", work, fork);
+    // The trunk the retry moves onto: base plus somebody else's change to another file.
+    await writeFile(join(work, "b.txt"), "other\n");
+    await git(work, "add", "-A");
+    await git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "other");
+    const trunk = join(root, "trunk.git");
+    await git(root, "clone", "-q", "--bare", work, trunk);
+
+    const submits = [];
+    const api = {
+      begin: async () => ({ txn: "t_x", state: "open", snapshot: base, remote: fork, token: "tok", warnings: [], policy: { union: [], verify: "true", verifyTimeoutSeconds: 10 } }),
+      reads: async () => ({ recorded: 1, staleWarnings: [] }),
+      submit: async (_txn, body) => {
+        submits.push(body);
+        return submits.length === 1 ? { state: "stale", reason: "stale_read", paths: [{ path: "a.txt", by: "t_other" }] } : { state: "ready" };
+      },
+      wait: async () => ({ txn: { state: "landed", landedSeq: 2, train: "tr_1" } }),
+      retry: async () => ({ attempt: 2, snapshot: "main", delta: [{ path: "a.txt" }], remote: fork, token: "tok", trunk: { remote: trunk, token: "tok" } }),
+      abort: async () => ({ state: "aborted" }),
+    };
+    const verified = [];
+    const verify = async (dir) => {
+      const content = (await readFile(join(dir, "a.txt"), "utf8")).trim();
+      verified.push(content);
+      return { pass: content === "v2", ms: 1, failing: content === "v2" ? [] : ["a.txt is v2"] };
+    };
+    const task = { id: "x", group: "G1", intent: "x", criteria: [], reads: [], writes: ["a.txt"], solution: "x.patch", v2: "x.v2.patch" };
+    return { root, api, verify, verified, submits, task };
+  }
+
+  it("re-applies the variant it submitted last instead of starting over at v1", async () => {
+    const { root, api, verify, verified, submits, task } = await setup();
+    const lines = [];
+    const r = await runTask({ api, repo: "r", task, dir: root, worker: "agent-01", rng: makeRng(1), speed: 1000, log: (_a, l) => lines.push(l), verify });
+    assert.deepEqual([r.outcome, r.attempts, r.variants], ["landed", 2, ["v2", "v2"]]);
+    assert.deepEqual(verified, ["v1", "v2", "v2"], lines.join("\n"));
+    assert.equal(submits.length, 2);
+  });
 });
 
 describe("lease patience (PLAN.md section 7.2)", () => {
