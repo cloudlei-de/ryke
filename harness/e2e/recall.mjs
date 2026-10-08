@@ -12,7 +12,9 @@ import { client, waitWhile } from "../lib/client.mjs";
 import { Workspace } from "../lib/gitops.mjs";
 
 const run = promisify(execFile);
-process.env.RYKE_JEV = process.env.RYKE_JEV ?? "off";
+// Deterministic like e2e:land: with live Jev an uncertain criterion can park a G6 change at
+// needs_human (correct gate behaviour, but then there is nothing landed to recall).
+process.env.RYKE_JEV = "off";
 const log = (line) => console.log(`e2e:recall  ${line}`);
 
 const offset = Number(process.env.RYKE_PORT_OFFSET ?? 0);
@@ -27,10 +29,14 @@ try {
   log("1. scripted swarm (12 agents, speed 4)");
   const swarm = spawn(process.execPath, [join(ROOT, "harness/swarm.mjs"), "--mode", "scripted", "--agents", "12", "--fresh", "--speed", "4", "--repo", repo], {
     env: { ...process.env, RYKE_API_URL: stack.apiUrl, RYKE_TOKEN: stack.token },
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "pipe", "inherit"],
   });
+  let swarmLog = "";
+  swarm.stdout.on("data", (b) => (swarmLog += b));
   const code = await new Promise((r) => swarm.once("exit", r));
-  assert.equal(code, 0, "swarm exited non-zero");
+  const report = swarmLog.slice(swarmLog.lastIndexOf("Swarm report:"));
+  log(`   ${report.split("\n").slice(0, 3).join("\n   ")}`);
+  assert.equal(code, 0, `swarm exited non-zero:\n${report}`);
 
   const ops = [];
   for (let after = 0; ; ) {
@@ -40,7 +46,7 @@ try {
     after = page.last;
   }
   const landedSloppy = [...new Set(ops.filter((o) => o.kind === "txn.landed" && ops.some((x) => x.kind === "txn.open" && x.txn === o.txn && x.data.model === "sloppy-v0")).map((o) => o.txn))];
-  assert.equal(landedSloppy.length, 2, `expected both G6 transactions landed, got ${landedSloppy.length}`);
+  assert.equal(landedSloppy.length, 2, `expected both G6 transactions landed, got ${landedSloppy.length}\n${report}`);
   log(`   G6 landed: ${landedSloppy.join(", ")}`);
 
   const plan = await api.recall(repo, { model: "sloppy-v0" }, true);
