@@ -1,8 +1,8 @@
 # Progress
 
-Current: 2026-10-08 09:58 CEST (07:58 UTC). All milestones accepted; §14 quickstart re-verified from a
-fresh clone at 016c31e (3.6 min, 36 landed). Review of the M3 margin commits done (nothing blocking;
-its test findings fixed). Next: the PR.
+Current: 2026-10-08 10:06 CEST (08:06 UTC). Definition of done (§14) met: all milestones accepted,
+quickstart verified from a fresh clone, bench and screenshots committed, PR open:
+https://github.com/cloudlei-de/ryke/pull/1
 
 | Milestone | State | Verifier evidence (commit) |
 |---|---|---|
@@ -15,7 +15,7 @@ its test findings fixed). Next: the PR.
 | M6 Recall | ACCEPTED | `npm run e2e:recall` (35f5d87): both G6 targets recalled, cascade 1 re-queued and landed at seq 40, 3 dependents revalidated, trunk green |
 | M7 Bench | ACCEPTED (lead check of committed results) | bench/results/latest.md (485c763): ryke 58/68/38.5 vs queue 24/19/24.5 vs lock 5.5/5.5/6.5 at 50/100/200; queue wins at 10; 0 breakages in all 12 cells |
 | M8 Claude mode | ACCEPTED | `npm run e2e:claude` (35f5d87): 7 landed, tamper rejected protected, 5 categories landed on retry, trunk 207 tests; BLOCKERS has the real smoke command |
-| M9 Production + docs | ACCEPTED (PR open next) | e2e:deploy PASS with `--containers-rollout=none` (image build blocked, BLOCKERS); wrangler production env complete; how-it-works 1500 prose words with §4.3 example and one diagram; deploy.md token list identical to PLAN; README sections present; §14 quickstart from a fresh clone at 016c31e (verifier): README steps as written, clone to swarm exit 3.6 min, 36 landed, all six M3 criteria PASS, dashboard 200 |
+| M9 Production + docs | ACCEPTED, PR open (cloudlei-de/ryke#1) | e2e:deploy PASS with `--containers-rollout=none` (image build blocked, BLOCKERS); wrangler production env complete; how-it-works 1500 prose words with §4.3 example and one diagram; deploy.md token list identical to PLAN; README sections present; §14 quickstart from a fresh clone at 016c31e (verifier): README steps as written, clone to swarm exit 3.6 min, 36 landed, all six M3 criteria PASS, dashboard 200 |
 
 ## How things fit (for after compaction)
 - Worker: `src/worker/index.ts` → api.ts (Hono, /api), mcp.ts (/mcp), /internal/events. service.ts shared by both.
@@ -30,8 +30,7 @@ its test findings fixed). Next: the PR.
 - dev/stack.mjs = startStack({offset}) used by dev/all.mjs and e2e scripts.
 
 ## Next
-1. Open the PR feat/ryke-mvp → main (§0.2) with the Verified list of what actually ran.
-2. Then only fixes for review or CI findings until the code freeze (2026-10-12 23:59 CEST).
+1. Only fixes for review findings on cloudlei-de/ryke#1 until the code freeze (2026-10-12 23:59 CEST).
 
 ## Known issues
 - The scripted-swarm contention comparison (e2e:contention) is weak evidence: the catalogue never has two
