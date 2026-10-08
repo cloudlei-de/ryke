@@ -1,0 +1,366 @@
+{
+  "generatedAt": "2026-10-08T12:25:44.711Z",
+  "params": {
+    "mode": "scripted",
+    "agents": 12,
+    "speed": 4,
+    "seed": 42,
+    "jev": "off"
+  },
+  "off": {
+    "staleAborts": 32,
+    "hotStaleAborts": 25,
+    "hotStaleAbortsInclusive": 27,
+    "hotByPath": {
+      "src/format.ts": 7,
+      "src/ui/layout.ts": 18
+    },
+    "leaseGrants": 0,
+    "leaseWaitOps": 0,
+    "leaseWaits": 0,
+    "landed": 37,
+    "wallMs": 176459,
+    "landedPerMinute": 12.580826140916587,
+    "trunkGreen": true,
+    "trunk": {
+      "pass": true,
+      "head": "a42cd230ca3fd7639d66545f2c4ae42a5585ed1e",
+      "tests": 735
+    },
+    "aborts": {
+      "stale_read": 32,
+      "text_conflict": 0,
+      "failed_verify": 0,
+      "duplicate": 0,
+      "protected": 1,
+      "max_attempts": 0,
+      "agent": {
+        "patch_does_not_apply": 1,
+        "local_tests_fail": 1
+      },
+      "other": {}
+    },
+    "ops": 490
+  },
+  "on": {
+    "staleAborts": 34,
+    "hotStaleAborts": 27,
+    "hotStaleAbortsInclusive": 29,
+    "hotByPath": {
+      "src/format.ts": 8,
+      "src/ui/layout.ts": 19
+    },
+    "leaseGrants": 279,
+    "leaseWaitOps": 0,
+    "leaseWaits": 0,
+    "landed": 37,
+    "wallMs": 181448,
+    "landedPerMinute": 12.234910277324634,
+    "trunkGreen": true,
+    "trunk": {
+      "pass": true,
+      "head": "3abb263599bdfc775f1a21f12e38c29466a430f5",
+      "tests": 735
+    },
+    "aborts": {
+      "stale_read": 34,
+      "text_conflict": 0,
+      "failed_verify": 0,
+      "duplicate": 0,
+      "protected": 1,
+      "max_attempts": 0,
+      "agent": {
+        "patch_does_not_apply": 1,
+        "local_tests_fail": 1
+      },
+      "other": {}
+    },
+    "ops": 931
+  },
+  "bench": {
+    "params": {
+      "agents": 50,
+      "seconds": 120,
+      "graceSeconds": 20,
+      "seed": 7,
+      "timeFactor": 1,
+      "offset": 30,
+      "jev": "off",
+      "off": "ryke-nolease",
+      "on": "ryke"
+    },
+    "off": {
+      "policy": "ryke-nolease",
+      "agents": 50,
+      "landed": 110,
+      "landedPerMinute": 55,
+      "staleAborts": 218,
+      "hotStaleAborts": 185,
+      "leaseWaits": 0,
+      "leaseWaitSeconds": 0,
+      "leaseGrantOps": 0,
+      "leaseWaitingOps": 0,
+      "trunkBreakages": 0,
+      "errors": 0
+    },
+    "on": {
+      "policy": "ryke",
+      "agents": 50,
+      "landed": 129,
+      "landedPerMinute": 64.5,
+      "staleAborts": 111,
+      "hotStaleAborts": 86,
+      "leaseWaits": 27,
+      "leaseWaitSeconds": 1927,
+      "leaseGrantOps": 690,
+      "leaseWaitingOps": 585,
+      "trunkBreakages": 0,
+      "errors": 0
+    },
+    "error": null,
+    "raw": {
+      "cells": [
+        {
+          "policy": "ryke-nolease",
+          "agents": 50,
+          "landed": 110,
+          "landedPerMinute": 55,
+          "p50": 22.98,
+          "p95": 47.19,
+          "aborts": {
+            "stale_read": 218,
+            "failed_verify": 4,
+            "max_attempts": 44
+          },
+          "verifyRunsPerLanded": 0.35,
+          "wastedAgentSeconds": 1221.3,
+          "trunkBreakages": 0
+        },
+        {
+          "policy": "ryke",
+          "agents": 50,
+          "landed": 129,
+          "landedPerMinute": 64.5,
+          "p50": 17.45,
+          "p95": 43.04,
+          "aborts": {
+            "stale_read": 111,
+            "failed_verify": 1,
+            "max_attempts": 14
+          },
+          "verifyRunsPerLanded": 0.34,
+          "wastedAgentSeconds": 644.2,
+          "trunkBreakages": 0
+        }
+      ],
+      "details": [
+        {
+          "policy": "ryke-nolease",
+          "agents": 50,
+          "landedInGrace": 12,
+          "abandoned": 28,
+          "started": 204,
+          "attemptsPerLanded": 3.02,
+          "notLandedAttempts": 222,
+          "verifyRuns": 38,
+          "wallSeconds": 144.9,
+          "trunkCommits": 126,
+          "checkedCommits": 11,
+          "failedChecks": [],
+          "problems": [],
+          "incompatibility": {
+            "plans": 204,
+            "overlapping": 17751,
+            "incompatible": 1606,
+            "rate": 0.0905
+          },
+          "refreshes": 268,
+          "refreshedAttempts": 184,
+          "lostThinkSeconds": 651.7,
+          "leaseWaits": 0,
+          "leaseWaitSeconds": 0,
+          "leaseGaveUp": 0,
+          "errors": 0,
+          "errorSamples": [],
+          "meanVerifySeconds": null,
+          "conflictPaths": {},
+          "failingTests": {},
+          "loopLagMs": {
+            "p50": 20.5,
+            "p99": 74.3,
+            "max": 250
+          },
+          "agentCpuSeconds": 39.6,
+          "loadAverage1m": 8.18,
+          "ledger": {
+            "quiet": true,
+            "head": "fffc0d2b8c338ccdc7dd5a81408285e22be98cec",
+            "seq": 125
+          },
+          "ryke": {
+            "trains": 35,
+            "trainSizes": {
+              "1": 15,
+              "2": 3,
+              "3": 4,
+              "4": 2,
+              "5": 1,
+              "6": 3,
+              "8": 7
+            },
+            "meanTrainSize": 3.43,
+            "maxTrainSize": 8,
+            "bisectProbes": 5,
+            "speculative": {
+              "formed": 29,
+              "confirmed": 26,
+              "discarded": 2
+            },
+            "staleWarnings": 268,
+            "staleAborts": 218,
+            "hotStaleAborts": 185,
+            "staleWhileReady": 199,
+            "conflictAborts": 0,
+            "leaseGrantOps": 0,
+            "leaseWaitingOps": 0,
+            "stalePaths": {
+              "src/bench/pin-seed-layout.ts": 12,
+              "src/format.ts": 53,
+              "src/bench/pin-seed-format.ts": 52,
+              "src/units/length.ts": 6,
+              "src/ui/layout.ts": 2,
+              "src/units/temperature.ts": 8,
+              "src/units/mass.ts": 6,
+              "src/ui/html.ts": 10,
+              "src/index.ts": 9,
+              "src/bench/pin-b5x1b.ts": 16,
+              "src/ui/styles.ts": 3,
+              "src/types.ts": 3,
+              "src/units/b13x1a.ts": 3,
+              "src/bench/pin-b41x1a.ts": 17,
+              "src/bench/pin-b16x1a.ts": 11,
+              "src/units/b5x1a.ts": 1,
+              "src/bench/pin-b24x1c.ts": 5,
+              "src/units/b16x1b.ts": 1,
+              "src/bench/pin-b30x1a.ts": 9,
+              "src/bench/pin-b26x3c.ts": 8,
+              "src/bench/pin-b45x1a.ts": 8,
+              "src/bench/pin-b12x3b.ts": 9,
+              "src/bench/pin-b36x2b.ts": 7,
+              "src/bench/pin-b19x2a.ts": 6,
+              "src/bench/pin-b21x1b.ts": 10,
+              "src/bench/pin-b12x2b.ts": 2,
+              "src/bench/pin-b10x2a.ts": 1,
+              "src/bench/pin-b29x2a.ts": 1
+            },
+            "conflictPaths": {},
+            "trainCycleSecondsP50": 5.04,
+            "trainCycleSecondsP95": 8.35
+          }
+        },
+        {
+          "policy": "ryke",
+          "agents": 50,
+          "landedInGrace": 4,
+          "abandoned": 46,
+          "started": 193,
+          "attemptsPerLanded": 1.87,
+          "notLandedAttempts": 112,
+          "verifyRuns": 44,
+          "wallSeconds": 145.5,
+          "trunkCommits": 137,
+          "checkedCommits": 11,
+          "failedChecks": [],
+          "problems": [],
+          "incompatibility": {
+            "plans": 193,
+            "overlapping": 16109,
+            "incompatible": 1654,
+            "rate": 0.1027
+          },
+          "refreshes": 161,
+          "refreshedAttempts": 113,
+          "lostThinkSeconds": 416.9,
+          "leaseWaits": 27,
+          "leaseWaitSeconds": 1927,
+          "leaseGaveUp": 55,
+          "errors": 0,
+          "errorSamples": [],
+          "meanVerifySeconds": null,
+          "conflictPaths": {},
+          "failingTests": {},
+          "loopLagMs": {
+            "p50": 20.3,
+            "p99": 50.9,
+            "max": 1064.3
+          },
+          "agentCpuSeconds": 36.8,
+          "loadAverage1m": 5.79,
+          "ledger": {
+            "quiet": true,
+            "head": "ce21e568f6abdbf044c8fa0ff2401f8e0336aa17",
+            "seq": 136
+          },
+          "ryke": {
+            "trains": 45,
+            "trainSizes": {
+              "1": 15,
+              "2": 10,
+              "3": 4,
+              "4": 6,
+              "5": 1,
+              "6": 7,
+              "8": 2
+            },
+            "meanTrainSize": 2.98,
+            "maxTrainSize": 8,
+            "bisectProbes": 1,
+            "speculative": {
+              "formed": 40,
+              "confirmed": 38,
+              "discarded": 1
+            },
+            "staleWarnings": 412,
+            "staleAborts": 111,
+            "hotStaleAborts": 86,
+            "staleWhileReady": 92,
+            "conflictAborts": 0,
+            "leaseGrantOps": 690,
+            "leaseWaitingOps": 585,
+            "stalePaths": {
+              "src/bench/pin-seed-layout.ts": 15,
+              "src/bench/pin-seed-format.ts": 22,
+              "src/format.ts": 27,
+              "src/units/length.ts": 8,
+              "src/ui/layout.ts": 6,
+              "src/units/temperature.ts": 9,
+              "src/units/mass.ts": 3,
+              "src/ui/html.ts": 6,
+              "src/ui/styles.ts": 2,
+              "src/bench/pin-b24x1c.ts": 3,
+              "src/index.ts": 3,
+              "src/types.ts": 2,
+              "src/bench/pin-b5x1b.ts": 1,
+              "src/bench/pin-b41x1a.ts": 7,
+              "src/bench/pin-b40x1a.ts": 3,
+              "src/bench/pin-b16x1a.ts": 4,
+              "src/bench/pin-b24x1b.ts": 1,
+              "src/bench/pin-b44x1c.ts": 1,
+              "src/bench/pin-b13x2a.ts": 3,
+              "src/bench/pin-b1x2b.ts": 1,
+              "src/bench/pin-b47x1a.ts": 1,
+              "src/bench/pin-b10x4c.ts": 4
+            },
+            "conflictPaths": {},
+            "trainCycleSecondsP50": 4.29,
+            "trainCycleSecondsP95": 6.02
+          }
+        }
+      ]
+    }
+  },
+  "failures": [],
+  "caveats": [
+    "contention on never made a transaction wait for a lease (279 grants, 0 waits), so leases changed nothing in this run: the hot-file difference between the runs is timing alone, reported and never asserted, and the lease effect is the bench leg's"
+  ]
+}
