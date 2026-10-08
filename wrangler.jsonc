@@ -7,6 +7,37 @@
   "observability": { "enabled": true },
   "assets": {
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/preview/*", "/internal/*"]
+  },
+  "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }] },
+  "exports": { "Ledger": { "type": "durable-object", "storage": "sqlite" } },
+  "workflows": [{ "name": "ryke-land", "binding": "LAND", "class_name": "Land" }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  // Local stand-ins (PLAN.md §2); dev/all.mjs and the tests override the URLs per port offset.
+  "vars": {
+    "RYKE_STORE": "local",
+    "RYKE_RUNNER": "process",
+    "RYKE_JEV": "recorded",
+    "RYKE_NAMESPACE": "ryke",
+    "RYKE_STORE_URL": "http://127.0.0.1:8788",
+    "RYKE_RUNNER_URL": "http://127.0.0.1:8789",
+    "RYKE_SCREENSHOTS": "0"
+  },
+  "env": {
+    "production": {
+      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }] },
+      "workflows": [{ "name": "ryke-land", "binding": "LAND", "class_name": "Land" }],
+      "worker_loaders": [{ "binding": "LOADER" }],
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "ryke" }],
+      "vars": {
+        "RYKE_STORE": "artifacts",
+        "RYKE_RUNNER": "container",
+        "RYKE_JEV": "live",
+        "RYKE_NAMESPACE": "ryke",
+        "RYKE_STORE_URL": "",
+        "RYKE_RUNNER_URL": "",
+        "RYKE_SCREENSHOTS": "1"
+      }
+    }
   }
 }
