@@ -271,10 +271,18 @@ export async function runSwarm(opts, { log = console.log, runAgent: injected } =
   const [ops, summary] = await Promise.all([allOps(api, opts.repo, baseline), api.repo(opts.repo)]);
   const report = buildReport({ ops, summary, tasks: selected, repo: opts.repo });
   const storeUrl = process.env.RYKE_STORE_URL ?? `http://127.0.0.1:${8788 + opts.offset}`;
-  report.trunk = await verifyTrunk({ storeUrl, repo: opts.repo, head: summary.head, verify: summary.policy.verify, timeoutSeconds: summary.policy.verifyTimeoutSeconds });
+  report.trunk = checksTrunk(opts.api, process.env)
+    ? await verifyTrunk({ storeUrl, repo: opts.repo, head: summary.head, verify: summary.policy.verify, timeoutSeconds: summary.policy.verifyTimeoutSeconds })
+    : null;
   report.preview = await checkPreview({ apiUrl: opts.api, repo: opts.repo, head: summary.head, categories: landedCategories(report, selected) });
   report.criteria = evaluateCriteria(report);
   return { report, results, startedAt, finishedAt, text: formatReport(report) };
+}
+
+// The trunk check clones through the local store. A swarm against a deployed Ryke has no store to
+// reach, so the check reads "not checked" there instead of a false failure.
+export function checksTrunk(api, env) {
+  return Boolean(env.RYKE_STORE_URL) || ["127.0.0.1", "localhost", "[::1]"].includes(new URL(api).hostname);
 }
 
 export async function main(argv = process.argv.slice(2), env = process.env) {

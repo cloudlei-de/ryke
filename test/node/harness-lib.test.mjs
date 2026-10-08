@@ -27,7 +27,7 @@ import {
   thinkMs,
 } from "../../harness/lib/tasks.mjs";
 import { main as ryke } from "../../harness/ryke.mjs";
-import { limiter, parseSwarmArgs, resilient, runSwarm, UsageError } from "../../harness/swarm.mjs";
+import { checksTrunk, limiter, parseSwarmArgs, resilient, runSwarm, UsageError } from "../../harness/swarm.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const fixture = JSON.parse(await readFile(join(ROOT, "test/fixtures/ops/e2e-land.json"), "utf8"));
@@ -43,6 +43,21 @@ after(async () => {
 
 const ids = (tasks) => tasks.map((t) => t.id);
 const task = (id, over = {}) => ({ id, group: "G1", intent: `intent ${id}`, reads: [], writes: [], v2: null, ...over });
+
+describe("the swarm's trunk check (local stacks only)", () => {
+  for (const [api, env, expected] of [
+    ["http://127.0.0.1:5173", {}, true],
+    ["http://localhost:5183", {}, true],
+    ["http://[::1]:5173", {}, true],
+    ["https://ryke.ai", {}, false],
+    ["https://ryke.ai", { RYKE_STORE_URL: "http://127.0.0.1:8788" }, true],
+    ["http://10.0.0.5:5173", {}, false],
+  ]) {
+    it(`${api} ${JSON.stringify(env)} → ${expected ? "checked" : "not checked"}`, () => {
+      assert.equal(checksTrunk(api, env), expected);
+    });
+  }
+});
 
 describe("catalogue", () => {
   it("loads the 40 tasks without their spec", () => {
