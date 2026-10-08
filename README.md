@@ -36,7 +36,9 @@ in-flight change that read `src/format.ts` stale, duplicates are flagged at begi
 change is rejected, and a sloppy model's changes wait to be recalled with
 `npm run ryke -- recall --model sloppy-v0`. The swarm prints which of its acceptance criteria held.
 
-Node 22.18+ (or 24) and git are the only requirements.
+Node 22.18+ (or 24) and git are the only requirements. Jev, the judge, runs live when
+`TYPESAFE_API_KEY` is set in your environment. Without it the evidence gate runs only its hard checks
+and begin screening is off, so duplicates are not flagged at begin.
 
 ## Architecture
 
@@ -55,7 +57,7 @@ flowchart LR
   L -- "WebSocket op stream" --> D[Dashboard: line, transaction, bench, replay]
 ```
 
-Locally `npm run dev:all` swaps two adapters, nothing else: a Node service with the real git CLI
+Locally `npm run dev:all` swaps two adapters: a Node service with the real git CLI
 stands in for Artifacts (same API, token format and push events), and the container job scripts run as
 host processes, which isolate nothing. The Worker, the Ledger, the workflows and the dashboard are the same code.
 
@@ -88,8 +90,9 @@ caveats and the ASCII chart: [bench/results/latest.md](bench/results/latest.md);
   ([BLOCKERS.md](BLOCKERS.md)).
 - Read tracking is per file. An agent that reads through `cat` in a shell instead of the Read tool is
   not tracked; untracked transactions are treated as having read every file next to what they wrote.
-- The scripted demo agents apply prepared patches. Claude Code agents use the same API and hooks; with
-  no API key available here they ran against a stub.
+- The scripted demo agents apply prepared patches. Claude Code agents use the same API and hooks; here
+  they ran only against a stub, plus three short runs of the real CLI to check the hook format. A real
+  Claude swarm needs an Anthropic key ([BLOCKERS.md](BLOCKERS.md)).
 
 ## License
 

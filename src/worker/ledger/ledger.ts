@@ -163,6 +163,8 @@ const SCHEDULE_MS = 200;
 const WATCHDOG_MS = 5000;
 const STUCK_TRAIN_MS = 120_000;
 const GIVE_UP_TRAIN_MS = 30 * 60_000;
+// A train in any other state has ended; `committed` means trunk moved and only trainDone is left.
+const LIVE_TRAIN = ["running", "bisecting", "judging", "committed"];
 const MAX_LAND_ERRORS = 3;
 
 // 0.5 s, 1 s, 2 s … capped at 30 s between attempts to start a Land workflow.
@@ -698,8 +700,8 @@ export class Ledger extends DurableObject<Env> {
       // A holder keeps its lease until it lands or fails: admitting the next writer while the holder's
       // change is still on its way to trunk would only start work on a snapshot about to go stale.
       const holderState = lease ? this.sql.exec<{ state: string }>("SELECT state FROM txn WHERE id = ?", lease.txn).toArray()[0]?.state : undefined;
-      const holderOpen = holderState !== undefined && ["open", "submitted", "ready", "verifying"].includes(holderState);
-      const d = leaseDecision({ path: path!, requester: r.id, heat: this.heatOf(path!), lease, holderOpen, now });
+      const holder = holderState === "open" ? "working" : holderState && ["submitted", "ready", "verifying"].includes(holderState) ? "landing" : "gone";
+      const d = leaseDecision({ path: path!, requester: r.id, heat: this.heatOf(path!), lease, holder, now });
       if (d.go) {
         this.sql.exec(
           "INSERT INTO lease (path, txn, expires) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET txn = excluded.txn, expires = excluded.expires",
@@ -847,9 +849,9 @@ export class Ledger extends DurableObject<Env> {
     );
   }
 
-  // Moves an open transaction onto the current trunk before its agent has done the work, e.g. after
+  // Moves an open transaction onto the current trunk before its agent has submitted, e.g. after
   // waiting for a lease on a hot file while the holder landed. Same attempt (nothing failed), fresh
-  // snapshot, and the reads start over because they were reads of the old snapshot.
+  // snapshot; the reads carry over and the paths that changed in between come back as the delta.
   async refresh(txnId: string): Promise<Res<{ snapshot: string; attempt: number; delta: DeltaEntry[]; trunk: { remote: string; token: string } }>> {
     return this.run(() =>
       this.locked(txnId, async () => {
@@ -870,7 +872,9 @@ export class Ledger extends DurableObject<Env> {
         r = this.row(txnId);
         if (r.state !== "open") fail(409, `transaction ${txnId} is ${r.state}; only open transactions can be refreshed`);
         if (head.sha === r.snapshot) return { snapshot: r.snapshot, attempt: r.attempt, delta: [], trunk };
-        this.sql.exec("DELETE FROM access WHERE txn = ? AND attempt = ? AND kind = 'read'", r.id, r.attempt);
+        // Reads stay: a path read at the old snapshot that did not change up to the new one is a read of
+        // the new one, and the changed paths come back in the delta. Dropping them would let a semantic
+        // conflict on a file the agent does not report again land unnoticed.
         this.sql.exec("UPDATE txn SET snapshot = ?, snapshot_seq = ?, head = NULL, updated_at = ? WHERE id = ?", head.sha, head.seq, this.now(), r.id);
         this.op("txn.open", r, { attempt: r.attempt, snapshot: head.sha, snapshotSeq: head.seq, intent: r.intent, model: r.model, refresh: true });
         this.notify(r.id);
@@ -1022,11 +1026,14 @@ export class Ledger extends DurableObject<Env> {
     if (this.meta("train")) await this.ctx.storage.setAlarm(this.now() + WATCHDOG_MS);
   }
 
+  // Only an open holder's lease lapses: one on its way to trunk keeps the path until it lands or fails
+  // (leaseDecision), and releaseLeases frees it then.
   private expireLeases(): void {
     const now = this.now();
-    const expired = this.sql.exec<{ path: string; txn: string }>("SELECT path, txn FROM lease WHERE expires <= ?", now).toArray();
+    const lapsed = "expires <= ? AND txn NOT IN (SELECT id FROM txn WHERE state IN ('submitted', 'ready', 'verifying'))";
+    const expired = this.sql.exec<{ path: string; txn: string }>(`SELECT path, txn FROM lease WHERE ${lapsed}`, now).toArray();
     if (expired.length === 0) return;
-    this.sql.exec("DELETE FROM lease WHERE expires <= ?", now);
+    this.sql.exec(`DELETE FROM lease WHERE ${lapsed}`, now);
     for (const l of expired) this.op("lease.released", null, { path: l.path, txn: l.txn, expired: true });
   }
 
@@ -1125,7 +1132,8 @@ export class Ledger extends DurableObject<Env> {
         // Without a backoff an unavailable Workflows binding re-forms the same train every 200 ms.
         const failures = Number(this.meta("create_failures") ?? 0) + 1;
         this.setMeta("create_failures", String(failures));
-        this.endTrain(trainId, "error", train, { error: (e as Error).message }, createBackoffMs(failures));
+        // Not a land error: the train never ran, so its members must not be charged for it.
+        this.endTrain(trainId, "create_failed", train, { error: (e as Error).message }, createBackoffMs(failures));
         return null;
       }
       await this.ctx.storage.setAlarm(this.now() + WATCHDOG_MS);
@@ -1149,6 +1157,9 @@ export class Ledger extends DurableObject<Env> {
       if (idle < GIVE_UP_TRAIN_MS) return;
     }
     if (["running", "queued", "waiting", "paused", "waitingForPause", "unknown"].includes(status) && idle < GIVE_UP_TRAIN_MS) return;
+    // The workflow may have reported in while the lookup was in flight.
+    const now = this.sql.exec<TrainRow>("SELECT * FROM train WHERE id = ?", trainId).toArray()[0];
+    if (this.meta("train") !== trainId || !now || !LIVE_TRAIN.includes(now.state)) return;
     this.endTrain(trainId, "error", JSON.parse(t.txns) as string[], { error: `land workflow ${status}` });
   }
 
@@ -1177,7 +1188,8 @@ export class Ledger extends DurableObject<Env> {
 
   private touchTrain(trainId: string, state?: string): TrainRow {
     const t = this.sql.exec<TrainRow>("SELECT * FROM train WHERE id = ?", trainId).toArray()[0] ?? fail(404, `unknown train ${trainId}`);
-    this.sql.exec("UPDATE train SET updated_at = ?, state = COALESCE(?, state) WHERE id = ?", this.now(), state ?? null, trainId);
+    // A zombie workflow calling in after its train ended must not bring the train back.
+    if (LIVE_TRAIN.includes(t.state)) this.sql.exec("UPDATE train SET updated_at = ?, state = COALESCE(?, state) WHERE id = ?", this.now(), state ?? null, trainId);
     return t;
   }
 
@@ -1258,7 +1270,7 @@ export class Ledger extends DurableObject<Env> {
   async commitTrain(trainId: string, candidate: string, commits: { txn: string; sha: string; paths: string[] }[]): Promise<Res<{ seq: number }>> {
     return this.run(async () => {
       const t = this.touchTrain(trainId);
-      if (t.state === "landed") return { seq: this.head().seq };
+      if (t.state === "committed" || t.state === "landed") return { seq: this.head().seq };
       let seq = this.head().seq;
       const now = this.now();
       const changedPaths = new Set<string>();
@@ -1277,7 +1289,7 @@ export class Ledger extends DurableObject<Env> {
           this.transition(r, "landed", { reason: null, set: { landed_seq: seq, commit_sha: c.sha, train: trainId }, data: { train: trainId, sha: c.sha, seq } });
         landed.push({ txn: c.txn, sha: c.sha, seq });
       }
-      this.sql.exec("UPDATE train SET state = 'landed', updated_at = ? WHERE id = ?", now, trainId);
+      this.sql.exec("UPDATE train SET state = 'committed', updated_at = ? WHERE id = ?", now, trainId);
       this.op("trunk.advanced", null, { seq, sha: commits.at(-1)?.sha ?? candidate, txns: landed, train: trainId });
       this.warnOpen(changedPaths, seq);
       for (const wake of this.trunkWaiters.splice(0)) wake();
@@ -1314,8 +1326,8 @@ export class Ledger extends DurableObject<Env> {
   async trainDone(trainId: string, outcome: string, extra: Record<string, unknown> = {}): Promise<Res<{ ok: true }>> {
     return this.run(() => {
       const t = this.sql.exec<TrainRow>("SELECT * FROM train WHERE id = ?", trainId).toArray()[0] ?? fail(404, `unknown train ${trainId}`);
-      if (t.state !== "running" && t.state !== "bisecting" && t.state !== "judging" && t.state !== "landed") return { ok: true as const };
-      this.endTrain(trainId, t.state === "landed" ? "landed" : outcome, JSON.parse(t.txns) as string[], extra);
+      if (!LIVE_TRAIN.includes(t.state)) return { ok: true as const };
+      this.endTrain(trainId, t.state === "committed" ? "landed" : outcome, JSON.parse(t.txns) as string[], extra);
       return { ok: true as const };
     });
   }

@@ -94,7 +94,8 @@ describe("a small scripted swarm", () => {
     const r = byTask()["dup-speed"];
     assert.equal(r.outcome, "aborted");
     assert.ok(["patch_does_not_apply", "local_tests_fail"].includes(r.reason), r.reason);
-    assert.ok(lines.some((l) => /dup-speed  warning duplicate of t_/.test(l)), "begin warned about the duplicate");
+    // The judge is off here, and a neutral answer warns about nothing (src/worker/judge.ts screenIntent).
+    assert.ok(!lines.some((l) => /dup-speed  warning duplicate of t_/.test(l)), "begin did not pretend to judge the duplicate");
   });
 
   it("runs the tasks as the swarm's workers with the scripted model and sends its evidence", async () => {
@@ -158,8 +159,9 @@ describe("a small scripted swarm", () => {
     assert.match(text, /\[PASS\] G5 tamper rejected as protected/);
     assert.match(text, /\[PASS\] final trunk tests green/);
     const criteria = Object.fromEntries(report.criteria.map((c) => [c.id, c.pass]));
-    // 4 landed, 2 caused by t-precision: far from the full demo's 34 and 5; dup-speed was warned about
-    assert.deepEqual([criteria.landed, criteria.g3, criteria.g5, criteria.precision, criteria.trunk], [false, true, true, false, true]);
+    // 4 landed, 2 caused by t-precision: far from the full demo's 34 and 5; with the judge off nothing
+    // judged dup-speed, so G3 does not hold either
+    assert.deepEqual([criteria.landed, criteria.g3, criteria.g5, criteria.precision, criteria.trunk], [false, false, true, false, true]);
   });
 });
 

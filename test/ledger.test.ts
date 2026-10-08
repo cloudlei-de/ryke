@@ -2,6 +2,7 @@
 // illegal one answered with 409, idempotent push ingest and submit, stale warnings, leases, trains.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { Ledger } from "../src/worker/ledger/ledger";
 import { beginTxn, commitToFork, err, errorText, gitHelper, landAlone, newRepo, ok, opsOf, opsPage, store, type TestRepo } from "./helpers";
 
 // A second commit on top of `base` in the transaction's fork, as an agent pushing twice would.
@@ -631,6 +632,69 @@ describe("admission leases until landing, and refresh", () => {
     expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toEqual({ go: true });
   });
 
+  // The holder's lease row lapses 90 s after its last intend-write; force that, and run the alarm's sweep.
+  async function lapse(t: TestRepo) {
+    await runInDurableObject(t.L, async (_o, state) => {
+      state.storage.sql.exec("UPDATE lease SET expires = 1");
+      await state.storage.setAlarm(Date.now());
+    });
+    await runDurableObjectAlarm(t.L);
+  }
+
+  it.each(["submitted", "ready", "verifying"] as const)("keeps blocking past 90 s while the holder is %s, and frees the path once it lands", async (holderState) => {
+    const t = await newRepo();
+    await heat(t, "src/a.ts");
+    const holder = await beginTxn(t, "holder");
+    ok(await t.L.reads(holder.txn, ["src/a.ts"]));
+    ok(await t.L.intendWrite(holder.txn, "src/a.ts"));
+    const sha = await commitToFork(holder, { "src/a.ts": "held\n" });
+    expect(ok(await t.L.submit(holder.txn, { head: sha })).state).toBe("ready");
+    if (holderState === "submitted") {
+      await runInDurableObject(t.L, async (_o, state) => void state.storage.sql.exec("UPDATE txn SET state = 'submitted' WHERE id = ?", holder.txn));
+    }
+    const train = holderState === "verifying" ? ok(await t.L.formTrain()) : null;
+    if (train) expect(train.params!.txns.map((m) => m.id)).toEqual([holder.txn]);
+    await lapse(t);
+    const waiter = await beginTxn(t, "waiter");
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toEqual({ go: false, owner: holder.txn, retryAfterMs: 5000 });
+    expect((await opsOf(t, "lease.released")).filter((o) => o.data.txn === holder.txn)).toEqual([]);
+    if (holderState === "submitted") {
+      await runInDurableObject(t.L, async (_o, state) => void state.storage.sql.exec("UPDATE txn SET state = 'ready' WHERE id = ?", holder.txn));
+    }
+    await landAlone(t, holder.txn, holder, sha, ["src/a.ts"], train?.train ?? undefined);
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toEqual({ go: true });
+  });
+
+  it("lets a lapsed lease go while its holder is still open, so an idle writer blocks nobody", async () => {
+    const t = await newRepo();
+    await heat(t, "src/a.ts");
+    const holder = await beginTxn(t, "holder");
+    ok(await t.L.intendWrite(holder.txn, "src/a.ts"));
+    const waiter = await beginTxn(t, "waiter");
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toMatchObject({ go: false, owner: holder.txn });
+    await lapse(t);
+    expect((await opsOf(t, "lease.released")).at(-1)!.data).toMatchObject({ path: "src/a.ts", txn: holder.txn, expired: true });
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toEqual({ go: true });
+  });
+
+  it.each(["failed", "aborted"] as const)("frees the path at once when the holder is %s", async (end) => {
+    const t = await newRepo();
+    await heat(t, "src/a.ts");
+    const holder = await beginTxn(t, "holder");
+    ok(await t.L.intendWrite(holder.txn, "src/a.ts"));
+    if (end === "aborted") ok(await t.L.abort(holder.txn, "agent_abort"));
+    else {
+      const sha = await commitToFork(holder, { "src/a.ts": "x\n" });
+      ok(await t.L.submit(holder.txn, { head: sha }));
+      const train = ok(await t.L.formTrain()).train!;
+      ok(await t.L.trainOutcome(train, holder.txn, "failed", "tests"));
+      ok(await t.L.trainDone(train, "failed"));
+    }
+    expect((await t.L.status(holder.txn)).ok && ok(await t.L.status(holder.txn)).txn.state).toBe(end);
+    const waiter = await beginTxn(t, "waiter");
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toEqual({ go: true });
+  });
+
   it("releases a lease when its holder goes stale", async () => {
     const t = await newRepo();
     await heat(t, "src/b.ts");
@@ -644,7 +708,7 @@ describe("admission leases until landing, and refresh", () => {
     expect(ok(await t.L.intendWrite(other.txn, "src/b.ts"))).toEqual({ go: true });
   });
 
-  it("refreshes an open transaction onto the current trunk: same attempt, new snapshot, reads start over", async () => {
+  it("refreshes an open transaction onto the current trunk: same attempt, new snapshot, reads carry over", async () => {
     const t = await newRepo();
     const b = await beginTxn(t, "agent-r");
     ok(await t.L.reads(b.txn, ["src/a.ts", "src/b.ts"]));
@@ -658,12 +722,30 @@ describe("admission leases until landing, and refresh", () => {
     const s = ok(await t.L.status(b.txn));
     expect(s.txn).toMatchObject({ state: "open", attempt: 1, snapshot: mover.sha, snapshotSeq: 1 });
     expect(s.staleWarnings).toEqual([]);
-    expect(ok(await t.L.detail(b.txn)).attempts[0]!.reads).toEqual([]);
+    // A read of a path that did not change up to the new snapshot is a read of the new snapshot too.
+    expect(ok(await t.L.detail(b.txn)).attempts[0]!.reads).toEqual(["src/a.ts", "src/b.ts"]);
     expect((await opsOf(t, "txn.open")).at(-1)).toMatchObject({ txn: b.txn, data: { refresh: true, snapshot: mover.sha } });
     // work on the new snapshot lands without a stale abort
     ok(await t.L.reads(b.txn, ["src/a.ts"]));
     const head = await commitToFork({ ...b, snapshot: r.snapshot }, { "src/r.ts": "r\n" }, { force: true, from: r.trunk });
     expect(ok(await t.L.submit(b.txn, { head })).state).toBe("ready");
+  });
+
+  it("still catches a semantic conflict on a path read before the refresh and not reported again", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t, "agent-r");
+    ok(await t.L.reads(b.txn, ["src/format.ts", "src/x.ts"]));
+    const mover = await readyTxn(t, { "src/x.ts": "moved\n" }, ["src/y.ts"], "mover");
+    await landAlone(t, mover.b.txn, mover.b, mover.sha, ["src/x.ts"]);
+    const r = ok(await t.L.refresh(b.txn));
+    ok(await t.L.reads(b.txn, ["src/x.ts"]));
+    // Another transaction changes the rule the agent learned before it refreshed.
+    const rule = await readyTxn(t, { "src/format.ts": "export const digits = 3;\n" }, [], "rule");
+    await landAlone(t, rule.b.txn, rule.b, rule.sha, ["src/format.ts"]);
+    const head = await commitToFork({ ...b, snapshot: r.snapshot }, { "test/digits.test.ts": "expects 2\n" }, { force: true, from: r.trunk });
+    const res = ok(await t.L.submit(b.txn, { head }));
+    expect(res.state).toBe("stale");
+    expect((res.paths as { path: string }[]).map((p) => p.path)).toEqual(["src/format.ts"]);
   });
 
   it("refresh is a no-op at the trunk head and 409 when not open", async () => {
@@ -674,5 +756,121 @@ describe("admission leases until landing, and refresh", () => {
     ok(await t.L.abort(b.txn, "x"));
     expect(err(await t.L.refresh(b.txn))).toBe(409);
     expect(err(await t.L.refresh("t_nope"))).toBe(404);
+  });
+});
+
+// The Workflows binding and the watchdog, driven from inside the Durable Object: `env.LAND` is
+// replaced on the instance, and the alarm runs directly.
+describe("train scheduling failures and the watchdog", () => {
+  type Inside = { env: Env; alarm(): Promise<void>; startTrain(manual: boolean): Promise<unknown> };
+  const inside = <T>(t: TestRepo, fn: (o: Inside, state: DurableObjectState) => Promise<T>) =>
+    runInDurableObject(t.L, (o, state) => fn(o as unknown as Inside, state));
+  const withLand = (o: Inside, land: Partial<Record<"create" | "get", (...a: never[]) => unknown>>) => {
+    (o as unknown as { env: Env }).env = { ...o.env, LAND: { ...o.env.LAND, ...land } as unknown as Env["LAND"] };
+  };
+  const idle = (t: TestRepo, ms: number) => inside(t, async (_o, state) => void state.storage.sql.exec("UPDATE train SET updated_at = ?", Date.now() - ms));
+  const detailOf = async (t: TestRepo, txn: string) => ok(await t.L.status(txn)).txn;
+
+  it("requeues a train whose workflow could not be created without counting a land error, and backs off", async () => {
+    const t = await newRepo();
+    const { b } = await readyTxn(t, { "src/n.ts": "n\n" });
+    for (let i = 1; i <= 3; i++) {
+      await inside(t, async (o, state) => {
+        withLand(o, { create: async () => { throw new Error("workflows unavailable"); } });
+        expect(await o.startTrain(false)).toBeNull();
+        expect(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'create_failures'").one().value).toBe(String(i));
+      });
+      expect((await detailOf(t, b.txn)).state).toBe("ready");
+    }
+    const done = await opsOf(t, "train.done");
+    expect(done.map((o) => o.data.outcome)).toEqual(["create_failed", "create_failed", "create_failed"]);
+    // A later success clears the failure count, and the member was never charged an attempt.
+    await inside(t, async (o, state) => {
+      withLand(o, { create: async () => ({}) });
+      expect(await o.startTrain(false)).not.toBeNull();
+      expect(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'create_failures'").toArray()).toEqual([]);
+    });
+    expect(await detailOf(t, b.txn)).toMatchObject({ state: "verifying", attempt: 1 });
+  });
+
+  it("leaves a train alone for 120 s, and before 30 min when the status lookup fails", async () => {
+    const t = await newRepo();
+    const { b } = await readyTxn(t, { "src/n.ts": "n\n" });
+    const train = ok(await t.L.formTrain()).train!;
+    const failing = { get: async () => { throw new Error("lookup failed"); } };
+    for (const ms of [60_000, 200_000, 29 * 60_000]) {
+      await idle(t, ms);
+      await inside(t, async (o) => (withLand(o, failing), o.alarm()));
+      expect((await detailOf(t, b.txn)).state, `idle ${ms}`).toBe("verifying");
+    }
+    expect((await opsOf(t, "train.done")).filter((o) => o.data.train === train)).toEqual([]);
+  });
+
+  it("ends a train after 30 min without an answer, requeueing its members with one land error", async () => {
+    const t = await newRepo();
+    const { b } = await readyTxn(t, { "src/n.ts": "n\n" });
+    const train = ok(await t.L.formTrain()).train!;
+    await idle(t, 31 * 60_000);
+    await inside(t, async (o) => (withLand(o, { get: async () => { throw new Error("lookup failed"); } }), o.alarm()));
+    expect((await detailOf(t, b.txn)).state).toBe("ready");
+    expect(ok(await t.L.detail(b.txn)).detail).toMatchObject({ landErrors: 1 });
+    expect((await opsOf(t, "train.done")).filter((o) => o.data.train === train).map((o) => o.data.outcome)).toEqual(["error"]);
+  });
+
+  it.each(["errored", "terminated", "complete"])("ends a stuck train whose workflow is %s", async (status) => {
+    const t = await newRepo();
+    const { b } = await readyTxn(t, { "src/n.ts": "n\n" });
+    ok(await t.L.formTrain());
+    await idle(t, 200_000);
+    await inside(t, async (o) => (withLand(o, { get: async () => ({ status: async () => ({ status }) }) }), o.alarm()));
+    expect((await detailOf(t, b.txn)).state).toBe("ready");
+  });
+
+  it("does not overwrite a train that finished while the watchdog was asking about it", async () => {
+    const t = await newRepo();
+    const { b } = await readyTxn(t, { "src/n.ts": "n\n" });
+    const train = ok(await t.L.formTrain()).train!;
+    await idle(t, 200_000);
+    await inside(t, async (o) => {
+      withLand(o, {
+        get: async () => ({
+          status: async () => {
+            // The workflow reports in while the lookup is in flight.
+            const self = o as unknown as Pick<Ledger, "trainOutcome" | "trainDone">;
+            ok(await self.trainOutcome(train, b.txn, "failed", "tests"));
+            ok(await self.trainDone(train, "failed"));
+            return { status: "complete" };
+          },
+        }),
+      });
+      await o.alarm();
+    });
+    expect((await opsOf(t, "train.done")).filter((o) => o.data.train === train).map((o) => o.data.outcome)).toEqual(["failed"]);
+    expect((await detailOf(t, b.txn)).state).toBe("failed");
+  });
+
+  it("records a train's trunk rows once when the workflow repeats its commit step", async () => {
+    const t = await newRepo();
+    const x = await readyTxn(t, { "src/n.ts": "n\n" });
+    const train = ok(await t.L.formTrain()).train!;
+    const trunk = await store.info(t.name);
+    await gitHelper("/push", { from: x.b, sha: x.sha, to: { remote: trunk.remote, token: await store.token(t.name, "write", 600) } });
+    const commits = [{ txn: x.b.txn, sha: x.sha, paths: ["src/n.ts"] }];
+    const first = ok(await t.L.commitTrain(train, x.sha, commits));
+    expect(ok(await t.L.commitTrain(train, x.sha, commits))).toEqual(first);
+    ok(await t.L.trainDone(train, "landed"));
+    expect((await opsOf(t, "trunk.advanced")).filter((o) => o.data.train === train)).toHaveLength(1);
+    expect((await opsOf(t, "txn.landed")).filter((o) => o.txn === x.b.txn)).toHaveLength(1);
+  });
+
+  it("ignores a late callback from a workflow whose train already ended", async () => {
+    const t = await newRepo();
+    const x = await readyTxn(t, { "src/n.ts": "n\n" });
+    const train = await landAlone(t, x.b.txn, x.b, x.sha, ["src/n.ts"]);
+    ok(await t.L.trainDone(train, "landed"));
+    ok(await t.L.trainProbe(train, [x.b.txn], true));
+    expect((await opsOf(t, "train.done")).filter((o) => o.data.train === train)).toHaveLength(1);
+    const row = await inside(t, async (_o, state) => state.storage.sql.exec<{ state: string }>("SELECT state FROM train WHERE id = ?", train).one().state);
+    expect(row).toBe("landed");
   });
 });

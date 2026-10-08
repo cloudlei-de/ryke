@@ -32,25 +32,26 @@ export type Lease = { path: string; txn: string; expires: number };
 
 // `path` is an argument because a first grant has no existing lease to take it from.
 // `lease` is the current row for that path, if any (the Ledger does not delete expired rows eagerly).
-// `holderOpen` says whether the holder's change is still on its way to trunk (open, submitted, ready
-// or verifying): until it lands or fails, a second writer would only work on a snapshot about to go
-// stale. A holder that landed, failed or aborted never makes anyone wait (R2: never block forever).
+// `holder` is where the holder's change is: still being written (open, so the lease lapses 90 s after
+// its last write), on its way to trunk (submitted, ready or verifying: it keeps the path whatever the
+// expiry, because a second writer would only work on a snapshot about to go stale), or gone (landed,
+// failed, aborted). The waiter gives up after 90 s, so nobody waits forever (R2).
+export type Holder = "working" | "landing" | "gone";
+
 export function leaseDecision(args: {
   path: string;
   requester: string;
   heat: number;
   lease: Lease | null;
-  holderOpen: boolean;
+  holder: Holder;
   now: number;
 }): { go: true; lease: Lease } | { go: false; owner: string; retryAfterMs: number } {
-  const { path, requester, heat, lease, holderOpen, now } = args;
-  const blocked = lease !== null && lease.expires > now && lease.txn !== requester && holderOpen && isHot(heat);
+  const { path, requester, heat, lease, holder, now } = args;
+  const live = holder === "landing" || (holder === "working" && lease !== null && lease.expires > now);
+  const blocked = lease !== null && lease.txn !== requester && live && isHot(heat);
   if (blocked) {
-    return {
-      go: false,
-      owner: lease.txn,
-      retryAfterMs: Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, lease.expires - now)),
-    };
+    const left = holder === "landing" ? RETRY_MAX_MS : lease.expires - now;
+    return { go: false, owner: lease.txn, retryAfterMs: Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, left)) };
   }
   // Grant and refresh are the same write: the requester always ends up holding a full 90 s lease.
   return { go: true, lease: { path, txn: requester, expires: now + LEASE_MS } };

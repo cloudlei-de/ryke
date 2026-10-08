@@ -15,25 +15,25 @@
     "id": "dup-velocity~cat-speed",
     "kind": "duplicate",
     "tasks": {
-      "new": "dup-velocity",
+      "new": null,
       "existing": "cat-speed"
     },
     "newIntent": "Add a velocity converter",
     "existingIntent": "Add the \"Speed\" converter category with 6 units: m/s, km/h, mph, kn, ft/s, Mach",
     "label": true,
-    "note": "G3 duplicate under another name"
+    "note": "Calibrated on the G3 wording before DECISIONS 2026-10-08 M3 reworded dup-velocity and dup-kmh; kept as a hand-written case."
   },
   {
     "id": "dup-kmh~cat-speed",
     "kind": "duplicate",
     "tasks": {
-      "new": "dup-kmh",
+      "new": null,
       "existing": "cat-speed"
     },
     "newIntent": "Support km/h and mph",
     "existingIntent": "Add the \"Speed\" converter category with 6 units: m/s, km/h, mph, kn, ft/s, Mach",
     "label": true,
-    "note": "G3 duplicate, a subset of the units"
+    "note": "Calibrated on the G3 wording before DECISIONS 2026-10-08 M3 reworded dup-velocity and dup-kmh; kept as a hand-written case."
   },
   {
     "id": "para-search~t-search",
@@ -746,12 +746,12 @@
     "kind": "duplicate",
     "tasks": {
       "new": "cat-speed",
-      "existing": "dup-kmh"
+      "existing": null
     },
     "newIntent": "Add the \"Speed\" converter category with 6 units: m/s, km/h, mph, kn, ft/s, Mach",
     "existingIntent": "Support km/h and mph",
     "label": false,
-    "note": "the new intent is the larger one, so it still has work to do"
+    "note": "Calibrated on the G3 wording before DECISIONS 2026-10-08 M3 reworded dup-velocity and dup-kmh; kept as a hand-written case."
   },
   {
     "id": "cat-power~small-power",
@@ -888,10 +888,10 @@
     "id": "multi-velocity+kmh",
     "kind": "duplicate",
     "tasks": {
-      "new": "dup-velocity",
+      "new": null,
       "existing": "cat-speed",
       "others": [
-        "dup-kmh"
+        null
       ]
     },
     "newIntent": "Add a velocity converter",
@@ -900,7 +900,7 @@
       "Support km/h and mph"
     ],
     "label": true,
-    "note": "two partial duplicates in flight"
+    "note": "Calibrated on the G3 wording before DECISIONS 2026-10-08 M3 reworded dup-velocity and dup-kmh; kept as a hand-written case."
   },
   {
     "id": "multi-speed+unrelated",

@@ -124,7 +124,7 @@ describe("leaseDecision (§7.2 grant rule)", () => {
 
   type Args = Parameters<typeof leaseDecision>[0];
   const call = (over: Partial<Args>) =>
-    leaseDecision({ path: PATH, requester: "t_b", heat: 3, lease: lease(), holderOpen: true, now: NOW, ...over });
+    leaseDecision({ path: PATH, requester: "t_b", heat: 3, lease: lease(), holder: "working", now: NOW, ...over });
 
   const granted = (txn: string) => ({ go: true, lease: { path: PATH, txn, expires: NOW + LEASE_MS } });
 
@@ -136,14 +136,14 @@ describe("leaseDecision (§7.2 grant rule)", () => {
       ["the path is cold and the heat is zero", { heat: 0 }, "t_b"],
       ["the holder's lease has expired (expires == now)", { lease: lease({ expires: NOW }) }, "t_b"],
       ["the holder's lease expired long ago", { lease: lease({ expires: NOW - 60_000 }) }, "t_b"],
-      ["the holder is no longer open", { holderOpen: false }, "t_b"],
+      ["the holder landed, failed or aborted", { holder: "gone" }, "t_b"],
+      ["the holder is gone even though its lease is still live", { holder: "gone", lease: lease({ expires: NOW + 80_000 }) }, "t_b"],
+      ["an open holder stopped writing 90 s ago", { holder: "working", lease: lease({ expires: NOW - 1 }) }, "t_b"],
       ["the requester already holds the live lease: refresh", { lease: lease({ txn: "t_b" }) }, "t_b"],
       ["the requester holds the lease on a cold path", { lease: lease({ txn: "t_b" }), heat: 0 }, "t_b"],
-      [
-        "the requester holds the lease and is the holder even if holderOpen were false",
-        { lease: lease({ txn: "t_b" }), holderOpen: false },
-        "t_b",
-      ],
+      ["the requester holds the lease, whatever the holder status says", { lease: lease({ txn: "t_b" }), holder: "gone" }, "t_b"],
+      ["the requester's own lease while it is landing", { lease: lease({ txn: "t_b", expires: NOW - 1 }), holder: "landing" }, "t_b"],
+      ["a landing holder on a path that cooled down", { holder: "landing", heat: 1, lease: lease({ expires: NOW - 1 }) }, "t_b"],
       ["the requester's own lease expired", { lease: lease({ txn: "t_b", expires: NOW - 1 }) }, "t_b"],
     ])("when %s", (_name, over, txn) => {
       expect(call(over)).toEqual(granted(txn));
@@ -179,6 +179,16 @@ describe("leaseDecision (§7.2 grant rule)", () => {
       ["1 ms left is raised to the minimum", { lease: lease({ expires: NOW + 1 }) }, 250],
     ])("when %s", (_name, over, retryAfterMs) => {
       expect(call(over)).toEqual({ go: false, owner: "t_a", retryAfterMs });
+    });
+
+    // A holder on its way to trunk keeps the path until it lands or fails, however long its train
+    // queue is; the waiter's own patience (90 s) is what keeps anyone from waiting forever.
+    it.each<[string, Partial<Args>]>([
+      ["a submitted, ready or verifying holder whose last write was long ago", { holder: "landing", lease: lease({ expires: NOW - 60_000 }) }],
+      ["a landing holder whose lease expires exactly now", { holder: "landing", lease: lease({ expires: NOW }) }],
+      ["a landing holder with a live lease", { holder: "landing" }],
+    ])("when %s, asking again in the 5 s maximum", (_name, over) => {
+      expect(call(over)).toEqual({ go: false, owner: "t_a", retryAfterMs: 5000 });
     });
 
     it("names the lease holder as the owner", () => {

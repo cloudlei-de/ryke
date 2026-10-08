@@ -26,7 +26,11 @@ export default defineConfig({
                 ...cfg.vars,
                 RYKE_STORE_URL: `http://127.0.0.1:${8788 + offset}`,
                 RYKE_RUNNER_URL: `http://127.0.0.1:${8789 + offset}`,
-                RYKE_JEV: process.env.RYKE_JEV ?? "recorded",
+                // Recorded answers exist only for the tests' fixed requests; a swarm's requests never repeat,
+                // so locally Jev is live with a key and off (hard checks only) without one.
+                RYKE_JEV: process.env.RYKE_JEV ?? (process.env.TYPESAFE_API_KEY ? "live" : "off"),
+                // Verify screenshots cost a browser run per train, so only `npm run shots` turns them on.
+                RYKE_SCREENSHOTS: process.env.RYKE_SCREENSHOTS ?? "0",
                 // A fresh clone has no .dev.vars; these match dev/stack.mjs's defaults.
                 RYKE_TOKEN: process.env.RYKE_TOKEN ?? "dev",
                 RYKE_INTERNAL_SECRET: process.env.RYKE_INTERNAL_SECRET ?? "dev",

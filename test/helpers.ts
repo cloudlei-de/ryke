@@ -69,8 +69,9 @@ export async function commitToFork(
 
 // Lands a ready transaction the way the Land workflow does: form a train, push the fork head to
 // trunk main, commit the train.
-export async function landAlone(t: TestRepo, txn: string, fork: { remote: string; token: string }, sha: string, paths: string[]) {
-  const train = ok(await t.L.formTrain()).train!;
+// `train` is a train the test already formed (to look at a member while it is verifying).
+export async function landAlone(t: TestRepo, txn: string, fork: { remote: string; token: string }, sha: string, paths: string[], formed?: string) {
+  const train = formed ?? ok(await t.L.formTrain()).train!;
   const trunkToken = await store.token(t.name, "write", 600);
   const trunk = await store.info(t.name);
   await gitHelper("/push", { from: fork, sha, to: { remote: trunk.remote, token: trunkToken } });
