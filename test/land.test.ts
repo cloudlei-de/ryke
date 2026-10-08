@@ -28,6 +28,8 @@ type Fake = {
   id?: string;
   // prepare waits for this, so a test can decide what happens ahead of a train before it verifies.
   holdPrepare?: Promise<void>;
+  // The n-th prepare call (from 0) waits for the n-th entry, e.g. to hold a train in its first probe.
+  prepareHolds?: (Promise<void> | undefined)[];
   calls: { prepare: string[][]; verify: string[]; push: string[]; gate: string[]; cleanup: string[][] };
   candidates?: Map<string, string[]>;
 };
@@ -45,6 +47,7 @@ function fakeDeps(f: Fake): LandDeps {
     async prepare(txns: TrainTxn[], ref: string): Promise<Prepared> {
       f.calls.prepare.push(txns.map((t) => t.id));
       await f.holdPrepare;
+      await f.prepareHolds?.[f.calls.prepare.length - 1];
       const down = (id: string) => f.unreachable?.includes(id) && f.calls.prepare.length <= (f.unreachableFor ?? Infinity);
       const applied = txns.filter((t) => !f.conflicts?.includes(t.id) && !down(t.id));
       const commits = applied.map((_t, i) => sha(`${f.id ?? ""}a${f.calls.prepare.length}b${i}`));
@@ -345,13 +348,11 @@ describe("landTrain", () => {
   });
 });
 
-// In container mode the gateway attaches Artifacts credentials per job from RYKE_ALLOW_REPOS, so what
-// each step passes there is all it can reach: only the lander's own steps write, verify only reads.
 describe("speculative trains (PLAN.md §5.6)", () => {
   // Train A holds x and stays in verify until released; y is ready behind it and goes into train B,
   // built on A's candidate.
-  async function pipelined(fa: Fake, fb: Fake, stepsB: StepLike = steps) {
-    const { t, ids, params: a } = await train(1);
+  async function pipelined(fa: Fake, fb: Fake, stepsB: StepLike = steps, lead = 1) {
+    const { t, ids, params: a } = await train(lead);
     const b = await beginTxn(t, "agent-y", "intent y");
     ok(await t.L.reads(b.txn, ["src/other.ts"]));
     expect(ok(await t.L.submit(b.txn, { head: await commitToFork(b, { "src/y.ts": "y\n" }) })).state).toBe("ready");
@@ -363,7 +364,7 @@ describe("speculative trains (PLAN.md §5.6)", () => {
     }
     expect(spec).toMatchObject({ after: a.trainId, base: fa.calls.prepare.length ? [...fa.candidates!.keys()][0] : "?", txns: [{ id: b.txn }] });
     const runB = landTrain(env, spec!, stepsB, () => fakeDeps(fb));
-    return { t, x: ids[0]!, y: b.txn, a, spec: spec!, runA, runB };
+    return { t, x: ids[0]!, ids, y: b.txn, a, spec: spec!, runA, runB };
   }
   const gate = () => {
     let open!: () => void;
@@ -443,6 +444,8 @@ describe("speculative trains (PLAN.md §5.6)", () => {
       },
     });
     const { t, y, spec, runA, runB } = await pipelined(fa, fb, memo(0));
+    // B must be waiting for its turn before A may go on, or on a slow machine B never waits at all.
+    for (let i = 0; i < 400 && !names[0]!.some((n) => n.startsWith("wait-")); i++) await new Promise((r) => setTimeout(r, 5));
     g.open();
     expect(await runA).toEqual({ outcome: "landed" });
     expect(await runB).toEqual({ outcome: "landed" });
@@ -452,6 +455,52 @@ describe("speculative trains (PLAN.md §5.6)", () => {
     expect(await landTrain(env, spec, memo(1), () => fakeDeps(fb))).toEqual({ outcome: "landed" });
     expect(names[1]).toEqual(names[0]);
     expect(fb.calls.verify.length).toBe(verifies);
+  });
+
+  it("never verifies on the candidate of a train whose own verify failed, even before its first probe", async () => {
+    const ga = gate();
+    const gb = gate();
+    const probe = gate();
+    const fa = fake({ hold: ga.hold, id: "a", prepareHolds: [undefined, probe.hold] });
+    const fb = fake({ holdPrepare: gb.hold, id: "b" });
+    const { t, ids, y, spec, runA, runB } = await pipelined(fa, fb, steps, 2);
+    fa.culprits = [ids[1]!];
+    ga.open();
+    // A's whole-train verify failed and it is held in its first probe's prepare: no probe is recorded yet.
+    for (let i = 0; i < 400 && fa.calls.prepare.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    gb.open();
+    let settled = false;
+    void runB.then(() => (settled = true));
+    for (let i = 0; i < 400 && !settled && fb.calls.verify.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(fb.calls.verify).toEqual([]);
+    probe.open();
+    expect(await runA).toEqual({ outcome: "landed" });
+    expect((await runB).outcome).toBe("discarded");
+    expect(await states(t, [...ids, y])).toEqual(["landed", "failed", "ready"]);
+    expect((await opsOf(t, "train.done")).find((o) => o.data.train === spec.trainId)!.data.outcome).toBe("discarded");
+  });
+
+  it.each([
+    ["fails", [true], "discarded", "ready"],
+    ["lands", [false], "empty", "stale"],
+  ])("records its own text conflicts only after its turn: the train ahead %s", async (_name, [fails], outcome, yState) => {
+    const g = gate();
+    const fa = fake({ hold: g.hold, id: "a" });
+    const fb = fake({ id: "b" });
+    const { t, x, y, spec, runA, runB } = await pipelined(fa, fb);
+    fb.conflicts = [y];
+    for (let i = 0; i < 400 && fb.calls.prepare.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    if (fails) fa.culprits = [x];
+    g.open();
+    await runA;
+    expect((await runB).outcome).toBe(outcome);
+    expect(ok(await t.L.status(y)).txn.state).toBe(yState);
+    expect(fb.calls.verify).toEqual([]);
+    if (!fails) {
+      const confirmed = (await opsOf(t, "train.confirmed")).find((o) => o.data.train === spec.trainId)!;
+      const stale = (await opsOf(t, "txn.stale")).find((o) => o.txn === y)!;
+      expect(confirmed.seq).toBeLessThan(stale.seq);
+    }
   });
 
   it("records its own failure only once the train ahead has landed", async () => {
@@ -471,6 +520,8 @@ describe("speculative trains (PLAN.md §5.6)", () => {
   });
 });
 
+// In container mode the gateway attaches Artifacts credentials per job from RYKE_ALLOW_REPOS, so what
+// each step passes there is all it can reach: only the lander's own steps write, verify only reads.
 describe("realDeps: what each land step may touch", () => {
   function recordingRunner(result: (kind: string, args: Record<string, string>) => unknown) {
     const started: { kind: string; args: Record<string, string>; env: Record<string, string> }[] = [];

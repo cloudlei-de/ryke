@@ -3,6 +3,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Ledger } from "../src/worker/ledger/ledger";
+import { MIGRATIONS, migrate } from "../src/worker/ledger/schema";
 import { beginTxn, commitToFork, err, errorText, gitHelper, landAlone, newRepo, ok, opsOf, opsPage, store, type TestRepo } from "./helpers";
 
 // A second commit on top of `base` in the transaction's fork, as an agent pushing twice would.
@@ -473,6 +474,23 @@ describe("speculative trains (PLAN.md §5.6)", () => {
     ok(await t.L.trainCandidate(head, cand, ["src/x.ts"], 1));
     await act(t, head, x.b.txn);
     expect(ok(await t.L.formTrain()).train).toBeNull();
+  });
+
+  it("builds nothing on a candidate that changes ryke.json, whose new policy the train ahead has not loaded yet", async () => {
+    const { t, head } = await pipeline();
+    ok(await t.L.trainCandidate(head, cand, ["ryke.json", "src/x.ts"], 1));
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+  });
+
+  it("stops building on a train the moment its whole verify fails, before its first probe is recorded", async () => {
+    const { t, y, head, spec } = await withSpec();
+    ok(await t.L.trainBisecting(head));
+    expect(ok(await t.L.status(y.b.txn)).txn).toMatchObject({ state: "ready", train: null });
+    expect((await opsOf(t, "train.done")).find((o) => o.data.train === spec)!.data.outcome).toBe("discarded");
+    expect(ok(await t.L.formTrain()).train).toBeNull();
+    // Only probes are bisect ops: the bench counts them.
+    expect(await opsOf(t, "train.bisect")).toEqual([]);
+    expect(err(await t.L.trainBisecting("tr_nope"))).toBe(404);
   });
 
   it("refuses a candidate whose paths are not a list of strings, and a turn for an unknown train", async () => {
@@ -1014,6 +1032,34 @@ describe("train scheduling failures and the watchdog", () => {
     expect(ok(await t.L.summary())).toMatchObject({ train: head, speculative: null });
   });
 
+  it("lets the train behind take over when the watchdog ends a train that had already committed", async () => {
+    const { t, x, y, head } = await specInFlight();
+    const spec = ok(await t.L.formTrain()).train!;
+    ok(await t.L.commitTrain(head, "c".repeat(40), [{ txn: x.b.txn, sha: "c".repeat(40), paths: ["src/n.ts"] }]));
+    await inside(t, async (_o, state) => void state.storage.sql.exec("UPDATE train SET updated_at = ? WHERE id = ?", Date.now() - 200_000, head));
+    await inside(t, async (o) => (withLand(o, { get: async (id: string) => ({ status: async () => ({ status: id === head ? "errored" : "running" }) }) }), o.alarm()));
+    expect((await opsOf(t, "train.done")).filter((o) => o.data.train === head).map((o) => o.data.outcome)).toEqual(["landed"]);
+    expect(ok(await t.L.summary())).toMatchObject({ train: spec, speculative: null });
+    expect((await detailOf(t, y.b.txn))).toMatchObject({ state: "verifying", train: spec });
+  });
+
+  it("ends a speculative train once when it was discarded while its workflow was being created", async () => {
+    const { t, x, y, head } = await specInFlight();
+    await inside(t, async (o) => {
+      withLand(o, {
+        create: async () => {
+          // The train ahead loses its member while the create call is in flight, which discards the new train.
+          ok(await (o as unknown as Pick<Ledger, "trainOutcome">).trainOutcome(head, x.b.txn, "failed", "tests"));
+          throw new Error("workflows unavailable");
+        },
+      });
+      expect(await o.startTrain(false)).toBeNull();
+    });
+    const done = (await opsOf(t, "train.done")).filter((o) => o.data.train !== head);
+    expect(done.map((o) => o.data.outcome)).toEqual(["discarded"]);
+    expect((await detailOf(t, y.b.txn)).state).toBe("ready");
+  });
+
   it("leaves a train alone for 120 s, and before 30 min when the status lookup fails", async () => {
     const t = await newRepo();
     const { b } = await readyTxn(t, { "src/n.ts": "n\n" });
@@ -1116,5 +1162,28 @@ describe("train scheduling failures and the watchdog", () => {
     expect((await opsOf(t, "train.done")).filter((o) => o.data.train === train)).toHaveLength(1);
     const row = await inside(t, async (_o, state) => state.storage.sql.exec<{ state: string }>("SELECT state FROM train WHERE id = ?", train).one().state);
     expect(row).toBe("landed");
+  });
+});
+
+describe("schema migration 2 (speculative trains)", () => {
+  it("adds the speculative columns to a Ledger that already has train rows, with defaults that mean none", async () => {
+    const t = await newRepo();
+    await readyTxn(t, { "src/n.ts": "n\n" });
+    const train = ok(await t.L.formTrain()).train!;
+    await runInDurableObject(t.L, async (_o, state) => {
+      const sql = state.storage.sql;
+      // Back to version 1: the columns migration 2 adds, gone.
+      for (const c of ["pred", "candidate", "candidate_paths", "candidate_seq", "confirmed"]) sql.exec(`ALTER TABLE train DROP COLUMN ${c}`);
+      sql.exec("UPDATE schema_version SET version = 1");
+      expect(migrate(sql)).toBe(MIGRATIONS.length);
+      expect(sql.exec("SELECT pred, candidate, candidate_paths, candidate_seq, confirmed FROM train WHERE id = ?", train).one()).toEqual({
+        pred: null,
+        candidate: null,
+        candidate_paths: null,
+        candidate_seq: null,
+        confirmed: 0,
+      });
+    });
+    expect(ok(await t.L.trainTurn(train)).turn).toBe("go");
   });
 });

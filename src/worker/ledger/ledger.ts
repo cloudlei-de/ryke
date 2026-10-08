@@ -1112,6 +1112,8 @@ export class Ledger extends DurableObject<Env> {
     const all = this.sql.exec<TxnRow>("SELECT * FROM txn WHERE state = 'ready' ORDER BY submitted_at, id").toArray();
     // A change that touches what the train ahead changes would be stale the moment that train lands.
     const pending = pred ? (JSON.parse(pred.candidate_paths ?? "[]") as string[]) : [];
+    // A Land run reads the policy once, and the Ledger reloads ryke.json only when the train ahead commits.
+    if (pending.includes("ryke.json")) return null;
     const ready =
       pending.length === 0
         ? all
@@ -1180,8 +1182,10 @@ export class Ledger extends DurableObject<Env> {
         // Without a backoff an unavailable Workflows binding re-forms the same train every 200 ms.
         const failures = Number(this.meta("create_failures") ?? 0) + 1;
         this.setMeta("create_failures", String(failures));
-        // Not a land error: the train never ran, so its members must not be charged for it.
-        this.endTrain(trainId, "create_failed", train, { error: (e as Error).message }, createBackoffMs(failures));
+        // Not a land error: the train never ran, so its members must not be charged for it. A speculative
+        // train may have been discarded while the call was in flight; it has ended already.
+        if (LIVE_TRAIN.includes(this.trainRow(trainId)?.state ?? ""))
+          this.endTrain(trainId, "create_failed", train, { error: (e as Error).message }, createBackoffMs(failures));
         return null;
       }
       await this.ctx.storage.setAlarm(this.now() + WATCHDOG_MS);
@@ -1208,7 +1212,8 @@ export class Ledger extends DurableObject<Env> {
     // The workflow may have reported in while the lookup was in flight.
     const now = this.trainRow(trainId);
     if (![this.meta("train"), this.meta("spec")].includes(trainId) || !now || !LIVE_TRAIN.includes(now.state)) return;
-    this.endTrain(trainId, "error", JSON.parse(t.txns) as string[], { error: `land workflow ${status}` });
+    // A train that committed did land, whatever became of its workflow; trainDone says the same.
+    this.endTrain(trainId, now.state === "committed" ? "landed" : "error", JSON.parse(t.txns) as string[], { error: `land workflow ${status}` });
   }
 
   // Trains keep being rejected when trunk moved outside the Ledger (a push whose answer was lost and
@@ -1255,7 +1260,7 @@ export class Ledger extends DurableObject<Env> {
       if (spec && next) {
         // The train behind takes over the lander when trunk is now exactly what it was built on (or it
         // already went); otherwise its base never happened and it is thrown away.
-        if (next.confirmed || (outcome === "landed" && this.head().sha === next.base)) {
+        if (next.confirmed || this.head().sha === next.base) {
           this.setMeta("spec", null);
           this.setMeta("train", spec);
           if (!next.confirmed) {
@@ -1309,6 +1314,16 @@ export class Ledger extends DurableObject<Env> {
         moved.push(c.txn);
       }
       return { moved };
+    });
+  }
+
+  // Land calls this as soon as the whole-train verify fails, before the first probe has run: from then
+  // on the candidate it reported will not land as it is.
+  async trainBisecting(trainId: string): Promise<Res<{ ok: true }>> {
+    return this.run(() => {
+      this.touchTrain(trainId, "bisecting");
+      this.dropCandidate(trainId);
+      return { ok: true as const };
     });
   }
 

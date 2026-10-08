@@ -169,6 +169,9 @@ export async function landTrain(env: Env, p: TrainParams, step: StepLike, depsFo
         await outcome(members[0]!, "failed", "tests", { failures: verified.tests.failures });
         return await finish("failed");
       }
+      // Before the first probe, which takes a whole prepare and verify: nothing may go on being built on
+      // a candidate that has just failed.
+      await step.do(named("bisecting"), async () => unwrap(await L.trainBisecting(t)));
       const results = new Map<string, { prepared: Prepared; verified: Verified }>();
       const failing: { ids: string[]; verified: Verified }[] = [{ ids: members, verified }];
       let state = bisectStart(members);
