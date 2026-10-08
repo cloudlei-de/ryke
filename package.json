@@ -18,7 +18,8 @@
     "deploy:dry": "CLOUDFLARE_ENV=production vite build && wrangler deploy --dry-run --outdir .wrangler/dry",
     "jev:record": "node harness/jev-record.mjs",
     "jev:calibrate": "node harness/jev-calibrate.mjs",
-    "e2e:recall": "node harness/e2e/recall.mjs"
+    "e2e:recall": "node harness/e2e/recall.mjs",
+    "shots": "node harness/shots.mjs"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.63.0",

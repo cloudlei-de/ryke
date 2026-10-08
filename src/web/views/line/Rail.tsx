@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { counters, heatAt, type LineState } from "../../../shared/reducers";
 import { adminFetch, adminToken, setAdminToken } from "../../live";
+import { RecallButton } from "../recall";
 import { abortRows, demoResult, formatHeat, HEAT_HOT_AT, heatRows } from "./geometry";
 
 // Admin only: starts the scripted swarm inside the platform (PLAN.md §11.2). With no token stored it asks
@@ -65,7 +66,11 @@ export function Rail({ repo, state, now, files, filesError }: { repo: string; st
     <aside className="rail" aria-label="Status">
       <header className="panel-head">
         <h2>Status</h2>
-        <DemoButton repo={repo} />
+        <div className="rail-actions">
+          <DemoButton repo={repo} />
+          {/* A recall acts on the live trunk, so the replay's historic state must not offer one. */}
+          <RecallButton repo={repo} state={state} reason={location.hash.startsWith("#/replay") ? "Recall acts on the live trunk; open the Line view" : undefined} />
+        </div>
       </header>
       <dl className="counters">
         <div>
