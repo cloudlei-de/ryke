@@ -161,3 +161,11 @@ describe("counters and heat", () => {
     expect(later[1]!.value).toBeCloseTo(0.5);
   });
 });
+
+describe("refresh", () => {
+  it("keeps one attempt when an open transaction is refreshed onto a newer snapshot", () => {
+    const s = fold([open("t", "a", 1), op("txn.open", 2, { attempt: 1, refresh: true, snapshot: "s2" }, "t", "a"), move("txn.submitted", "t", "a", 3)]);
+    expect(s.txns.get("t")!.attempts).toHaveLength(1);
+    expect(s.txns.get("t")!.state).toBe("submitted");
+  });
+});

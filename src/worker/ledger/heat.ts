@@ -32,8 +32,9 @@ export type Lease = { path: string; txn: string; expires: number };
 
 // `path` is an argument because a first grant has no existing lease to take it from.
 // `lease` is the current row for that path, if any (the Ledger does not delete expired rows eagerly).
-// `holderOpen` says whether the lease holder's transaction is still open: a holder that submitted
-// or aborted has stopped editing, so its lease must not make anyone wait (R2: never block forever).
+// `holderOpen` says whether the holder's change is still on its way to trunk (open, submitted, ready
+// or verifying): until it lands or fails, a second writer would only work on a snapshot about to go
+// stale. A holder that landed, failed or aborted never makes anyone wait (R2: never block forever).
 export function leaseDecision(args: {
   path: string;
   requester: string;

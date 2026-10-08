@@ -75,8 +75,10 @@ them is parallel.
 Ryke measures heat per file: an exponentially decayed count (half-life 5 minutes) of stale aborts and
 text conflicts. A file is hot at heat 2. Writes stay fully optimistic everywhere except on hot files:
 a PreToolUse hook asks for a short admission lease before an agent edits a file, and the Ledger makes
-the agent wait only if the file is hot **and** another open transaction holds a live lease on it.
-Leases last 90 seconds and the hook gives up waiting after 90 seconds, so a lease never deadlocks
+the agent wait only if the file is hot **and** another transaction that has not yet landed holds a
+live lease on it. When the wait ends, the agent refreshes its transaction onto the trunk the holder
+just moved and does its work there, instead of working on a snapshot that is about to go stale.
+Leases last 90 seconds and agents give up waiting after 90 seconds, so a lease never deadlocks
 anyone. Global locks collapse throughput; Ryke serialises only where its own data says conflicts
 happen.
 

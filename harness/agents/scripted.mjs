@@ -51,12 +51,15 @@ export const LEASE_PATIENCE_MS = 90_000;
 
 // §7.2 from the agent's side: wait while a hot path is leased to someone else, give up after 90 s in
 // total (so a lease can never block an agent forever), then write anyway.
+// Returns whether it had to wait, so the caller can refresh onto the trunk the holder just moved.
 export async function admit(api, txn, paths, say, { now = Date.now, wait = sleep } = {}) {
   const until = now() + LEASE_PATIENCE_MS;
+  let waited = false;
   for (const path of paths) {
     for (;;) {
       const r = await api.intendWrite(txn, path);
       if (r.go) break;
+      waited = true;
       if (now() >= until) {
         say(`gave up waiting for ${path}; writing anyway`);
         break;
@@ -65,6 +68,7 @@ export async function admit(api, txn, paths, say, { now = Date.now, wait = sleep
       await wait(Math.max(50, Math.min(r.retryAfterMs, until - now())));
     }
   }
+  return waited;
 }
 
 // One line per kind of warning, naming the strongest one: a begin can come back with five of each, and
@@ -99,7 +103,8 @@ export async function runTask(ctx) {
   const writes = [...new Set(task.writes)].sort();
   const reads = [...new Set([...task.reads, ...task.writes])];
 
-  const b = await api.begin(repo, { agent, model, intent: task.intent, criteria: task.criteria });
+  // `begun` resumes a transaction Ryke opened itself, e.g. an intent a recall re-queued.
+  const b = ctx.begun ?? (await api.begin(repo, { agent, model, intent: task.intent, criteria: task.criteria }));
   if (!b?.txn) throw new Error(`begin failed: ${b?.error ?? JSON.stringify(b)}`);
   result.txn = b.txn;
   result.warnings = (b.warnings ?? []).length;
@@ -116,13 +121,24 @@ export async function runTask(ctx) {
     let from = { remote: b.remote, token: b.token, ref: "main" };
     for (let attempt = 1; attempt <= 6; attempt++) {
       result.attempts = attempt;
-      const snapshot = await ws.fetch(from.remote, from.token, from.ref);
+      let snapshot = await ws.fetch(from.remote, from.token, from.ref);
       await ws.checkout(snapshot);
       await ws.setUnion(b.policy.union);
 
       const r = await api.reads(b.txn, reads);
       if (r.staleWarnings.length > 0) say(`stale warning already: ${r.staleWarnings.map((p) => `${p.path} <- ${p.by}`).join(", ")}`);
-      if (contention) await admit(api, b.txn, writes, say).catch((e) => say(`lease check failed: ${brief(e)}`));
+      if (contention) {
+        const waited = await admit(api, b.txn, writes, say).catch((e) => say(`lease check failed: ${brief(e)}`));
+        // The holder landed while we waited: move onto its trunk before doing the work, not after.
+        const after = waited ? await api.reads(b.txn, reads) : null;
+        if (after && after.staleWarnings.length > 0) {
+          const fresh = await api.call("POST", `/api/txns/${b.txn}/refresh`, {});
+          say(`refreshed onto ${fresh.snapshot.slice(0, 8)} after the lease wait (${fresh.delta.map((d) => d.path).join(", ")})`);
+          snapshot = await ws.fetch(fresh.trunk.remote, fresh.trunk.token, fresh.snapshot);
+          await ws.checkout(snapshot);
+          await api.reads(b.txn, reads);
+        }
+      }
 
       const ms = thinkMs(rng, task, { speed, retry: attempt > 1 });
       say(`attempt ${attempt}: thinking ${(ms / 1000).toFixed(1)} s`);

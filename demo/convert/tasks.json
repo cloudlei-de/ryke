@@ -1135,7 +1135,7 @@
   {
     "id": "dup-velocity",
     "group": "G3",
-    "intent": "Add a velocity converter",
+    "intent": "Add a velocity converter with m/s, km/h and mph units",
     "criteria": [
       "A Velocity category is listed on the home page.",
       "/api/convert converts 100 km/h to m/s correctly.",
@@ -1166,7 +1166,7 @@
   {
     "id": "dup-kmh",
     "group": "G3",
-    "intent": "Support km/h and mph",
+    "intent": "Support km/h and mph in a road speed converter category",
     "criteria": [
       "A category with km/h and mph is listed on the home page.",
       "/api/convert converts 100 km/h to mph correctly.",

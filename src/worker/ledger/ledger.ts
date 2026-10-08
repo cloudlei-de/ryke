@@ -394,7 +394,7 @@ export class Ledger extends DurableObject<Env> {
     );
     if (reason && data.reason === undefined) data.reason = reason;
     this.op(`txn.${target}` as OpKind, next, data);
-    if (TERMINAL_STATES.includes(target)) this.releaseLeases(next.id);
+    if (TERMINAL_STATES.includes(target) || target === "stale" || target === "failed") this.releaseLeases(next.id);
     this.notify(next.id);
     return next;
   }
@@ -695,7 +695,10 @@ export class Ledger extends DurableObject<Env> {
       if (r.state !== "open") fail(409, `transaction ${txnId} is ${r.state}; write intents need an open transaction`);
       const now = this.now();
       const lease = this.sql.exec<{ path: string; txn: string; expires: number }>("SELECT * FROM lease WHERE path = ?", path!).toArray()[0] ?? null;
-      const holderOpen = lease ? this.sql.exec<{ state: string }>("SELECT state FROM txn WHERE id = ?", lease.txn).toArray()[0]?.state === "open" : false;
+      // A holder keeps its lease until it lands or fails: admitting the next writer while the holder's
+      // change is still on its way to trunk would only start work on a snapshot about to go stale.
+      const holderState = lease ? this.sql.exec<{ state: string }>("SELECT state FROM txn WHERE id = ?", lease.txn).toArray()[0]?.state : undefined;
+      const holderOpen = holderState !== undefined && ["open", "submitted", "ready", "verifying"].includes(holderState);
       const d = leaseDecision({ path: path!, requester: r.id, heat: this.heatOf(path!), lease, holderOpen, now });
       if (d.go) {
         this.sql.exec(
@@ -840,6 +843,38 @@ export class Ledger extends DurableObject<Env> {
           data: { attempt: r.attempt + 1, snapshot: head.sha, snapshotSeq: head.seq, intent: r.intent, model: r.model, retry: true },
         });
         return { snapshot: head.sha, attempt: r.attempt, delta, failures, trunk, remote: info.remote, token };
+      }),
+    );
+  }
+
+  // Moves an open transaction onto the current trunk before its agent has done the work, e.g. after
+  // waiting for a lease on a hot file while the holder landed. Same attempt (nothing failed), fresh
+  // snapshot, and the reads start over because they were reads of the old snapshot.
+  async refresh(txnId: string): Promise<Res<{ snapshot: string; attempt: number; delta: DeltaEntry[]; trunk: { remote: string; token: string } }>> {
+    return this.run(() =>
+      this.locked(txnId, async () => {
+        let r = this.row(txnId);
+        if (r.state !== "open") fail(409, `transaction ${txnId} is ${r.state}; only open transactions can be refreshed`);
+        const head = this.head();
+        const stale = this.staleReads(r);
+        const repo = this.repo();
+        const [delta, trunk] = await Promise.all([
+          Promise.all(
+            stale.map(async ({ path }) => {
+              const [before, after] = await Promise.all([this.store.readFile(repo, r.snapshot, path), this.store.readFile(repo, head.sha, path)]);
+              return { path, patch: unifiedDiff(path, before, after) };
+            }),
+          ),
+          this.trunk(),
+        ]);
+        r = this.row(txnId);
+        if (r.state !== "open") fail(409, `transaction ${txnId} is ${r.state}; only open transactions can be refreshed`);
+        if (head.sha === r.snapshot) return { snapshot: r.snapshot, attempt: r.attempt, delta: [], trunk };
+        this.sql.exec("DELETE FROM access WHERE txn = ? AND attempt = ? AND kind = 'read'", r.id, r.attempt);
+        this.sql.exec("UPDATE txn SET snapshot = ?, snapshot_seq = ?, head = NULL, updated_at = ? WHERE id = ?", head.sha, head.seq, this.now(), r.id);
+        this.op("txn.open", r, { attempt: r.attempt, snapshot: head.sha, snapshotSeq: head.seq, intent: r.intent, model: r.model, refresh: true });
+        this.notify(r.id);
+        return { snapshot: head.sha, attempt: r.attempt, delta, trunk };
       }),
     );
   }

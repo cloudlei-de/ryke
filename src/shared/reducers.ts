@@ -117,6 +117,8 @@ export function apply(s: LineState, op: Op): LineState {
         s.txns.set(op.txn, view);
         if (!s.agents.includes(op.agent)) s.agents.push(op.agent);
       }
+      // A refresh moves an open attempt onto a newer snapshot; it is the same attempt, not a new bar.
+      if (d.refresh && view.attempts.length > 0) break;
       view.state = "open";
       view.reason = null;
       view.attempt = d.attempt ?? view.attempt;

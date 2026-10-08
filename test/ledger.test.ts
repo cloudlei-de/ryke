@@ -605,3 +605,74 @@ describe("review fixes", () => {
     expect(ok(await w)).toMatchObject({ changed: true, txn: { state: "aborted" } });
   });
 });
+
+describe("admission leases until landing, and refresh", () => {
+  async function heat(t: TestRepo, path: string) {
+    for (const agent of ["h1", "h2", "h3"]) {
+      const x = await readyTxn(t, { [path]: `${agent}\n` }, [path], agent);
+      const y = await beginTxn(t, `${agent}-y`);
+      ok(await t.L.reads(y.txn, [path]));
+      await landAlone(t, x.b.txn, x.b, x.sha, [path]);
+      ok(await t.L.submit(y.txn, { head: await commitToFork(y, { [`src/${agent}-y.ts`]: "y\n" }) }));
+    }
+  }
+
+  it("keeps a hot-file lease while its holder is submitted or ready, and frees it when the holder lands", async () => {
+    const t = await newRepo();
+    await heat(t, "src/a.ts");
+    const holder = await beginTxn(t, "holder");
+    ok(await t.L.reads(holder.txn, ["src/a.ts"]));
+    expect(ok(await t.L.intendWrite(holder.txn, "src/a.ts"))).toEqual({ go: true });
+    const sha = await commitToFork(holder, { "src/a.ts": "held\n" });
+    expect(ok(await t.L.submit(holder.txn, { head: sha })).state).toBe("ready");
+    const waiter = await beginTxn(t, "waiter");
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toMatchObject({ go: false, owner: holder.txn });
+    await landAlone(t, holder.txn, holder, sha, ["src/a.ts"]);
+    expect(ok(await t.L.intendWrite(waiter.txn, "src/a.ts"))).toEqual({ go: true });
+  });
+
+  it("releases a lease when its holder goes stale", async () => {
+    const t = await newRepo();
+    await heat(t, "src/b.ts");
+    const holder = await beginTxn(t, "holder");
+    ok(await t.L.reads(holder.txn, ["src/b.ts"]));
+    ok(await t.L.intendWrite(holder.txn, "src/b.ts"));
+    const mover = await readyTxn(t, { "src/b.ts": "moved\n" }, ["src/c.ts"], "mover");
+    await landAlone(t, mover.b.txn, mover.b, mover.sha, ["src/b.ts"]);
+    expect(ok(await t.L.submit(holder.txn, { head: await commitToFork(holder, { "src/b.ts": "mine\n" }) })).state).toBe("stale");
+    const other = await beginTxn(t, "other");
+    expect(ok(await t.L.intendWrite(other.txn, "src/b.ts"))).toEqual({ go: true });
+  });
+
+  it("refreshes an open transaction onto the current trunk: same attempt, new snapshot, reads start over", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t, "agent-r");
+    ok(await t.L.reads(b.txn, ["src/a.ts", "src/b.ts"]));
+    const mover = await readyTxn(t, { "src/a.ts": "export const a = 7;\n" }, ["src/c.ts"], "mover");
+    await landAlone(t, mover.b.txn, mover.b, mover.sha, ["src/a.ts"]);
+    const r = ok(await t.L.refresh(b.txn));
+    expect(r).toMatchObject({ snapshot: mover.sha, attempt: 1 });
+    expect(r.delta.map((d) => d.path)).toEqual(["src/a.ts"]);
+    expect(r.delta[0]!.patch).toContain("+export const a = 7;");
+    expect(r.trunk.token).toMatch(/^art_v1_/);
+    const s = ok(await t.L.status(b.txn));
+    expect(s.txn).toMatchObject({ state: "open", attempt: 1, snapshot: mover.sha, snapshotSeq: 1 });
+    expect(s.staleWarnings).toEqual([]);
+    expect(ok(await t.L.detail(b.txn)).attempts[0]!.reads).toEqual([]);
+    expect((await opsOf(t, "txn.open")).at(-1)).toMatchObject({ txn: b.txn, data: { refresh: true, snapshot: mover.sha } });
+    // work on the new snapshot lands without a stale abort
+    ok(await t.L.reads(b.txn, ["src/a.ts"]));
+    const head = await commitToFork({ ...b, snapshot: r.snapshot }, { "src/r.ts": "r\n" }, { force: true, from: r.trunk });
+    expect(ok(await t.L.submit(b.txn, { head })).state).toBe("ready");
+  });
+
+  it("refresh is a no-op at the trunk head and 409 when not open", async () => {
+    const t = await newRepo();
+    const b = await beginTxn(t);
+    expect(ok(await t.L.refresh(b.txn))).toMatchObject({ snapshot: b.snapshot, delta: [] });
+    expect((await opsOf(t, "txn.open")).filter((o) => o.data.refresh)).toEqual([]);
+    ok(await t.L.abort(b.txn, "x"));
+    expect(err(await t.L.refresh(b.txn))).toBe(409);
+    expect(err(await t.L.refresh("t_nope"))).toBe(404);
+  });
+});
