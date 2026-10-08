@@ -2,9 +2,9 @@ import { Hono } from "hono";
 import { api, authorized } from "./api";
 import { mcpFetch } from "./mcp";
 import { previewFetch } from "./preview";
-import { ledger } from "./service";
-import type { PushEvent } from "../shared/types";
+import { ingestPush, isPushEvent } from "./ingest";
 
+export { Ingest } from "./ingest";
 export { Land } from "./land";
 export { Ledger } from "./ledger/ledger";
 
@@ -22,19 +22,9 @@ app.all("/preview/:repo/:sha/*", (c) => previewFetch(c.req.raw, c.env));
 // Local push events from dev/store (PLAN.md §5.5); production gets them through the ryke-ingest workflow.
 app.post("/internal/events", async (c) => {
   if (!c.env.RYKE_INTERNAL_SECRET || c.req.header("x-ryke-internal") !== c.env.RYKE_INTERNAL_SECRET) return c.json({ error: "unauthorized" }, 401);
-  const ev = (await c.req.json().catch(() => null)) as PushEvent | null;
-  if (
-    ev?.type !== "cf.artifacts.repo.pushed" ||
-    typeof ev.source?.repoName !== "string" ||
-    typeof ev.payload?.ref !== "string" ||
-    typeof ev.payload?.after !== "string"
-  )
-    return c.json({ error: "not a push event" }, 422);
-  const name = ev.source.repoName;
-  // Forks are `<repo>--<txn>` and txn ids have no hyphens, so the last `--` splits them.
-  const repo = name.includes("--") ? name.slice(0, name.lastIndexOf("--")) : name;
-  const res = await ledger(c.env, repo).onPush(name, ev.payload.ref, ev.payload.after);
-  return c.json(res.ok ? res.value : { txn: null });
+  const ev = (await c.req.json().catch(() => null)) as unknown;
+  if (!isPushEvent(ev)) return c.json({ error: "not a push event" }, 422);
+  return c.json(await ingestPush(c.env, ev));
 });
 
 export default app;

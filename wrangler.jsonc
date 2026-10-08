@@ -11,7 +11,10 @@
   },
   "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }] },
   "exports": { "Ledger": { "type": "durable-object", "storage": "sqlite" } },
-  "workflows": [{ "name": "ryke-land", "binding": "LAND", "class_name": "Land" }],
+  "workflows": [
+    { "name": "ryke-land", "binding": "LAND", "class_name": "Land" },
+    { "name": "ryke-ingest", "binding": "INGEST", "class_name": "Ingest" }
+  ],
   "worker_loaders": [{ "binding": "LOADER" }],
   // Local stand-ins (PLAN.md §2); dev/all.mjs and the tests override the URLs per port offset.
   "vars": {
@@ -24,9 +27,43 @@
     "RYKE_SCREENSHOTS": "0"
   },
   "env": {
+    // `npx wrangler deploy --env production` (PLAN.md §13 M9). Needs Workers Paid with Artifacts,
+    // Containers and Dynamic Workers; secrets: RYKE_TOKEN, RYKE_INTERNAL_SECRET, TYPESAFE_API_KEY,
+    // ANTHROPIC_API_KEY (docs/deploy.md).
     "production": {
-      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }] },
-      "workflows": [{ "name": "ryke-land", "binding": "LAND", "class_name": "Land" }],
+      "routes": [{ "pattern": "ryke.ai", "custom_domain": true }],
+      "observability": { "enabled": true },
+      "durable_objects": {
+        "bindings": [
+          { "name": "LEDGER", "class_name": "Ledger" },
+          { "name": "RUNNER", "class_name": "Runner" }
+        ]
+      },
+      "exports": {
+        "Ledger": { "type": "durable-object", "storage": "sqlite" },
+        "Runner": { "type": "durable-object", "storage": "sqlite", "container": "runner" }
+      },
+      "containers": [
+        {
+          "name": "runner",
+          "class_name": "Runner",
+          "scheduling_policy": "durable_object",
+          "images": { "runner": { "dockerfile": "./containers/runner/Dockerfile", "build_context": "." } }
+        }
+      ],
+      "workflows": [
+        { "name": "ryke-land", "binding": "LAND", "class_name": "Land" },
+        { "name": "ryke-ingest", "binding": "INGEST", "class_name": "Ingest" }
+      ],
+      "triggers": {
+        "events": [
+          {
+            "type": "cf.artifacts.repo.pushed",
+            "filter": { "namespace": "ryke" },
+            "targets": [{ "type": "workflow", "workflow_name": "ryke-ingest" }]
+          }
+        ]
+      },
       "worker_loaders": [{ "binding": "LOADER" }],
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "ryke" }],
       "vars": {
@@ -36,7 +73,8 @@
         "RYKE_NAMESPACE": "ryke",
         "RYKE_STORE_URL": "",
         "RYKE_RUNNER_URL": "",
-        "RYKE_SCREENSHOTS": "1"
+        "RYKE_SCREENSHOTS": "1",
+        "RYKE_RUNNER_SLOTS": "6"
       }
     }
   }
