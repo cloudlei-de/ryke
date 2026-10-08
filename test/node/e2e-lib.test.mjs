@@ -3,6 +3,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  benchCaveats,
+  benchCellStats,
+  benchVerdict,
   bindingNames,
   checkProductionConfig,
   claudeVerdict,
@@ -11,8 +14,10 @@ import {
   contentionStats,
   contentionVerdict,
   criteriaVerdict,
+  formatBenchComparison,
   formatComparison,
   formatCriteria,
+  isBenchHotPath,
   landedPerMinute,
   jevPlan,
   M3_CRITERIA,
@@ -154,21 +159,46 @@ describe("landedPerMinute", () => {
 });
 
 describe("contentionVerdict", () => {
-  const run = (hot, trunkGreen = true) => ({ hotStaleAborts: hot, trunkGreen });
+  // The baseline never leases anything; the contention-on run defaults to one in which leases made someone
+  // wait, so a row only has to name what it changes.
+  const baseline = (hot, trunkGreen = true) => ({ hotStaleAborts: hot, trunkGreen, leaseGrants: 0, leaseWaits: 0 });
+  const leased = (hot, over = {}) => ({ hotStaleAborts: hot, trunkGreen: true, leaseGrants: 40, leaseWaits: 5, ...over });
+  const NOT_EXERCISED = "contention on granted no leases (0 lease.granted ops), so the lease mechanism was not exercised";
+  const reduced = (off, on) => `contention on did not reduce stale aborts on hot files: off ${off}, on ${on}`;
   const rows = [
-    ["fewer hot aborts with contention on, both trunks green", run(9), run(3), []],
-    ["one fewer is enough", run(2), run(1), []],
-    ["equal numbers are not a reduction", run(3), run(3), ["contention on did not reduce stale aborts on hot files: off 3, on 3"]],
-    ["more with contention on is not a reduction", run(3), run(5), ["contention on did not reduce stale aborts on hot files: off 3, on 5"]],
-    ["no hot aborts at all in the baseline proves nothing", run(0), run(0), ["contention on did not reduce stale aborts on hot files: off 0, on 0"]],
-    ["a red trunk with contention on is reported", run(9), run(3, false), ["the trunk of the contention on run is not green"]],
-    ["a red trunk with contention off is reported", run(9, false), run(3), ["the trunk of the contention off run is not green"]],
-    ["a trunk that was not checked is not green", run(9), { hotStaleAborts: 3, trunkGreen: null }, ["the trunk of the contention on run is not green"]],
+    // Leases made someone wait: the hot-file claim is asserted, exactly as before.
+    ["waits, fewer hot aborts with contention on, both trunks green", baseline(9), leased(3), []],
+    ["waits, one fewer is enough", baseline(2), leased(1), []],
+    ["waits, equal numbers are not a reduction", baseline(3), leased(3), [reduced(3, 3)]],
+    ["waits, more with contention on is not a reduction", baseline(3), leased(5), [reduced(3, 5)]],
+    ["waits, no hot aborts at all in the baseline proves nothing", baseline(0), leased(0), [reduced(0, 0)]],
+    ["a single wait is enough to assert the hot-file claim", baseline(3), leased(5, { leaseWaits: 1 }), [reduced(3, 5)]],
+    // Nobody waited: leases changed nothing, so the difference is noise and is not asserted either way.
+    ["no waits, more hot aborts with contention on (24 off, 25 on at e080cb1) is not a failure", baseline(24), leased(25, { leaseWaits: 0 }), []],
+    ["no waits, fewer hot aborts with contention on is not credited to leases and not a failure either", baseline(28), leased(24, { leaseWaits: 0 }), []],
+    ["no waits, equal hot aborts", baseline(3), leased(3, { leaseWaits: 0 }), []],
+    ["no waits and no hot aborts at all", baseline(0), leased(0, { leaseWaits: 0 }), []],
+    // The mechanism must have been exercised in the on run, whether or not anyone waited.
+    ["no leases granted with contention on fails, waits or not", baseline(9), leased(3, { leaseGrants: 0, leaseWaits: 0 }), [NOT_EXERCISED]],
+    ["no leases granted fails even when the hot-file numbers look right", baseline(9), leased(3, { leaseGrants: 0 }), [NOT_EXERCISED]],
+    ["no leases granted and waits with worse hot numbers fails both", baseline(3), leased(5, { leaseGrants: 0 }), [NOT_EXERCISED, reduced(3, 5)]],
+    ["a grant count that is missing is no grant", baseline(9), leased(3, { leaseGrants: undefined, leaseWaits: 0 }), [NOT_EXERCISED]],
+    // Missing data is a failure, never a silent pass.
+    ["a wait count that is missing fails", baseline(9), leased(3, { leaseWaits: undefined }), ["contention on has no lease wait count, so it is unknown whether leases made anyone wait"]],
+    ["a wait count that is not a number fails", baseline(9), leased(3, { leaseWaits: "7" }), ["contention on has no lease wait count, so it is unknown whether leases made anyone wait"]],
+    ["a missing hot count on the on run fails when waits make it matter", baseline(9), leased(undefined), ["contention on made transactions wait, so hot-file stale aborts are compared, but a count is missing: off 9, on undefined"]],
+    ["a missing hot count on the baseline fails when waits make it matter", baseline(undefined), leased(3), ["contention on made transactions wait, so hot-file stale aborts are compared, but a count is missing: off undefined, on 3"]],
+    ["a missing hot count is nobody's business when nobody waited", baseline(undefined), leased(undefined, { leaseWaits: 0 }), []],
+    // Trunks.
+    ["a red trunk with contention on is reported", baseline(9), leased(3, { trunkGreen: false }), ["the trunk of the contention on run is not green"]],
+    ["a red trunk with contention off is reported", baseline(9, false), leased(3), ["the trunk of the contention off run is not green"]],
+    ["a trunk that was not checked is not green", baseline(9), leased(3, { trunkGreen: null }), ["the trunk of the contention on run is not green"]],
+    ["a red trunk is reported when nobody waited too", baseline(9), leased(3, { trunkGreen: false, leaseWaits: 0 }), ["the trunk of the contention on run is not green"]],
     [
       "everything wrong at once reports everything",
-      run(3, false),
-      run(5, false),
-      ["the trunk of the contention off run is not green", "the trunk of the contention on run is not green", "contention on did not reduce stale aborts on hot files: off 3, on 5"],
+      baseline(3, false),
+      leased(5, { trunkGreen: false, leaseGrants: 0 }),
+      ["the trunk of the contention off run is not green", "the trunk of the contention on run is not green", NOT_EXERCISED, reduced(3, 5)],
     ],
   ];
   for (const [name, off, on, want] of rows) {
@@ -178,13 +208,15 @@ describe("contentionVerdict", () => {
 
 describe("contentionCaveats", () => {
   const run = (leaseGrants, leaseWaits) => ({ leaseGrants, leaseWaits });
+  const NO_WAITS = (grants) =>
+    `contention on never made a transaction wait for a lease (${grants} grants, 0 waits), so leases changed nothing in this run: the hot-file difference between the runs is reported, not asserted, and the lease effect is the bench leg's`;
   const rows = [
     ["leases made someone wait with contention on, none with it off", run(0, 0), run(228, 7), []],
-    ["contention on granted leases but never made anyone wait", run(0, 0), run(228, 0), ["contention on never made a transaction wait for a lease (228 grants, 0 waits), so the difference between the runs cannot be attributed to leases"]],
-    ["contention on did not even grant one", run(0, 0), run(0, 0), ["contention on never made a transaction wait for a lease (0 grants, 0 waits), so the difference between the runs cannot be attributed to leases"]],
+    ["contention on granted leases but never made anyone wait", run(0, 0), run(228, 0), [NO_WAITS(228)]],
+    ["contention on did not even grant one", run(0, 0), run(0, 0), [NO_WAITS(0)]],
     ["contention off recorded leases", run(3, 0), run(228, 7), ["contention off still recorded 3 lease grants and 0 waits"]],
     ["contention off recorded waits", run(0, 2), run(228, 7), ["contention off still recorded 0 lease grants and 2 waits"]],
-    ["both caveats", run(1, 1), run(0, 0), ["contention on never made a transaction wait for a lease (0 grants, 0 waits), so the difference between the runs cannot be attributed to leases", "contention off still recorded 1 lease grants and 1 waits"]],
+    ["both caveats", run(1, 1), run(0, 0), [NO_WAITS(0), "contention off still recorded 1 lease grants and 1 waits"]],
   ];
   for (const [name, off, on, want] of rows) {
     it(name, () => assert.deepEqual(contentionCaveats({ off, on }), want));
@@ -213,6 +245,200 @@ describe("formatComparison", () => {
   it("lines every column up", () => {
     const widths = new Set(text.split("\n").map((l) => l.length));
     assert.equal(widths.size, 1, text);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The bench leg: `ryke` against `ryke-nolease` on the bench workload (harness/bench.mjs, runBench)
+// ---------------------------------------------------------------------------------------------
+
+describe("isBenchHotPath", () => {
+  const rows = [
+    ["the hottest file by reads and writes", "src/format.ts", true],
+    ["the second", "src/ui/layout.ts", true],
+    ["the third, which is a union path and never aborts anything but is still hot", "src/registry.ts", true],
+    ["a pin of a hot constant is rewritten by whoever changes it, so it heats with it", "src/bench/pin-seed-format.ts", true],
+    ["any pin", "src/bench/pin-a1b2.ts", true],
+    ["a file that merely gets aborted a lot is not hot by the workload's definition", "src/ui/html.ts", false],
+    ["a new unit", "src/units/temperature.ts", false],
+    ["a pin-like name outside the pin directory", "src/pin-seed-format.ts", false],
+    ["a nested path under the pin directory", "src/bench/sub/pin-x.ts", false],
+    ["a test file", "test/format.test.ts", false],
+    ["a similar name", "src/format.tsx", false],
+    ["an empty path", "", false],
+  ];
+  for (const [name, path, want] of rows) {
+    it(name, () => assert.equal(isBenchHotPath(path), want));
+  }
+});
+
+describe("benchCellStats", () => {
+  // What runBench hands over for one cell: the results cell and the details entry ({policy, agents, ...detail}).
+  const cell = (over = {}) => ({ policy: "ryke", agents: 50, landed: 40, landedPerMinute: 40, p50: 12, p95: 30, aborts: { stale_read: 20, max_attempts: 2 }, verifyRunsPerLanded: 0.3, wastedAgentSeconds: 90.5, trunkBreakages: 0, ...over });
+  const detail = (over = {}) => ({
+    policy: "ryke",
+    agents: 50,
+    leaseWaits: 9,
+    leaseWaitSeconds: 41.5,
+    errors: 0,
+    ryke: { staleAborts: 18, stalePaths: { "src/format.ts": 6, "src/ui/layout.ts": 4, "src/bench/pin-seed-format.ts": 3, "src/units/temperature.ts": 5 } },
+    ...over,
+  });
+
+  it("reads the headline numbers off the cell and its details", () => {
+    assert.deepEqual(benchCellStats(cell(), detail()), {
+      policy: "ryke",
+      agents: 50,
+      landed: 40,
+      landedPerMinute: 40,
+      staleAborts: 20,
+      hotStaleAborts: 13,
+      leaseWaits: 9,
+      leaseWaitSeconds: 41.5,
+      trunkBreakages: 0,
+      errors: 0,
+    });
+  });
+
+  const hot = [
+    ["only the workload's hot files and pins are summed", { "src/format.ts": 6, "src/ui/layout.ts": 4, "src/registry.ts": 1, "src/bench/pin-x.ts": 2, "src/ui/html.ts": 20 }, 13],
+    ["no stale aborts at all is zero, not missing", {}, 0],
+    ["only cold files is zero", { "src/ui/html.ts": 20 }, 0],
+    ["a count that is not a number is ignored", { "src/format.ts": 6, "src/ui/layout.ts": "4", "src/registry.ts": null }, 6],
+  ];
+  for (const [name, stalePaths, want] of hot) {
+    it(`hot-file aborts: ${name}`, () => assert.equal(benchCellStats(cell(), detail({ ryke: { stalePaths } })).hotStaleAborts, want));
+  }
+
+  it("a cell without a stale_read entry had none", () => assert.equal(benchCellStats(cell({ aborts: { max_attempts: 1 } }), detail()).staleAborts, 0));
+  it("a cell with an empty abort map had none", () => assert.equal(benchCellStats(cell({ aborts: {} }), detail()).staleAborts, 0));
+
+  const missing = [
+    ["no aborts map on the cell", cell({ aborts: undefined }), detail(), "staleAborts"],
+    ["an aborts value that is not a map", cell({ aborts: 7 }), detail(), "staleAborts"],
+    ["no ryke section in the details (a baseline policy)", cell(), detail({ ryke: null }), "hotStaleAborts"],
+    ["no stalePaths in the ryke section", cell(), detail({ ryke: { staleAborts: 3 } }), "hotStaleAborts"],
+    ["stalePaths that is not a map", cell(), detail({ ryke: { stalePaths: 5 } }), "hotStaleAborts"],
+    ["no lease wait count in the details", cell(), detail({ leaseWaits: undefined }), "leaseWaits"],
+    ["no landed/min on the cell", cell({ landedPerMinute: undefined }), detail(), "landedPerMinute"],
+  ];
+  for (const [name, c, d, field] of missing) {
+    it(`missing data stays missing (null), never zero: ${name}`, () => assert.equal(benchCellStats(c, d)[field], null));
+  }
+
+  it("no cell and no details at all is every number missing", () => {
+    const s = benchCellStats(undefined, undefined);
+    assert.deepEqual(
+      Object.values(s).filter((v) => v !== null),
+      [],
+    );
+  });
+  it("a cell without details still reports what the cell has", () => {
+    const s = benchCellStats(cell(), undefined);
+    assert.deepEqual([s.landedPerMinute, s.staleAborts, s.hotStaleAborts, s.leaseWaits], [40, 20, null, null]);
+  });
+});
+
+describe("benchVerdict", () => {
+  const stats = (over = {}) => ({ landedPerMinute: 40, staleAborts: 30, hotStaleAborts: 20, leaseWaits: 6, trunkBreakages: 0, errors: 0, ...over });
+  // The baseline (`ryke-nolease`) never waits; the run with leases defaults to one that did and contended less.
+  const nolease = (over = {}) => stats({ staleAborts: 60, hotStaleAborts: 45, leaseWaits: 0, ...over });
+  const ryke = (over = {}) => stats(over);
+  const NO_WAIT = "the bench ryke cell never made an agent wait for a lease (0 lease waits), so it shows nothing about leases";
+  const NOT_FEWER = (off, on) => `in the bench, leases did not reduce stale_read aborts on hot files: ryke-nolease ${off}, ryke ${on}`;
+  const rows = [
+    ["fewer hot-file aborts with leases and at least one wait passes", nolease(), ryke(), []],
+    ["one fewer is enough", nolease({ hotStaleAborts: 11 }), ryke({ hotStaleAborts: 10 }), []],
+    ["a single lease wait is enough", nolease(), ryke({ leaseWaits: 1 }), []],
+    ["more stale aborts overall do not matter while the hot-file ones are fewer", nolease({ staleAborts: 10 }), ryke({ staleAborts: 90 }), []],
+    ["equal hot-file aborts are not a reduction", nolease({ hotStaleAborts: 20 }), ryke({ hotStaleAborts: 20 }), [NOT_FEWER(20, 20)]],
+    ["more hot-file aborts with leases are not a reduction", nolease({ hotStaleAborts: 20 }), ryke({ hotStaleAborts: 25 }), [NOT_FEWER(20, 25)]],
+    ["no hot-file aborts at all in the baseline proves nothing", nolease({ hotStaleAborts: 0 }), ryke({ hotStaleAborts: 0 }), [NOT_FEWER(0, 0)]],
+    ["zero lease waits fails even with far fewer aborts", nolease(), ryke({ leaseWaits: 0 }), [NO_WAIT]],
+    ["zero lease waits and no reduction fails twice", nolease({ hotStaleAborts: 20 }), ryke({ leaseWaits: 0, hotStaleAborts: 20 }), [NO_WAIT, NOT_FEWER(20, 20)]],
+    ["a lease wait count of zero on the baseline is expected", nolease({ leaseWaits: 0 }), ryke(), []],
+    // Missing data is a failure that names what is missing, and nothing is compared.
+    ["the baseline cell is missing", null, ryke(), ["the bench ryke-nolease cell has no result"]],
+    ["the leased cell is missing", nolease(), undefined, ["the bench ryke cell has no result"]],
+    ["both cells are missing", null, null, ["the bench ryke-nolease cell has no result", "the bench ryke cell has no result"]],
+    ["no hot-file count on the leased cell", nolease(), ryke({ hotStaleAborts: null }), ["the bench ryke cell has no stale_read aborts on hot files"]],
+    ["no hot-file count on the baseline", nolease({ hotStaleAborts: null }), ryke(), ["the bench ryke-nolease cell has no stale_read aborts on hot files"]],
+    ["no lease wait count on the leased cell is not read as zero", nolease(), ryke({ leaseWaits: null }), ["the bench ryke cell has no lease waits"]],
+    ["no lease wait count on the baseline", nolease({ leaseWaits: undefined }), ryke(), ["the bench ryke-nolease cell has no lease waits"]],
+    ["no overall stale_read count", nolease(), ryke({ staleAborts: null }), ["the bench ryke cell has no stale_read aborts"]],
+    ["no landed/min", nolease({ landedPerMinute: null }), ryke(), ["the bench ryke-nolease cell has no landed/min"]],
+    ["a count that is not finite counts as missing", nolease(), ryke({ hotStaleAborts: Number.NaN, leaseWaits: Infinity }), ["the bench ryke cell has no stale_read aborts on hot files", "the bench ryke cell has no lease waits"]],
+    ["missing data on one cell and a cell missing on the other reports both", nolease({ leaseWaits: null }), null, ["the bench ryke-nolease cell has no lease waits", "the bench ryke cell has no result"]],
+  ];
+  for (const [name, off, on, want] of rows) {
+    it(name, () => assert.deepEqual(benchVerdict({ off, on }), want));
+  }
+});
+
+describe("benchCaveats", () => {
+  const run = (leaseWaits, errors = 0) => ({ leaseWaits, errors });
+  const rows = [
+    ["a clean pair has nothing to say", run(0), run(6), []],
+    ["the baseline waited for a lease, so the ablation did not take", run(2), run(6), ["the bench ryke-nolease cell recorded 2 lease waits, so the ablation did not take effect and the comparison is not leases against none"]],
+    ["agent errors in the leased cell", run(0), run(6, 3), ["the bench ryke cell had 3 agent error(s), so what it measured is partly the errors"]],
+    ["agent errors in the baseline", run(0, 1), run(6), ["the bench ryke-nolease cell had 1 agent error(s), so what it measured is partly the errors"]],
+    [
+      "everything at once, baseline first",
+      run(4, 2),
+      run(6, 5),
+      [
+        "the bench ryke-nolease cell recorded 4 lease waits, so the ablation did not take effect and the comparison is not leases against none",
+        "the bench ryke-nolease cell had 2 agent error(s), so what it measured is partly the errors",
+        "the bench ryke cell had 5 agent error(s), so what it measured is partly the errors",
+      ],
+    ],
+    ["missing cells are the verdict's business, not a caveat", null, undefined, []],
+    ["missing counts are the verdict's business too", {}, {}, []],
+  ];
+  for (const [name, off, on, want] of rows) {
+    it(name, () => assert.deepEqual(benchCaveats({ off, on }), want));
+  }
+});
+
+describe("formatBenchComparison", () => {
+  const off = { policy: "ryke-nolease", agents: 50, landed: 33, landedPerMinute: 33.04, staleAborts: 61, hotStaleAborts: 44, leaseWaits: 0, leaseWaitSeconds: 0, trunkBreakages: 0 };
+  const on = { policy: "ryke", agents: 50, landed: 41, landedPerMinute: 41.5, staleAborts: 27, hotStaleAborts: 16, leaseWaits: 9, leaseWaitSeconds: 41.5, trunkBreakages: 0 };
+  const text = formatBenchComparison({ off, on });
+  const rows = [
+    [/^\s+off\s+on$/m, "a header with the leases-off baseline first"],
+    [/^policy\s+ryke-nolease\s+ryke$/m, "the policy each column ran"],
+    [/^agents\s+50\s+50$/m, "agents"],
+    [/^landed\s+33\s+41$/m, "landed"],
+    [/^landed\/min\s+33\.0\s+41\.5$/m, "rates with one decimal"],
+    [/^stale_read aborts, all\s+61\s+27$/m, "all stale_read aborts"],
+    [/^stale_read aborts on hot files\s+44\s+16$/m, "the headline row"],
+    [/^lease waits \(agents\)\s+0\s+9$/m, "lease waits"],
+    [/^lease wait time \(s\)\s+0\s+41\.5$/m, "lease wait seconds"],
+    [/^trunk breakages\s+0\s+0$/m, "trunk breakages"],
+  ];
+  for (const [pattern, name] of rows) {
+    it(`has ${name}`, () => assert.match(text, pattern));
+  }
+  it("lines every column up", () => {
+    const widths = new Set(text.split("\n").map((l) => l.length));
+    assert.equal(widths.size, 1, text);
+  });
+  it("shows a number it does not have as a dash instead of NaN or undefined", () => {
+    const t = formatBenchComparison({ off: { ...off, hotStaleAborts: null, landedPerMinute: undefined }, on: { ...on, leaseWaits: null } });
+    assert.match(t, /^stale_read aborts on hot files\s+-\s+16$/m);
+    assert.match(t, /^landed\/min\s+-\s+41\.5$/m);
+    assert.match(t, /^lease waits \(agents\)\s+0\s+-$/m);
+    assert.doesNotMatch(t, /NaN|undefined|null/);
+  });
+  it("a number that is not finite is a dash too", () => {
+    const t = formatBenchComparison({ off: { ...off, landedPerMinute: Number.NaN, staleAborts: Infinity }, on });
+    assert.match(t, /^landed\/min\s+-\s+41\.5$/m);
+    assert.match(t, /^stale_read aborts, all\s+-\s+27$/m);
+  });
+  it("a missing cell is a column of dashes", () => {
+    const t = formatBenchComparison({ off: null, on });
+    assert.match(t, /^policy\s+-\s+ryke$/m);
+    assert.match(t, /^landed\s+-\s+41$/m);
   });
 });
 
