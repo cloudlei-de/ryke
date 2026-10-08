@@ -68,8 +68,10 @@ binding with `"remote": true`. That run has not been done yet (BLOCKERS.md).
 ## What has not been run against Cloudflare
 
 Workers Paid was not active while Ryke was built, so these paths compile and have unit tests but have
-not been exercised on Cloudflare: the Artifacts store adapter (`src/worker/store/artifacts.ts`), the
-container Runner and its Outbound gateway (`src/worker/runner/container.ts`), the `ryke-ingest`
-trigger, and candidate refs under `refs/ryke/candidates/*` on Artifacts (if Artifacts rejects
-non-branch refs, switch `land.mjs` to `ryke-candidate-<train>` branches as PLAN.md §5.3 describes).
+not been exercised on Cloudflare: the Artifacts store adapter (`src/worker/store/artifacts.ts`, whose
+tests run the store contract against an in-memory fake of the binding, `test/fake-artifacts.ts`, not
+the real service), the container Runner and its Outbound gateway (`src/worker/runner/container.ts`),
+the `ryke-ingest` trigger, and candidate refs under `refs/ryke/candidates/*` on Artifacts (if
+Artifacts rejects non-branch refs, switch `land.mjs` to `ryke-candidate-<train>` branches as PLAN.md
+§5.3 describes).
 BLOCKERS.md lists what is needed to close each gap.

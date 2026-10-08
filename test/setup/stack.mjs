@@ -7,9 +7,12 @@ import { startRunner } from "../../dev/runner/server.mjs";
 import { startStore } from "../../dev/store/server.mjs";
 import { startGitHelper } from "./git-helper.mjs";
 
+// The same value vitest.config.ts gives the Worker as RYKE_INTERNAL_SECRET, which the store's control API requires.
+const INTERNAL_SECRET = "test-secret";
+
 async function fixture(storeUrl, gitUrl) {
   const call = async (path, body) => {
-    const r = await fetch(storeUrl + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(storeUrl + path, { method: "POST", headers: { "content-type": "application/json", "x-ryke-internal": INTERNAL_SECRET }, body: JSON.stringify(body) });
     if (!r.ok) throw new Error(`${path}: ${r.status} ${await r.text()}`);
     return r.json();
   };
@@ -39,7 +42,7 @@ async function fixture(storeUrl, gitUrl) {
 export default async function ({ provide }) {
   const ports = JSON.parse(process.env.RYKE_TEST_PORTS);
   const stateDir = await mkdtemp(join(tmpdir(), "ryke-test-"));
-  const store = await startStore({ port: ports.store, stateDir, eventsUrl: "", internalSecret: "test-secret" });
+  const store = await startStore({ port: ports.store, stateDir, eventsUrl: "", internalSecret: INTERNAL_SECRET });
   const runner = await startRunner({ port: ports.runner, stateDir });
   const helper = await startGitHelper(ports.git);
   provide("fixture", await fixture(`http://127.0.0.1:${ports.store}`, `http://127.0.0.1:${ports.git}`));

@@ -1,9 +1,40 @@
 import { StoreError, type Change, type Commit, type RepoRef, type RepoStore } from "./store";
 
+const KNOWN_CODES = [
+  "ALREADY_EXISTS",
+  "NOT_FOUND",
+  "CREATE_IN_PROGRESS",
+  "IMPORT_IN_PROGRESS",
+  "FORK_IN_PROGRESS",
+  "INVALID_INPUT",
+  "INVALID_REPO_NAME",
+  "INVALID_TTL",
+  "INVALID_URL",
+  "REMOTE_AUTH_REQUIRED",
+  "UPSTREAM_UNAVAILABLE",
+  "MEMORY_LIMIT",
+  "INTERNAL_ERROR",
+];
+
+// The binding promises `ArtifactsError.code`, but the error crosses an RPC boundary and may arrive as a
+// plain Error without it. The text is then all there is: the code spelled out as the name or somewhere in
+// the message, or failing that the plain words ("not found", "already exists").
+function codeOf(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && KNOWN_CODES.includes(code)) return code;
+  const text = `${(e as { name?: unknown } | null)?.name ?? ""} ${(e as { message?: unknown } | null)?.message ?? ""}`;
+  // The first one mentioned wins: "INTERNAL_ERROR: could not find NOT_FOUND marker" is an internal error.
+  const mentioned = KNOWN_CODES.filter((c) => text.includes(c)).sort((a, b) => text.indexOf(a) - text.indexOf(b));
+  if (mentioned[0]) return mentioned[0];
+  if (/\bnot found\b/i.test(text)) return "NOT_FOUND";
+  if (/\balready exists\b/i.test(text)) return "ALREADY_EXISTS";
+  return "";
+}
+
 function mapError(e: unknown): never {
   if (e instanceof StoreError) throw e;
-  const code = (e as { code?: string }).code ?? "";
-  const message = (e as Error).message ?? String(e);
+  const code = codeOf(e);
+  const message = (e as Error | null)?.message ?? String(e);
   if (code === "NOT_FOUND") throw new StoreError("NOT_FOUND", message);
   if (code === "ALREADY_EXISTS") throw new StoreError("ALREADY_EXISTS", message);
   if (code.startsWith("INVALID")) throw new StoreError("INVALID", message);
@@ -93,10 +124,10 @@ export class ArtifactsStore implements RepoStore {
     }
   }
 
-  private async tree(repo: ArtifactsRepo, ref: string): Promise<string> {
+  // The tree of the commit `ref` names, or null when it names none.
+  private async tree(repo: ArtifactsRepo, ref: string): Promise<string | null> {
     const [c] = await repo.log({ ref, limit: 1 });
-    if (!c) throw new StoreError("NOT_FOUND", `ref ${ref} does not resolve`);
-    return c.treeHash;
+    return c?.treeHash ?? null;
   }
 
   private async walk(repo: ArtifactsRepo, hash: string, prefix: string, out: Map<string, string>): Promise<void> {
@@ -111,8 +142,15 @@ export class ArtifactsStore implements RepoStore {
   async files(name: string, ref: string): Promise<string[]> {
     try {
       using repo = await this.ns.get(name);
+      const tree = await this.tree(repo, ref);
+      if (tree === null) {
+        // Like the local store: a repo with no commits lists nothing, while an unknown ref in a repo
+        // that has history is an error. The binding answers [] for both, so HEAD tells them apart.
+        if ((await repo.log({ limit: 1 })).length === 0) return [];
+        throw new StoreError("NOT_FOUND", `ref ${ref} does not resolve`);
+      }
       const out = new Map<string, string>();
-      await this.walk(repo, await this.tree(repo, ref), "", out);
+      await this.walk(repo, tree, "", out);
       return [...out.keys()].sort();
     } catch (e) {
       mapError(e);
@@ -142,8 +180,11 @@ export class ArtifactsStore implements RepoStore {
   async diff(name: string, base: string, head: string): Promise<Change[]> {
     try {
       using repo = await this.ns.get(name);
+      const [from, to] = await Promise.all([this.tree(repo, base), this.tree(repo, head)]);
+      if (from === null) throw new StoreError("NOT_FOUND", `unknown commit: ${base}`);
+      if (to === null) throw new StoreError("NOT_FOUND", `unknown commit: ${head}`);
       const out: Change[] = [];
-      await this.compare(repo, await this.tree(repo, base), await this.tree(repo, head), "", out);
+      await this.compare(repo, from, to, "", out);
       return out.sort((x, y) => (x.path < y.path ? -1 : 1));
     } catch (e) {
       mapError(e);

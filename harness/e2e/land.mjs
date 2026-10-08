@@ -117,8 +117,10 @@ try {
 
   const summary = await api.repo(repo);
   const ws = await Workspace.create("checker");
-  const token = (await (await fetch(`http://127.0.0.1:${stack.storePort}/v1/repos/${repo}/tokens`, { method: "POST", body: JSON.stringify({ scope: "read", ttl: 600 }) })).json()).token;
-  const remote = (await (await fetch(`http://127.0.0.1:${stack.storePort}/v1/repos/${repo}`)).json()).remote;
+  // The store's control API wants the internal secret the stack was started with.
+  const internal = { "x-ryke-internal": stack.internalSecret };
+  const token = (await (await fetch(`http://127.0.0.1:${stack.storePort}/v1/repos/${repo}/tokens`, { method: "POST", headers: internal, body: JSON.stringify({ scope: "read", ttl: 600 }) })).json()).token;
+  const remote = (await (await fetch(`http://127.0.0.1:${stack.storePort}/v1/repos/${repo}`, { headers: internal })).json()).remote;
   const head = await ws.fetch(remote, token, "main");
   assert.equal(head, summary.head);
   await ws.checkout(head);

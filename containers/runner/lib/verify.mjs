@@ -102,19 +102,20 @@ async function checkout(tree, remote, ref) {
   }
 }
 
+// The command runs the repo's own `verify` line over code an agent wrote, so it starts from nothing:
+// the job's environment holds the runner's and the API's credentials, and a test that prints
+// process.env would put them in the log the agent reads. Only what a build needs to find its tools.
+const PASSED_ON = ["PATH", "HOME", "LANG", "TMPDIR"];
+
 function commandEnv(command) {
-  const env = { ...process.env, NO_COLOR: "1" };
-  // node warns when FORCE_COLOR and NO_COLOR are both set, and the warning would land in the output.
-  delete env.FORCE_COLOR;
-  // Set when this job itself runs under `node --test`. Inherited, it makes the command's own
-  // `node --test` print machine events for a parent runner instead of a report.
-  delete env.NODE_TEST_CONTEXT;
+  const env = { NO_COLOR: "1" };
+  for (const name of PASSED_ON) if (process.env[name] !== undefined) env[name] = process.env[name];
   // TAP is the reporter whose summary and failure details are easiest to parse reliably. A second
-  // --test-reporter (the command's own, or one already in NODE_OPTIONS) makes node throw because the
-  // destinations no longer match, so in that case the output is parsed as it comes.
-  const options = env.NODE_OPTIONS ?? "";
-  if (process.allowedNodeEnvironmentFlags.has("--test-reporter") && !/test-reporter/.test(`${options} ${command}`)) {
-    env.NODE_OPTIONS = `${options} --test-reporter=tap`.trim();
+  // --test-reporter (the command's own) makes node throw because the destinations no longer match,
+  // so in that case the output is parsed as it comes. NODE_OPTIONS of the job is not inherited: it
+  // is the runner's configuration, and `--require` in it would run inside the candidate's tests.
+  if (process.allowedNodeEnvironmentFlags.has("--test-reporter") && !/test-reporter/.test(command)) {
+    env.NODE_OPTIONS = "--test-reporter=tap";
   }
   return env;
 }

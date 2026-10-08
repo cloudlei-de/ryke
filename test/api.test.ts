@@ -1,7 +1,7 @@
 // The HTTP API (PLAN.md §6.1) through the Worker's own fetch: every route's success, 401 without the
 // bearer token, 404 for unknown ids, 409 for wrong states and 422 for invalid input.
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PushEvent } from "../src/shared/types";
 import type { Context } from "hono";
 import { api, authorized, respond } from "../src/worker/api";
@@ -52,6 +52,55 @@ const pushEvent = (repoName: string, after: string, ref = "refs/heads/main"): Pu
 
 const internal = (body: unknown, secret: string | null = env.RYKE_INTERNAL_SECRET) =>
   http("POST", "/internal/events", { body, auth: false, headers: secret === null ? {} : { "x-ryke-internal": secret } });
+
+// An Env whose Ledger namespace is a stub per Durable Object name. `touched` lists every Ledger the
+// code asked for, so a test can show that a request never reached a repo's own Durable Object.
+// `extra` overrides plain bindings (store URL, runner URL) on top of the real Env.
+function stubEnv(stubs: Record<string, Record<string, unknown>>, extra: Record<string, unknown> = {}) {
+  const touched: string[] = [];
+  const ns = {
+    idFromName: (name: string) => name,
+    get: (name: string) => {
+      touched.push(name);
+      const stub = stubs[name];
+      if (!stub) throw new Error(`the test did not expect Ledger ${name}`);
+      return stub;
+    },
+  };
+  const bindings = Object.fromEntries(Object.entries({ LEDGER: ns, ...extra }).map(([k, value]) => [k, { value }]));
+  return { env: Object.create(env, bindings) as Env, touched };
+}
+
+// The reserved index Ledger as the registry of repos: `known` are the repos it lists, `puts` records writes.
+function indexStub(known: string[] = [], puts: [string, string][] = []) {
+  return {
+    indexGet: async (key: string) => (key.startsWith("repo:") && known.includes(key.slice(5)) ? key.slice(5) : null),
+    indexPut: async (key: string, value: string) => void puts.push([key, value]),
+  };
+}
+
+const callApi = (e: Env, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
+  api.fetch(
+    new Request(`http://ryke.test${path}`, { method, headers: { ...AUTH, "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body) }),
+    e,
+  );
+
+// Answers one origin the way the runner or the store does and lets every other URL through, so a test
+// can script the job API without a second server. Restored by afterEach(vi.restoreAllMocks).
+function stubOrigin(origin: string, answer: (req: { method: string; path: string; body: Json; headers: Headers }) => Response | Promise<Response>) {
+  const real = globalThis.fetch;
+  const calls: { method: string; path: string; body: Json; headers: Headers }[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const req = new Request(input as RequestInfo, init);
+    const url = new URL(req.url);
+    if (url.origin !== origin) return real(input as RequestInfo, init);
+    const text = await req.text();
+    const call = { method: req.method, path: url.pathname + url.search, body: text ? (JSON.parse(text) as Json) : null, headers: req.headers };
+    calls.push(call);
+    return answer(call);
+  });
+  return calls;
+}
 
 describe("authentication and routing", () => {
   it("answers health to anyone", async () => {
@@ -290,6 +339,17 @@ describe("POST /api/repos and DELETE /api/repos/:repo", () => {
     expect(again.body).toEqual({ deleted: false });
   });
 
+  it("refuses to delete the reserved __index repo instead of wiping the txn index", async () => {
+    // A transaction known only to the index DO, as after a Worker restart (the in-memory cache is empty).
+    const t = await newRepo();
+    const txn = ok(await t.L.begin({ agent: "a", intent: "x" })).txn;
+    await ledger(env, "__index").indexPut(txn, t.name);
+    const del = await http("DELETE", "/api/repos/__index");
+    expect(del.status).toBeGreaterThanOrEqual(400);
+    expect(await ledger(env, "__index").indexGet(txn)).toBe(t.name);
+    expect((await http("GET", `/api/txns/${txn}`)).status).toBe(200);
+  });
+
   it("deletes a repo that was never created without an error", async () => {
     const r = await http("DELETE", `/api/repos/${unique("never")}`);
     expect(r.status).toBe(200);
@@ -322,19 +382,18 @@ describe("respond", () => {
 // ledger is a stub because the real one would need the store too.
 describe("when the store fails", () => {
   const down = (stub: Record<string, unknown>) =>
-    ({ RYKE_TOKEN: env.RYKE_TOKEN, RYKE_STORE: "local", RYKE_STORE_URL: env.RYKE_TEST_GIT_URL, LEDGER: { idFromName: (n: string) => n, get: () => stub } }) as unknown as Env;
-  const call = (path: string, init: RequestInit, stub: Record<string, unknown> = {}) =>
-    api.fetch(new Request(`http://ryke.test${path}`, { ...init, headers: { ...AUTH, "content-type": "application/json" } }), down(stub));
+    stubEnv({ anything: stub, __index: indexStub(["anything"]) }, { RYKE_STORE: "local", RYKE_STORE_URL: env.RYKE_TEST_GIT_URL }).env;
+  const call = (path: string, init: { method: string; body?: unknown }, stub: Record<string, unknown> = {}) => callApi(down(stub), init.method, path, init.body);
 
   it("is 503 for POST /api/repos", async () => {
-    const res = await call("/api/repos", { method: "POST", body: JSON.stringify({ name: "anything" }) });
+    const res = await call("/api/repos", { method: "POST", body: { name: "anything" } });
     expect(res.status).toBe(503);
     expect(((await res.json()) as Json).error).toContain("store answered 404");
   });
 
   it("is 503 for DELETE /api/repos/:repo, after the ledger was reset", async () => {
     let resets = 0;
-    const res = await call("/api/repos/anything", { method: "DELETE" }, { reset: async () => (resets++, { ok: true, value: { reset: true } }) });
+    const res = await call("/api/repos/anything", { method: "DELETE" }, { forks: async () => ({ ok: true, value: [] }), reset: async () => (resets++, { ok: true, value: { reset: true } }) });
     expect(res.status).toBe(503);
     expect(((await res.json()) as Json).error).toContain("store answered 404");
     expect(resets).toBe(1);
@@ -347,6 +406,346 @@ describe("when the store fails", () => {
       expect(res.status, query).toBe(503);
       expect(((await res.json()) as Json).error, query).toContain("store answered 404");
     }
+  });
+});
+
+// Public GETs must not create a SQLite Durable Object for any name an outsider types: the name is
+// validated first, and the repo has to be listed in the registry (the `repo:` keys of the index Ledger)
+// before its own Ledger is asked anything.
+describe("repo names and the repo registry", () => {
+  const names = ["Repo", "re_po", "a.b", "-x", "__index", "a".repeat(42), "a%2Fb", "a%20b"];
+  const routes: [string, string][] = [
+    ["GET", ""],
+    ["GET", "/ops"],
+    ["GET", "/files"],
+    ["GET", "/files?path=src/a.ts"],
+    ["GET", "/stream"],
+    ["POST", "/txns"],
+    ["POST", "/recall"],
+    ["DELETE", ""],
+  ];
+
+  it.each(names)("is 422 for the name %s on every repo route, touching no Ledger", async (name) => {
+    const { env: e, touched } = stubEnv({});
+    for (const [method, suffix] of routes) {
+      const res = await callApi(e, method, `/api/repos/${name}${suffix}`, method === "POST" ? {} : undefined);
+      expect(res.status, `${method} ${suffix}`).toBe(422);
+      expect(((await res.json()) as Json).error, `${method} ${suffix}`).toContain("name");
+    }
+    const upgrade = await callApi(e, "GET", `/api/repos/${name}/stream`, undefined, { upgrade: "websocket" });
+    expect(upgrade.status).toBe(422);
+    expect(touched).toEqual([]);
+  });
+
+  const reads = ["", "/ops", "/files", "/files?path=src/a.ts"];
+
+  it("is 404 for a valid name nobody created, without touching that repo's Ledger", async () => {
+    const { env: e, touched } = stubEnv({ __index: indexStub() });
+    for (const suffix of reads) {
+      const res = await callApi(e, "GET", `/api/repos/ghost${suffix}`);
+      expect(res.status, suffix).toBe(404);
+      expect(await res.json(), suffix).toEqual({ error: "repo is not initialised" });
+    }
+    const upgrade = await callApi(e, "GET", "/api/repos/ghost/stream", undefined, { upgrade: "websocket" });
+    expect(upgrade.status).toBe(404);
+    expect(new Set(touched)).toEqual(new Set(["__index"]));
+  });
+
+  it("still answers 426 for a stream request without an upgrade before it looks anything up", async () => {
+    const { env: e, touched } = stubEnv({});
+    expect((await callApi(e, "GET", "/api/repos/ghost/stream")).status).toBe(426);
+    expect(touched).toEqual([]);
+  });
+
+  it("treats an empty registry entry as a deleted repo", async () => {
+    const { env: e, touched } = stubEnv({ __index: { indexGet: async () => "" } });
+    expect((await callApi(e, "GET", "/api/repos/gone")).status).toBe(404);
+    expect(new Set(touched)).toEqual(new Set(["__index"]));
+  });
+
+  it("asks the repo's own Ledger once the registry lists it", async () => {
+    const summary = { repo: "listed", head: "a".repeat(40) };
+    const { env: e, touched } = stubEnv({ __index: indexStub(["listed"]), listed: { summary: async () => ({ ok: true, value: summary }) } });
+    const res = await callApi(e, "GET", "/api/repos/listed");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(summary);
+    expect(touched).toContain("listed");
+  });
+
+  it("registers a repo when it is created and forgets it when it is deleted", async () => {
+    const name = unique("api");
+    const registry = ledger(env, "__index");
+    expect(await registry.indexGet(`repo:${name}`)).toBeNull();
+    expect((await post("/api/repos", { name })).status).toBe(201);
+    expect(await registry.indexGet(`repo:${name}`)).toBe(name);
+    expect((await http("GET", `/api/repos/${name}`)).status).toBe(200);
+    expect((await http("DELETE", `/api/repos/${name}`)).status).toBe(200);
+    expect(await registry.indexGet(`repo:${name}`)).toBe("");
+    for (const suffix of reads) expect((await http("GET", `/api/repos/${name}${suffix}`)).status, suffix).toBe(404);
+    // A name can be reused after a delete.
+    expect((await post("/api/repos", { name })).status).toBe(201);
+    expect((await http("GET", `/api/repos/${name}`)).status).toBe(200);
+  });
+
+  it("keeps a repo that only exists in the store out of the API", async () => {
+    const name = unique("api");
+    await store.create(name);
+    expect((await http("GET", `/api/repos/${name}`)).status).toBe(404);
+    expect((await http("GET", `/api/repos/${name}/files`)).status).toBe(404);
+  });
+});
+
+// createRepo makes the trunk first and seeds it through a runner job, so every way that second step
+// can fail has to take the new trunk back out, or the name stays taken by an empty repo.
+describe("POST /api/repos when seeding or the ledger fails", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const RUNNER = "http://runner.test";
+  const runnerEnv = (url: string, stubs: Record<string, Record<string, unknown>> = {}) => stubEnv({ __index: indexStub(), ...stubs }, { RYKE_RUNNER_URL: url });
+  const jobs = (state: Record<string, unknown>) =>
+    stubOrigin(RUNNER, ({ method }) => (method === "POST" ? Response.json({ id: "j_1" }) : Response.json({ id: "j_1", ...state })));
+
+  async function expectGone(name: string) {
+    await expect(store.info(name)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await ledger(env, "__index").indexGet(`repo:${name}`)).toBeNull();
+  }
+
+  it("is 503 when the runner cannot be reached, and removes the new trunk", async () => {
+    stubOrigin(RUNNER, () => {
+      throw new TypeError("connection refused");
+    });
+    const name = unique("api");
+    const res = await callApi(runnerEnv(RUNNER).env, "POST", "/api/repos", { name });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as Json).error).toContain("runner unreachable");
+    await expectGone(name);
+    expect((await post("/api/repos", { name })).status).toBe(201);
+  });
+
+  it("is 503 when the runner refuses the job, and removes the new trunk", async () => {
+    stubOrigin(RUNNER, () => new Response("no such job kind", { status: 400 }));
+    const name = unique("api");
+    const res = await callApi(runnerEnv(RUNNER).env, "POST", "/api/repos", { name });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as Json).error).toContain("runner answered 400");
+    await expectGone(name);
+  });
+
+  it("is 503, not 422, when the seed job timed out (exit 124), and removes the new trunk", async () => {
+    jobs({ state: "failed", exitCode: 124, result: { error: "seed timed out after 120000 ms" } });
+    const name = unique("api");
+    const res = await callApi(runnerEnv(RUNNER).env, "POST", "/api/repos", { name });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as Json).error).toContain("timed out");
+    await expectGone(name);
+  });
+
+  it.each([
+    ["the job exited non-zero", { state: "failed", exitCode: 2, result: { error: "no such seed" } }],
+    ["the job reports done without a sha", { state: "done", exitCode: 0, result: {} }],
+    ["the job reports done without a result", { state: "done", exitCode: 0 }],
+  ])("is 422 when %s, and removes the new trunk", async (_label, state) => {
+    jobs(state);
+    const name = unique("api");
+    const res = await callApi(runnerEnv(RUNNER).env, "POST", "/api/repos", { name });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as Json).error).toContain("seeding failed");
+    await expectGone(name);
+  });
+
+  it("is 503 when the ledger cannot be initialised, and removes the new trunk without registering it", async () => {
+    const name = unique("api");
+    const puts: [string, string][] = [];
+    let resets = 0;
+    const { env: e } = stubEnv({
+      __index: indexStub([], puts),
+      [name]: { init: async () => Promise.reject(new Error("Durable Object is overloaded")), reset: async () => (resets++, { ok: true, value: { reset: true } }) },
+    });
+    const res = await callApi(e, "POST", "/api/repos", { name });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as Json).error).toContain("overloaded");
+    expect(puts).toEqual([]);
+    // It may have got part of the way before it failed, so the ledger is cleared too.
+    expect(resets).toBe(1);
+    await expectGone(name);
+  });
+
+  it("passes on the ledger's own refusal and removes the new trunk without registering it", async () => {
+    const name = unique("api");
+    const puts: [string, string][] = [];
+    let resets = 0;
+    const { env: e } = stubEnv({
+      __index: indexStub([], puts),
+      [name]: { init: async () => ({ ok: false, status: 409, error: "repo x is already initialised" }), reset: async () => void resets++ },
+    });
+    const res = await callApi(e, "POST", "/api/repos", { name });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as Json).error).toContain("already initialised");
+    expect(puts).toEqual([]);
+    // A ledger that refused to start holds someone else's state; only the new trunk is taken back.
+    expect(resets).toBe(0);
+    await expectGone(name);
+  });
+});
+
+describe("deleting a repo removes the forks of its transactions", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const gone = (fork: string) => expect(store.info(fork)).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+  it("DELETE /api/repos/:repo removes every fork and leaves other repos' forks alone", async () => {
+    const [name, other] = [unique("api"), unique("api")];
+    expect((await post("/api/repos", { name })).status).toBe(201);
+    expect((await post("/api/repos", { name: other })).status).toBe(201);
+    const mine = [await apiBegin(name), await apiBegin(name), await apiBegin(name)];
+    const theirs = await apiBegin(other);
+    for (const b of mine) expect((await store.info(`${name}--${b.txn}`)).head).toEqual(expect.stringMatching(SHA));
+    expect((await http("DELETE", `/api/repos/${name}`)).body).toEqual({ deleted: true });
+    for (const b of mine) await gone(`${name}--${b.txn}`);
+    expect((await store.info(`${other}--${theirs.txn}`)).head).toEqual(expect.stringMatching(SHA));
+  });
+
+  it("fresh: true removes them too, before the repo is made again", async () => {
+    const name = unique("api");
+    expect((await post("/api/repos", { name })).status).toBe(201);
+    const b = await apiBegin(name);
+    expect((await post("/api/repos", { name, fresh: true })).status).toBe(201);
+    await gone(`${name}--${b.txn}`);
+    expect((await http("GET", `/api/repos/${name}`)).body.counts).toEqual({});
+  });
+
+  it("carries on when a fork is already gone", async () => {
+    const name = unique("api");
+    expect((await post("/api/repos", { name })).status).toBe(201);
+    const [a, b] = [await apiBegin(name), await apiBegin(name)];
+    expect(await store.remove(`${name}--${a.txn}`)).toBe(true);
+    expect((await http("DELETE", `/api/repos/${name}`)).body).toEqual({ deleted: true });
+    await gone(`${name}--${b.txn}`);
+  });
+
+  it("removes forks 16 at a time, before the ledger forgets them, and survives failures", async () => {
+    const STORE = "http://store.test";
+    const forks = Array.from({ length: 40 }, (_, i) => `many--t_${i}`);
+    const log: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const calls = stubOrigin(STORE, async ({ method, path, headers }) => {
+      expect(headers.get("x-ryke-internal")).toBe(env.RYKE_INTERNAL_SECRET);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await sleep(10);
+      inFlight--;
+      log.push(`${method} ${path}`);
+      // Every fifth removal fails; the others, and the trunk, must still go.
+      if (forks.some((f, i) => path === `/v1/repos/${f}` && i % 5 === 0)) return Response.json({ error: { code: "UNAVAILABLE", message: "store hiccup" } }, { status: 503 });
+      return Response.json({ deleted: true });
+    });
+    const { env: e } = stubEnv(
+      {
+        __index: indexStub(),
+        many: {
+          forks: async () => ({ ok: true, value: forks }),
+          reset: async () => (log.push("reset"), { ok: true, value: { reset: true } }),
+        },
+      },
+      { RYKE_STORE: "local", RYKE_STORE_URL: STORE },
+    );
+    const res = await callApi(e, "DELETE", "/api/repos/many");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ deleted: true });
+    expect(peak).toBe(16);
+    expect(calls.map((c) => c.path).sort()).toEqual([...forks.map((f) => `/v1/repos/${f}`), "/v1/repos/many"].sort());
+    // Forks first (the ledger is the only list of them), then reset, then the trunk.
+    expect(log.indexOf("reset")).toBe(forks.length);
+    expect(log.at(-1)).toBe("DELETE /v1/repos/many");
+  });
+});
+
+describe("POST /api/demo/:repo/start", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const RUNNER = "http://runner.test";
+  const start = (body: unknown, opts: { auth?: boolean | string; repo?: string } = {}) => {
+    const e = Object.create(env, { RYKE_RUNNER_URL: { value: RUNNER } }) as Env;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const auth = opts.auth ?? true;
+    if (auth === true) headers.authorization = AUTH.authorization;
+    else if (typeof auth === "string") headers.authorization = auth;
+    return api.fetch(new Request(`http://ryke.test/api/demo/${opts.repo ?? "convert"}/start`, { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body) }), e);
+  };
+  const runnerJobs = () => stubOrigin(RUNNER, () => Response.json({ id: "j_swarm1" }));
+
+  it("starts a swarm job in the runner and answers 202 with its id", async () => {
+    const calls = runnerJobs();
+    const res = await start({ mode: "scripted", agents: 3 });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ job: "j_swarm1" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: "/v1/jobs",
+      // The swarm talks to this very API, so the job gets its address and the admin token.
+      body: { kind: "swarm", args: { repo: "convert", mode: "scripted", agents: "3", speed: "4" }, env: { RYKE_API_URL: "http://ryke.test", RYKE_TOKEN: env.RYKE_TOKEN } },
+    });
+  });
+
+  it.each([
+    ["claude mode with 50 agents", { mode: "claude", agents: 50 }, { mode: "claude", agents: "50", speed: "4" }],
+    ["a given speed", { mode: "scripted", agents: 1, speed: 2.5 }, { mode: "scripted", agents: "1", speed: "2.5" }],
+  ])("passes %s through to the job", async (_label, body, args) => {
+    const calls = runnerJobs();
+    expect((await start(body)).status).toBe(202);
+    expect(calls[0]!.body.args).toEqual({ repo: "convert", ...args });
+  });
+
+  it.each([
+    ["no header", false],
+    ["a wrong token", "Bearer not-the-token"],
+  ])("is 401 with %s and starts nothing", async (_label, auth) => {
+    const calls = runnerJobs();
+    const res = await start({ mode: "scripted", agents: 3 }, { auth });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized" });
+    expect(calls).toEqual([]);
+  });
+
+  it.each([["an array", "[]"], ["invalid JSON", "{"]])("is 422 for a body that is %s", async (_label, raw) => {
+    const calls = runnerJobs();
+    const res = await start(raw);
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "body must be a JSON object" });
+    expect(calls).toEqual([]);
+  });
+
+  // The whole table runs end to end in test/node/swarm.test.mjs; these pin which field each rule names.
+  it.each([
+    ["an upper-case repo", { mode: "scripted", agents: 3 }, "Convert", "repo"],
+    ["the reserved index", { mode: "scripted", agents: 3 }, "__index", "repo"],
+    ["an unknown mode", { mode: "fast", agents: 3 }, "convert", "mode"],
+    ["zero agents", { mode: "scripted", agents: 0 }, "convert", "agents"],
+    ["51 agents", { mode: "scripted", agents: 51 }, "convert", "agents"],
+    ["null agents", { mode: "scripted", agents: null }, "convert", "agents"],
+    ["zero speed", { mode: "scripted", agents: 3, speed: 0 }, "convert", "speed"],
+    ["null speed", { mode: "scripted", agents: 3, speed: null }, "convert", "speed"],
+  ])("is 422 for %s and starts nothing", async (_label, body, repo, field) => {
+    const calls = runnerJobs();
+    const res = await start(body, { repo });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as Json).error).toContain(field);
+    expect(calls).toEqual([]);
+  });
+
+  it("is 503 when the runner cannot be reached", async () => {
+    stubOrigin(RUNNER, () => {
+      throw new TypeError("connection refused");
+    });
+    const res = await start({ mode: "scripted", agents: 3 });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as Json).error).toContain("runner unreachable");
+  });
+
+  it("is 503 when the runner refuses the job", async () => {
+    stubOrigin(RUNNER, () => new Response("unknown job kind: swarm", { status: 400 }));
+    const res = await start({ mode: "scripted", agents: 3 });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as Json).error).toContain("unknown job kind");
   });
 });
 
@@ -428,9 +827,11 @@ describe("POST /api/repos/:repo/txns", () => {
       warnings: [{ kind: "duplicate", other: "t_other", intent: "same", footprint: [], value: 0.9 }],
     };
     const calls: string[] = [];
+    const reserved: unknown[] = [];
     const stub = {
-      screenCandidates: async () => ({ ok: true, value: [] }),
-      begin: async () => ({ ok: true, value: rejected }),
+      // screenCandidates reserves the begin's id, and the route has to hand that id on to begin.
+      screenCandidates: async () => ({ ok: true, value: { txn: "t_dup", candidates: [] } }),
+      begin: async (_input: unknown, _screen: unknown, id?: string) => (reserved.push(id), { ok: true, value: rejected }),
       indexPut: async (txn: string) => void calls.push(txn),
     };
     const ns = { idFromName: (n: string) => n, get: () => stub };
@@ -441,6 +842,7 @@ describe("POST /api/repos/:repo/txns", () => {
     );
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual(rejected);
+    expect(reserved).toEqual(["t_dup"]);
     expect(calls).toEqual(["t_dup"]);
   });
 
@@ -1240,6 +1642,7 @@ describe("POST /internal/events", () => {
     ["another event type", JSON.stringify({ type: "cf.artifacts.repo.created", source: { repoName: "x" } })],
     ["a push with no source", JSON.stringify({ type: "cf.artifacts.repo.pushed" })],
     ["a push whose repoName is not a string", JSON.stringify({ type: "cf.artifacts.repo.pushed", source: { repoName: 5 } })],
+    ["a push with no payload", JSON.stringify({ type: "cf.artifacts.repo.pushed", source: { type: "artifacts.repo", namespace: "ryke", repoName: "x--t_y" } })],
     ["an array", "[]"],
     ["null", "null"],
     ["invalid JSON", "{"],
@@ -1290,6 +1693,18 @@ describe("POST /internal/events", () => {
     expect((await http("GET", `/api/txns/${b.txn}`)).body.attempts[0].writes).toEqual(["src/y.ts"]);
   });
 
+  it("routes a push for a repo whose name contains -- to that repo's ledger", async () => {
+    // [a-z0-9][a-z0-9-]{0,40} allows "--", but the event handler used to cut the repo name at its first "--".
+    const name = `${unique("dd")}--dd`;
+    await store.fork(fixture.name, name);
+    const head = (await store.info(name)).head!;
+    ok(await ledger(env, name).init(name, head, null, { autoland: false }));
+    const b = await apiBegin(name);
+    const sha = await commitToFork(b, { "src/x.ts": "x\n" });
+    const r = await internal(pushEvent(`${name}--${b.txn}`, sha));
+    expect(r.body).toEqual({ txn: b.txn });
+  });
+
   it("answers {txn: null} for pushes that belong to no open transaction", async () => {
     const t = await newRepo();
     const b = await apiBegin(t.name);
@@ -1312,38 +1727,5 @@ describe("POST /internal/events", () => {
     }
     expect((await http("GET", `/api/txns/${b.txn}`)).body.txn.head).toBeNull();
     expect((await http("GET", `/api/txns/${done.txn}`)).body.txn.head).toBeNull();
-  });
-});
-
-// These fail until the code under test is fixed. Where: /internal/events derives the repo with the
-// first "--" and reads payload.ref unchecked (src/worker/index.ts); deleteRepo resets whatever ledger
-// it is named, including the reserved index (src/worker/service.ts).
-describe("known defects", () => {
-  it("routes a push for a repo whose name contains -- to that repo's ledger", async () => {
-    // [a-z0-9][a-z0-9-]{0,40} allows "--", but the event handler cuts the repo name at its first "--".
-    const name = `${unique("dd")}--dd`;
-    await store.fork(fixture.name, name);
-    const head = (await store.info(name)).head!;
-    ok(await ledger(env, name).init(name, head, null, { autoland: false }));
-    const b = await apiBegin(name);
-    const sha = await commitToFork(b, { "src/x.ts": "x\n" });
-    const r = await internal(pushEvent(`${name}--${b.txn}`, sha));
-    expect(r.body).toEqual({ txn: b.txn });
-  });
-
-  it("answers 422, not 500, for a push event without a payload", async () => {
-    const r = await internal({ type: "cf.artifacts.repo.pushed", source: { type: "artifacts.repo", namespace: "ryke", repoName: "x--t_y" } });
-    expect(r.status).toBe(422);
-  });
-
-  it("refuses to delete the reserved __index repo instead of wiping the txn index", async () => {
-    // A transaction known only to the index DO, as after a Worker restart (the in-memory cache is empty).
-    const t = await newRepo();
-    const txn = ok(await t.L.begin({ agent: "a", intent: "x" })).txn;
-    await ledger(env, "__index").indexPut(txn, t.name);
-    const del = await http("DELETE", "/api/repos/__index");
-    expect(del.status).toBeGreaterThanOrEqual(400);
-    expect(await ledger(env, "__index").indexGet(txn)).toBe(t.name);
-    expect((await http("GET", `/api/txns/${txn}`)).status).toBe(200);
   });
 });

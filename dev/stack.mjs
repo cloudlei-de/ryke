@@ -24,6 +24,13 @@ export function stackConfig(offset = Number(process.env.RYKE_PORT_OFFSET ?? 0)) 
   };
 }
 
+// Everything in the runner's environment is in the environment of every job it starts, including the
+// ones that run candidate code. So it carries addresses, never credentials: the Worker hands a job the
+// token it needs with the job itself (api.ts, agent jobs).
+export function runnerEnv(cfg) {
+  return { RYKE_API_URL: cfg.apiUrl, RYKE_PORT_OFFSET: String(cfg.offset) };
+}
+
 async function waitFor(url, ms) {
   const until = Date.now() + ms;
   for (;;) {
@@ -51,7 +58,7 @@ export async function startStack({ offset, fresh = false, quiet = false } = {}) 
   const runner = await startRunner({
     port: cfg.runnerPort,
     stateDir: cfg.stateDir,
-    env: { RYKE_API_URL: cfg.apiUrl, RYKE_TOKEN: cfg.token, RYKE_PORT_OFFSET: String(cfg.offset) },
+    env: runnerEnv(cfg),
   });
   log(`runner  ${runner.url}`);
   const vite = spawn(process.execPath, [join(ROOT, "node_modules/vite/bin/vite.js"), "dev"], {

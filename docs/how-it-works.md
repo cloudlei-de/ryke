@@ -145,6 +145,7 @@ flowchart LR
   git, real merges, real tests. Locally a Node service stands in for Artifacts (same API, token
   format and push events) and another runs the container scripts as host processes. The production
   adapters (Artifacts binding, Runner containers) compile and have unit tests, but were not run
-  against Cloudflare for this entry; see [deploy.md](deploy.md).
+  against Cloudflare for this entry: the Artifacts adapter is tested against an in-memory fake of
+  the binding, not the real service; see [deploy.md](deploy.md).
 - The bench agents are synthetic: real git, real merges, real tests, scripted edits. The scripted
   demo agents apply prepared patches. Real Claude Code agents use the same API and hooks.

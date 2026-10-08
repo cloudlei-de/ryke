@@ -303,6 +303,109 @@ describe("verify.sh: running the command", () => {
   });
 });
 
+// The command is the repo's own `verify` line, run over code an agent wrote, so it must not inherit the
+// runner's credentials: a test that prints process.env would hand them to the agent through the log.
+describe("verify.sh: what the command can see", () => {
+  const CREDENTIALS = {
+    RYKE_TOKEN: "tok-ryke-aaa",
+    RYKE_INTERNAL_SECRET: "int-secret-bbb",
+    RYKE_FORK_TOKEN: "art_v1_fork-ccc",
+    TYPESAFE_API_KEY: "typesafe-key-ddd",
+    ANTHROPIC_API_KEY: "sk-ant-eee",
+    GITHUB_TOKEN: "ghp-fff",
+    CLOUDFLARE_API_TOKEN: "cf-ggg",
+    AWS_SECRET_ACCESS_KEY: "aws-hhh",
+    DATABASE_PASSWORD: "pw-iii",
+  };
+  // What bash itself adds to an environment it is given.
+  const BASH_OWN = ["PWD", "OLDPWD", "SHLVL", "_"];
+  const ALLOWED = ["PATH", "HOME", "NO_COLOR", "LANG", "TMPDIR", "NODE_OPTIONS", ...BASH_OWN];
+
+  function envSeenBy(run) {
+    const seen = {};
+    for (const line of readFileSync(join(run.cwd, "seen.env"), "utf8").split("\n")) {
+      const at = line.indexOf("=");
+      if (at > 0) seen[line.slice(0, at)] = line.slice(at + 1);
+    }
+    return seen;
+  }
+
+  test("a command sees PATH, HOME, NO_COLOR, LANG, TMPDIR and the reporter flag, and nothing else", async () => {
+    const repo = newRepo();
+    const sha = commit(repo, PASSING);
+    const run = await runVerify(verifyArgs(repo, sha, { command: "env > ../seen.env" }), {
+      env: { ...CREDENTIALS, LANG: "C.UTF-8", TMPDIR: "/var/tmp", FORCE_COLOR: "1", RYKE_API_URL: "http://api.test", SOME_SETTING: "x" },
+    });
+    assert.equal(run.result.ok, true, run.stderr);
+    const seen = envSeenBy(run);
+    assert.deepEqual(
+      Object.keys(seen).filter((name) => !ALLOWED.includes(name)),
+      [],
+    );
+    assert.equal(seen.PATH, process.env.PATH);
+    assert.equal(seen.HOME, process.env.HOME);
+    assert.equal(seen.NO_COLOR, "1");
+    assert.equal(seen.LANG, "C.UTF-8");
+    assert.equal(seen.TMPDIR, "/var/tmp");
+    assert.equal(seen.NODE_OPTIONS, "--test-reporter=tap");
+  });
+
+  test("a command never sees a credential, by name or by value", async () => {
+    const repo = newRepo();
+    const sha = commit(repo, PASSING);
+    const run = await runVerify(verifyArgs(repo, sha, { command: "env > ../seen.env; echo \"$RYKE_TOKEN|$TYPESAFE_API_KEY|$ANTHROPIC_API_KEY\"" }), { env: CREDENTIALS });
+    const seen = envSeenBy(run);
+    for (const name of Object.keys(seen)) assert.doesNotMatch(name, /TOKEN|KEY|SECRET|PASSWORD/i, name);
+    const everything = readFileSync(join(run.cwd, "seen.env"), "utf8") + run.result.log;
+    for (const value of Object.values(CREDENTIALS)) assert.equal(everything.includes(value), false, value);
+    assert.match(run.result.log, /^\|\|$/m);
+  });
+
+  test("a test file that inspects process.env finds no credentials either", async () => {
+    const repo = newRepo();
+    const sha = commit(repo, {
+      "test/env.test.mjs": `${HEADER}
+test("no credential in the environment", () => {
+  const names = Object.keys(process.env).filter((n) => /TOKEN|KEY|SECRET|PASSWORD/i.test(n));
+  assert.deepEqual(names, []);
+  assert.equal(process.env.RYKE_TOKEN, undefined);
+});
+`,
+    });
+    const run = await runVerify(verifyArgs(repo, sha), { env: CREDENTIALS });
+    assert.equal(run.result.pass, true, JSON.stringify(run.result.tests));
+    assert.deepEqual(run.result.tests, { passed: 1, failed: 0, failures: [] });
+  });
+
+  // The runner's own NODE_OPTIONS configures the job (this one runs under it); a `--require` there would
+  // otherwise run inside every test of the candidate.
+  test("NODE_OPTIONS from the job's own environment does not reach the command", async () => {
+    const repo = newRepo();
+    const sha = commit(repo, PASSING);
+    const run = await runVerify(verifyArgs(repo, sha, { command: "env > ../seen.env" }), { env: { NODE_OPTIONS: "--max-old-space-size=256 --stack-trace-limit=7" } });
+    assert.equal(run.result.ok, true, run.stderr);
+    assert.equal(envSeenBy(run).NODE_OPTIONS, "--test-reporter=tap");
+  });
+
+  test("a command that picks its own reporter gets no NODE_OPTIONS at all", async () => {
+    const repo = newRepo();
+    const sha = commit(repo, PASSING);
+    const run = await runVerify(verifyArgs(repo, sha, { command: "env > ../seen.env; node --test --test-reporter=spec test/*.test.mjs" }));
+    assert.equal(run.result.ok, true, run.stderr);
+    assert.equal("NODE_OPTIONS" in envSeenBy(run), false);
+    assert.equal(run.result.tests.passed, 4);
+  });
+
+  test("variables the job does not have are not made up", async () => {
+    const repo = newRepo();
+    const sha = commit(repo, PASSING);
+    const run = await runVerify(verifyArgs(repo, sha, { command: "env > ../seen.env" }), { env: { LANG: undefined, TMPDIR: undefined } });
+    const seen = envSeenBy(run);
+    assert.equal("LANG" in seen, false);
+    assert.equal("TMPDIR" in seen, false);
+  });
+});
+
 describe("verify.sh: timeout and termination", () => {
   test("a timeout kills the command's whole process group", async () => {
     const repo = newRepo();

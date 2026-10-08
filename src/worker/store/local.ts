@@ -2,16 +2,21 @@ import { StoreError, type Change, type Commit, type RepoRef, type RepoStore, typ
 
 const CODES: readonly StoreErrorCode[] = ["NOT_FOUND", "ALREADY_EXISTS", "INVALID", "UNAVAILABLE"];
 
-// Client for dev/store, which mirrors the Artifacts binding over HTTP (PLAN.md §3.2).
+// Client for dev/store, which mirrors the Artifacts binding over HTTP (PLAN.md §3.2). The control API
+// can mint push tokens and delete repos, and process-mode jobs run agent code on the same host, so
+// every call proves itself with the internal secret the Worker and the store share.
 export class LocalStore implements RepoStore {
-  constructor(private readonly base: string) {}
+  constructor(
+    private readonly base: string,
+    private readonly secret: string,
+  ) {}
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     let res: Response;
     try {
       res = await fetch(this.base + path, {
         method,
-        headers: body === undefined ? {} : { "content-type": "application/json" },
+        headers: { ...(body === undefined ? {} : { "content-type": "application/json" }), ...(this.secret ? { "x-ryke-internal": this.secret } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (e) {

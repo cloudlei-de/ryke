@@ -3,11 +3,12 @@
 import { createWorker, type Modules } from "@cloudflare/worker-bundler";
 import { normalizePath } from "../shared/policy";
 import type { Res } from "./ledger/ledger";
-import { ledger } from "./service";
+import { ledger, NAME_ERROR, repoKnown, validRepoName } from "./service";
 import { StoreError, storeFor, type RepoStore } from "./store/store";
 
-// Fork names (`<repo>--t_<id>`) are valid preview repos too, hence the underscore.
-const REPO = /^[a-z0-9][a-z0-9_-]{0,80}$/;
+// Fork names (`<repo>--<txn>`) are valid preview repos too. A txn id has an underscore and a repo name
+// cannot, so a fork name is never also a repo name.
+const FORK = /^(.+)--(t_[a-z0-9]+)$/;
 const SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_MAIN = "src/index.ts";
 
@@ -106,6 +107,10 @@ async function run(env: Env, request: Request, url: URL, repo: string, sha: stri
   const prefix = `/preview/${repo}/${sha}`;
   // The runtime's responses have immutable headers.
   let out = new Response(res.body, res);
+  // The app answers on the dashboard's origin, so these would act on the dashboard: a cookie would be
+  // sent with its API calls, Clear-Site-Data would wipe the admin token it keeps in localStorage, and
+  // a wider service-worker scope would let the app's worker take over the dashboard's pages.
+  for (const header of ["set-cookie", "clear-site-data", "service-worker-allowed"]) out.headers.delete(header);
   out.headers.set("x-ryke-preview", `${repo}@${sha}`);
   // Previews run agent-written code on the dashboard's origin. The sandbox gives the page an opaque
   // origin, so its scripts cannot read the admin token the dashboard keeps in localStorage.
@@ -122,19 +127,24 @@ async function run(env: Env, request: Request, url: URL, repo: string, sha: stri
 
 // GET /preview/:repo/:sha/* (any method; the app decides what it accepts). `sha` is a 40-hex commit
 // or `head`, the Ledger's trunk head. Links in the answer are pinned to the resolved commit so a
-// click-through stays on one version even while trunk moves.
+// click-through stays on one version even while trunk moves. Only repos Ryke created are served, by
+// sha as well as by `head`: a fork is served when the repo it belongs to is.
 export async function previewFetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const m = /^\/preview\/([^/]+)\/([^/]+)(\/.*)?$/.exec(url.pathname);
   const repo = m?.[1];
   const ref = m?.[2];
   const rest = m?.[3];
-  if (!repo || !ref || !REPO.test(repo) || !(ref === "head" || SHA.test(ref))) return notFound("preview path must be /preview/<repo>/<40-hex sha | head>/");
+  if (!repo || !ref || !(ref === "head" || SHA.test(ref))) return notFound("preview path must be /preview/<repo>/<40-hex sha | head>/");
+  const base = FORK.exec(repo)?.[1] ?? repo;
+  if (!validRepoName(base)) return Response.json({ error: `repo ${NAME_ERROR}` }, { status: 422 });
   // 302: the bare form is a typing convenience, not a canonical URL for clients to remember.
   if (rest === undefined) return Response.redirect(`${url.origin}${url.pathname}/${url.search}`, 302);
   try {
+    if (!(await repoKnown(env, base))) return notFound(`repo ${repo} is not initialised`);
     let sha = ref;
     if (ref === "head") {
+      if (base !== repo) return notFound(`${repo} is a fork, and only a repo's trunk has a head; use a commit sha`);
       // RPC types drop the error branch of Res (its `detail: unknown` is not serialisable), hence the cast.
       const summary = (await ledger(env, repo).summary()) as Res<{ head: string }>;
       if (!summary.ok) return Response.json({ error: summary.error }, { status: summary.status });

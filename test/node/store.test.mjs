@@ -10,6 +10,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { startStore } from "../../dev/store/server.mjs";
+import { verifyTrunk } from "../../harness/lib/report.mjs";
 
 const INDEX_MJS = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../dev/store/index.mjs");
 const SECRET = "test-internal-secret";
@@ -144,10 +145,10 @@ function request(baseUrl, method, target, { headers = {}, body } = {}) {
   });
 }
 
-function controlApi(store) {
+function controlApi(store, secret = SECRET) {
   return (method, target, body) =>
     request(store.url, method, target, {
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-ryke-internal": secret },
       body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
     });
 }
@@ -332,6 +333,132 @@ describe("control API: health and routing", () => {
     const res = await api("GET", "/v1/repos/%E0%A4%A");
     assert.equal(res.status, 400);
     assert.equal(res.json.error.code, "INVALID");
+  });
+});
+
+// The control API creates repos, mints push tokens and deletes repos. Process-mode jobs run candidate
+// code on the same host and can reach this port, so it takes the internal secret that only the Worker
+// (and the harness, which the operator starts) holds.
+describe("control API: internal secret", () => {
+  const authFailures = {
+    "no header": {},
+    "an empty header": { "x-ryke-internal": "" },
+    "a wrong secret": { "x-ryke-internal": "wrong-secret" },
+    "the secret with a character appended": { "x-ryke-internal": `${SECRET}x` },
+    "a prefix of the secret": { "x-ryke-internal": SECRET.slice(0, -1) },
+    "the secret in another case": { "x-ryke-internal": SECRET.toUpperCase() },
+    "the secret as a bearer token": { authorization: `Bearer ${SECRET}` },
+    "the secret as basic auth": { authorization: `Basic ${Buffer.from(`git:${SECRET}`).toString("base64")}` },
+  };
+  const routes = [
+    ["POST", "/v1/repos", { name: "x" }],
+    ["GET", "/v1/repos/x"],
+    ["DELETE", "/v1/repos/x"],
+    ["POST", "/v1/repos/x/fork", { name: "y" }],
+    ["POST", "/v1/repos/x/tokens", { scope: "read", ttl: 60 }],
+    ["GET", "/v1/repos/x/log"],
+    ["GET", "/v1/repos/x/file?ref=main&path=a"],
+    ["GET", "/v1/repos/x/files"],
+    ["GET", "/v1/repos/x/diff?base=a&head=b"],
+    // Unknown routes and wrong methods are refused before they are told apart from real ones.
+    ["GET", "/v1/nothing"],
+    ["POST", "/v1/health"],
+    ["PUT", "/v1/repos/x"],
+  ];
+
+  test("every /v1 route except GET /v1/health answers 401 UNAUTHORIZED without the secret", async () => {
+    for (const [method, target, body] of routes) {
+      for (const [label, extra] of Object.entries(authFailures)) {
+        const res = await request(store.url, method, target, {
+          headers: { "content-type": "application/json", ...extra },
+          body: body && JSON.stringify(body),
+        });
+        assert.equal(res.status, 401, `${method} ${target} with ${label}`);
+        assert.equal(res.json.error.code, "UNAUTHORIZED", `${method} ${target} with ${label}`);
+        assert.match(res.json.error.message, /internal secret/, `${method} ${target} with ${label}`);
+      }
+    }
+  });
+
+  test("a refused call changes nothing", async () => {
+    const name = uniq("sec");
+    await makeRepo(name);
+    const before = (await getToken(name, "read")).split("?")[0];
+    const stored = async () => JSON.parse(await fs.readFile(path.join(sharedState, "store", "tokens.json"), "utf8"));
+    const tokensBefore = Object.keys(await stored()).length;
+
+    const created = await request(store.url, "POST", "/v1/repos", { headers: { "content-type": "application/json" }, body: JSON.stringify({ name: `${name}-new` }) });
+    assert.equal(created.status, 401);
+    await assert.rejects(fs.stat(repoPath(`${name}-new`)), { code: "ENOENT" });
+
+    const minted = await request(store.url, "POST", `/v1/repos/${name}/tokens`, { headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "write", ttl: 600 }) });
+    assert.equal(minted.status, 401);
+    assert.equal(Object.keys(await stored()).length, tokensBefore);
+    assert.ok((await stored())[before]);
+
+    const forked = await request(store.url, "POST", `/v1/repos/${name}/fork`, { headers: { "content-type": "application/json" }, body: JSON.stringify({ name: `${name}-fork` }) });
+    assert.equal(forked.status, 401);
+    await assert.rejects(fs.stat(repoPath(`${name}-fork`)), { code: "ENOENT" });
+
+    assert.equal((await request(store.url, "DELETE", `/v1/repos/${name}`)).status, 401);
+    assert.ok((await fs.stat(repoPath(name))).isDirectory());
+  });
+
+  test("the right secret opens the routes", async () => {
+    for (const [method, target, body] of routes) {
+      const res = await request(store.url, method, target, {
+        headers: { "content-type": "application/json", "x-ryke-internal": SECRET },
+        body: body && JSON.stringify(body),
+      });
+      assert.notEqual(res.status, 401, `${method} ${target}`);
+    }
+  });
+
+  test("GET /v1/health needs no secret, so supervisors can probe the store", async () => {
+    const res = await request(store.url, "GET", "/v1/health");
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json, { ok: true });
+  });
+
+  test("the secret is not a repo token: git smart HTTP still wants a token", async () => {
+    const { name } = await repoWithCommit("secgit");
+    for (const headers of [{ "x-ryke-internal": SECRET }, { authorization: `Bearer ${SECRET}` }]) {
+      const res = await request(store.url, "GET", `/git/ryke/${name}.git/info/refs?service=git-upload-pack`, { headers });
+      assert.equal(res.status, 401, JSON.stringify(headers));
+    }
+  });
+
+  // The swarm's closing trunk check reads the store directly; without the header its report said the
+  // trunk tests failed although the trunk was green.
+  test("the harness's trunk check carries the secret, the dev default or the one it is given", async () => {
+    const { name } = await repoWithCommit("trunkcheck", { "a.txt": "one\n" });
+    for (const [secret, expected] of [[undefined, "dev"], ["given-secret", "given-secret"]]) {
+      const seen = [];
+      const spy = (url, init) => {
+        seen.push([init?.method ?? "GET", new URL(url).pathname, init?.headers?.["x-ryke-internal"]]);
+        return Promise.resolve(Response.json({ token: "x" }));
+      };
+      const saved = process.env.RYKE_INTERNAL_SECRET;
+      delete process.env.RYKE_INTERNAL_SECRET;
+      try {
+        await verifyTrunk({ storeUrl: store.url, repo: name, head: null, verify: "true", fetchImpl: spy, ...(secret ? { secret } : {}) });
+      } finally {
+        if (saved !== undefined) process.env.RYKE_INTERNAL_SECRET = saved;
+      }
+      assert.deepEqual(seen, [
+        ["GET", `/v1/repos/${name}`, expected],
+        ["POST", `/v1/repos/${name}/tokens`, expected],
+      ]);
+    }
+  });
+
+  test("a store started with another secret wants that one", async () => {
+    await withStore({ stateDir: await freshDir("state-secret"), internalSecret: "other-secret" }, async (s) => {
+      const body = JSON.stringify({ name: "x" });
+      const headers = (secret) => ({ "content-type": "application/json", "x-ryke-internal": secret });
+      assert.equal((await request(s.url, "POST", "/v1/repos", { headers: headers(SECRET), body })).status, 401);
+      assert.equal((await request(s.url, "POST", "/v1/repos", { headers: headers("other-secret"), body })).status, 201);
+    });
   });
 });
 
@@ -650,6 +777,31 @@ describe("git smart HTTP: authentication", () => {
       body: "0000",
     });
     assert.equal(post.status, 403);
+  });
+
+  // git http-backend honours the last `service` parameter, so a check that reads the first one lets a
+  // read token ask for the receive-pack advertisement (and with it the push protocol's ref list).
+  test("a read token may not get the receive-pack advertisement through a repeated service parameter", async () => {
+    const headers = { authorization: `Bearer ${readToken}` };
+    for (const query of [
+      "service=git-upload-pack&service=git-receive-pack",
+      "service=git-receive-pack&service=git-upload-pack",
+      "service=git-upload-pack&service=git-upload-pack&service=git-receive-pack",
+      "service=git-upload-pack&service=git%2Dreceive-pack",
+    ]) {
+      const res = await request(store.url, "GET", `/git/ryke/${repo}.git/info/refs?${query}`, { headers });
+      assert.equal(res.status, 403, query);
+      assert.equal(res.json.error.code, "FORBIDDEN", query);
+      assert.notEqual(res.headers["content-type"], "application/x-git-receive-pack-advertisement", query);
+    }
+  });
+
+  test("a repeated upload-pack service parameter is still fine for a read token", async () => {
+    const res = await request(store.url, "GET", `/git/ryke/${repo}.git/info/refs?service=git-upload-pack&service=git-upload-pack`, {
+      headers: { authorization: `Bearer ${readToken}` },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers["content-type"], "application/x-git-upload-pack-advertisement");
   });
 
   test("a write token may use both services", async () => {
@@ -1741,8 +1893,11 @@ describe("CLI (dev/store/index.mjs)", () => {
       assert.equal(cli.output().stdout.trim(), `ryke store listening on ${url}`);
 
       const call = (method, target, body) =>
-        request(url, method, target, { headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+        request(url, method, target, { headers: { "content-type": "application/json", "x-ryke-internal": "cli-secret" }, body: body && JSON.stringify(body) });
       assert.deepEqual((await call("GET", "/v1/health")).json, { ok: true });
+      // The control API wants the secret from RYKE_INTERNAL_SECRET, not the default.
+      const refused = await request(url, "POST", "/v1/repos", { headers: { "content-type": "application/json", "x-ryke-internal": "dev" }, body: JSON.stringify({ name: "nope" }) });
+      assert.equal(refused.status, 401);
       const created = await call("POST", "/v1/repos", { name: "viacli" });
       assert.equal(created.json.remote, `${url}/git/cli/viacli.git`);
       assert.ok((await fs.stat(path.join(stateDir, "store", "cli", "viacli.git"))).isDirectory());
@@ -1769,8 +1924,9 @@ describe("CLI (dev/store/index.mjs)", () => {
     const cli = startCli({ RYKE_STORE_PORT: "0", RYKE_STATE_DIR: stateDir, RYKE_EVENTS_URL: "" });
     try {
       const url = await cli.listening;
+      // No RYKE_INTERNAL_SECRET in the environment: the store falls back to "dev", as dev/stack.mjs does.
       const call = (method, target, body) =>
-        request(url, method, target, { headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+        request(url, method, target, { headers: { "content-type": "application/json", "x-ryke-internal": "dev" }, body: body && JSON.stringify(body) });
       await call("POST", "/v1/repos", { name: "quiet" });
       const token = (await call("POST", "/v1/repos/quiet/tokens", { scope: "write", ttl: 60 })).json.token;
       const work = await newWork("cli-quiet");

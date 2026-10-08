@@ -35,5 +35,5 @@ export function storeFor(env: Env): RepoStore {
     if (!env.ARTIFACTS) throw new StoreError("UNAVAILABLE", "RYKE_STORE=artifacts needs the ARTIFACTS binding");
     return new ArtifactsStore(env.ARTIFACTS);
   }
-  return new LocalStore(env.RYKE_STORE_URL);
+  return new LocalStore(env.RYKE_STORE_URL, env.RYKE_INTERNAL_SECRET);
 }

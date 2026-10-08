@@ -1,7 +1,7 @@
 // A tiny HTTP service that lets the workerd test suites make real git commits (workerd cannot run
 // git). POST /commit clones a remote at a base, writes or deletes files, commits and pushes.
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -44,12 +44,24 @@ async function commit({ remote, token, base, files, message = "test change", ref
         await git(dir, "checkout", "-q", "FETCH_HEAD");
       }
     }
-    for (const [path, content] of Object.entries(files)) {
+    // A value is file content, null (delete the file or directory), `{ content, exec }` for an
+    // executable file or `{ symlink }` for a link. Whatever is in the way (a directory where a file
+    // goes, a file where a directory goes) is replaced, as it would be by checking out the new tree.
+    for (const [path, value] of Object.entries(files)) {
       const abs = join(dir, path);
-      if (content === null) await rm(abs, { force: true });
+      const parts = path.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const ancestor = join(dir, ...parts.slice(0, i));
+        if ((await lstat(ancestor).catch(() => null))?.isDirectory() === false) await rm(ancestor, { force: true });
+      }
+      await rm(abs, { recursive: true, force: true });
+      if (value === null) continue;
+      await mkdir(dirname(abs), { recursive: true });
+      if (typeof value === "string") await writeFile(abs, value);
+      else if ("symlink" in value) await symlink(value.symlink, abs);
       else {
-        await mkdir(dirname(abs), { recursive: true });
-        await writeFile(abs, content);
+        await writeFile(abs, value.content);
+        await chmod(abs, value.exec ? 0o755 : 0o644);
       }
     }
     await git(dir, "add", "-A");

@@ -4,10 +4,10 @@ import { env } from "cloudflare:workers";
 import { inject } from "vitest";
 import type { Op } from "../src/shared/types";
 import type { Ledger } from "../src/worker/ledger/ledger";
-import { ledger } from "../src/worker/service";
+import { ledger, registerRepo } from "../src/worker/service";
 import { LocalStore } from "../src/worker/store/local";
 
-export const store = new LocalStore(env.RYKE_STORE_URL);
+export const store = new LocalStore(env.RYKE_STORE_URL, env.RYKE_INTERNAL_SECRET);
 export const fixture = inject("fixture");
 export const AUTH = { authorization: `Bearer ${env.RYKE_TOKEN}` };
 
@@ -49,6 +49,8 @@ export async function newRepo(opts: { autoland?: boolean; policy?: string } = {}
   const L = ledger(env, name);
   const policy = opts.policy ?? (await store.readFile(name, head, "ryke.json"));
   ok(await L.init(name, head, policy, { autoland: opts.autoland ?? false }));
+  // Public reads only answer for registered repos, which is what POST /api/repos does after init.
+  await registerRepo(env, name);
   return { name, L, head };
 }
 

@@ -3,7 +3,7 @@
 // Node built-ins and the real git CLI only. One instance per state dir: tokens.json and
 // the .tmp scratch directory are not safe to share between two running stores.
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -13,7 +13,7 @@ import { LOG_FORMAT, parseLog } from "./commits.mjs";
 
 const HOOK_JS = path.join(path.dirname(fileURLToPath(import.meta.url)), "hook.mjs");
 
-const STATUS = { NOT_FOUND: 404, ALREADY_EXISTS: 409, INVALID: 400, UNAVAILABLE: 503 };
+const STATUS = { NOT_FOUND: 404, ALREADY_EXISTS: 409, INVALID: 400, UNAUTHORIZED: 401, UNAVAILABLE: 503 };
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const TOKEN_SECRET_RE = /^art_v1_[0-9a-f]{40}$/;
 const MAX_TTL_SECONDS = 31_536_000;
@@ -424,6 +424,16 @@ export async function startStore({
     return { changes };
   }
 
+  // The control API creates repos, mints push tokens and deletes repos. Jobs that run agent code on this
+  // host can reach this port, so every route but the health probe wants the secret the Worker holds.
+  // Digests first: timingSafeEqual needs equal lengths, and the secret's length should not leak either.
+  const secretDigest = createHash("sha256").update(internalSecret).digest();
+  function isInternal(req) {
+    const given = req.headers["x-ryke-internal"];
+    if (typeof given !== "string") return false;
+    return timingSafeEqual(createHash("sha256").update(given).digest(), secretDigest);
+  }
+
   async function control(req, res, url) {
     const segments = url.pathname.split("/").filter(Boolean).map((s) => {
       try {
@@ -441,6 +451,9 @@ export async function startStore({
 
     if (section === "health" && name === undefined && method === "GET") {
       return sendJson(res, 200, { ok: true });
+    }
+    if (!isInternal(req)) {
+      throw new ApiError("UNAUTHORIZED", "the x-ryke-internal header must carry the store's internal secret");
     }
     if (section !== "repos" || extra.length > 0) notFound();
 
@@ -511,9 +524,11 @@ export async function startStore({
         "www-authenticate": 'Basic realm="ryke"',
       });
     }
+    // git http-backend acts on the last `service` parameter when a query repeats it, so every
+    // occurrence is checked: a read token must not get the push advertisement behind an innocent first one.
     const writes =
       rest === "git-receive-pack" ||
-      (rest === "info/refs" && url.searchParams.get("service") === "git-receive-pack");
+      (rest === "info/refs" && url.searchParams.getAll("service").includes("git-receive-pack"));
     if (writes && scope !== "write") {
       req.resume();
       return sendError(res, 403, "FORBIDDEN", "this token is read-only");

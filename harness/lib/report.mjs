@@ -226,11 +226,13 @@ export function evaluateCriteria(report) {
 // ---------------------------------------------------------------------------------------------
 
 // Clones trunk through the store (the swarm runs next to it) and runs the repo's own verify command.
-export async function verifyTrunk({ storeUrl, repo, head, verify, timeoutSeconds = 120, fetchImpl = fetch }) {
+// The store's control API wants the internal secret; the default is the dev stack's.
+export async function verifyTrunk({ storeUrl, repo, head, verify, timeoutSeconds = 120, fetchImpl = fetch, secret = process.env.RYKE_INTERNAL_SECRET || "dev" }) {
   const ws = await Workspace.create("checker");
+  const internal = { "x-ryke-internal": secret };
   try {
-    const info = await (await fetchImpl(`${storeUrl}/v1/repos/${repo}`)).json();
-    const grant = await (await fetchImpl(`${storeUrl}/v1/repos/${repo}/tokens`, { method: "POST", body: JSON.stringify({ scope: "read", ttl: 600 }) })).json();
+    const info = await (await fetchImpl(`${storeUrl}/v1/repos/${repo}`, { headers: internal })).json();
+    const grant = await (await fetchImpl(`${storeUrl}/v1/repos/${repo}/tokens`, { method: "POST", headers: internal, body: JSON.stringify({ scope: "read", ttl: 600 }) })).json();
     const sha = await ws.fetch(info.remote, grant.token, "main");
     if (head && sha !== head) return { pass: false, head: sha, error: `store head ${sha} differs from the ledger head ${head}` };
     await ws.checkout(sha);

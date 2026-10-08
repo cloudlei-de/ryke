@@ -5,6 +5,7 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { MAX_BUNDLES, bundleCount, previewFetch } from "../src/worker/preview";
+import { registerRepo } from "../src/worker/service";
 import { fixture, gitHelper, http, store, unique, type Json } from "./helpers";
 
 type Got = { status: number; headers: Headers; text: string };
@@ -22,9 +23,11 @@ async function commitTo(repo: string, files: Record<string, string | null>): Pro
   return (await gitHelper<{ sha: string }>("/commit", { remote: info.remote, token, files })).sha;
 }
 
+// Previews are served only for repos Ryke knows, so the planted store repo is registered like a created one.
 async function plant(files: Record<string, string>): Promise<{ name: string; sha: string }> {
   const name = unique("pv");
   await store.create(name);
+  await registerRepo(env, name);
   return { name, sha: await commitTo(name, files) };
 }
 
@@ -159,6 +162,25 @@ export default {
       return new Response(body, { headers: { "content-type": "text/html", "content-length": String(body.length) } });
     }
     if (path === "/empty") return new Response(null, { status: 204 });
+    // Headers an app must not be able to use against the dashboard it is served next to.
+    if (path === "/headers")
+      return new Response(url.searchParams.has("html") ? '<a href="/x">x</a>' : "h", {
+        headers: [
+          ["content-type", url.searchParams.has("html") ? "text/html" : "text/plain"],
+          ["set-cookie", "session=stolen; Path=/"],
+          ["set-cookie", "second=1; Path=/"],
+          ["clear-site-data", '"cache", "cookies", "storage"'],
+          ["service-worker-allowed", "/"],
+          ["x-app", "kept"],
+        ],
+      });
+    if (path === "/outbound") {
+      try {
+        return Response.json({ reached: (await fetch("http://example.com")).status });
+      } catch (e) {
+        return Response.json({ blocked: String(e) });
+      }
+    }
     if (path === "/throw") throw new Error("handler blew up");
     return new Response("probe", { status: 201, headers: { "x-app": "kept" } });
   },
@@ -249,6 +271,27 @@ describe("forwarding to the app", () => {
     expect(r.headers.get("location")).toBe(expected.replaceAll("%P", base));
   });
 
+  it.each([
+    ["a plain answer", "/headers"],
+    ["an HTML answer, which is rewritten on the way out", "/headers?html=1"],
+  ])("drops the cookie, site-data and service-worker headers of %s and keeps the others", async (_label, path) => {
+    const r = await get(`${base}${path}`);
+    expect(r.status).toBe(200);
+    // The app shares the dashboard's origin: a cookie, a Clear-Site-Data or a wider worker scope would reach the dashboard.
+    expect(r.headers.get("set-cookie")).toBeNull();
+    expect(r.headers.get("clear-site-data")).toBeNull();
+    expect(r.headers.get("service-worker-allowed")).toBeNull();
+    expect(r.headers.get("x-app")).toBe("kept");
+    expect(r.headers.get("x-ryke-preview")).toBe(`${probe.name}@${probe.sha}`);
+    expect(r.headers.get("content-security-policy")).toBe("sandbox allow-scripts allow-forms allow-popups allow-modals");
+  });
+
+  it("gives the app no way out to the network", async () => {
+    const r = await get(`${base}/outbound`);
+    expect(r.status).toBe(200);
+    expect(json(r)).toEqual({ blocked: expect.any(String) });
+  });
+
   it("answers 502 text when the app throws inside its handler", async () => {
     const r = await get(`${base}/throw`);
     expect(r.status).toBe(502);
@@ -269,6 +312,52 @@ describe("the bare path", () => {
     const head = await get(`/preview/${convert.name}/head${search}`);
     expect(head.status).toBe(302);
     expect(head.headers.get("location")).toBe(`http://ryke.test/preview/${convert.name}/head/${keep}`);
+  });
+});
+
+// Every train candidate is a fork `<repo>--<txn>`, and forks are never registered themselves: the
+// repo they belong to decides whether they may be previewed.
+describe("previews of forks", () => {
+  const APP = 'export default { fetch: () => new Response("fork app") };';
+
+  it("serves a fork of a known repo by sha", async () => {
+    const app = await plant({ "src/index.ts": APP });
+    const fork = `${app.name}--t_abc123`;
+    await store.fork(app.name, fork);
+    const r = await get(`/preview/${fork}/${app.sha}/`);
+    expect(r.status).toBe(200);
+    expect(r.text).toBe("fork app");
+    expect(r.headers.get("x-ryke-preview")).toBe(`${fork}@${app.sha}`);
+  });
+
+  it("is 404 for a fork of a repo Ryke does not know", async () => {
+    const stray = unique("pv");
+    await store.create(stray);
+    const sha = await commitTo(stray, { "src/index.ts": APP });
+    const fork = `${stray}--t_abc123`;
+    await store.fork(stray, fork);
+    const r = await get(`/preview/${fork}/${sha}/`);
+    expect(r.status).toBe(404);
+    expect(json(r).error).toContain("not initialised");
+  });
+
+  it("has no `head` for a fork, only the trunk has one", async () => {
+    const app = await plant({ "src/index.ts": APP });
+    const fork = `${app.name}--t_abc123`;
+    await store.fork(app.name, fork);
+    const r = await get(`/preview/${fork}/head/`);
+    expect(r.status).toBe(404);
+    expect(json(r).error).toContain("trunk");
+  });
+
+  it("takes a repo whose own name contains -- for a repo, not a fork", async () => {
+    const name = `${unique("pv")}--dd`;
+    await store.create(name);
+    await registerRepo(env, name);
+    const sha = await commitTo(name, { "src/index.ts": APP });
+    const r = await get(`/preview/${name}/${sha}/`);
+    expect(r.status).toBe(200);
+    expect(r.text).toBe("fork app");
   });
 });
 
@@ -295,10 +384,20 @@ describe("what is not a preview", () => {
     ["a dot", "a.b"],
     ["a leading dash", "-x"],
     ["an encoded slash", "a%2Fb"],
-  ])("404 for a malformed repo name: %s", async (_label, repo) => {
-    const r = await get(`/preview/${repo}/${sha}/`);
-    expect(r.status).toBe(404);
-    expect(json(r).error).toContain("40-hex");
+    ["an underscore outside a fork suffix", "re_po"],
+    ["the reserved index", "__index"],
+    ["41 characters plus a fork suffix that is too long", `${"a".repeat(42)}--t_abc`],
+    ["a fork of an invalid repo", "Bad--t_abc"],
+    ["a fork suffix with nothing before it", "--t_abc"],
+  ])("422 for a malformed repo name, touching no Ledger: %s", async (_label, repo) => {
+    const touched: string[] = [];
+    const e = Object.create(env, { LEDGER: { value: { idFromName: (n: string) => n, get: (n: string) => (touched.push(n), {}) } } }) as Env;
+    for (const ref of [sha, "head"]) {
+      const r = await previewFetch(new Request(`http://ryke.test/preview/${repo}/${ref}/`), e);
+      expect(r.status, ref).toBe(422);
+      expect(((await r.json()) as Json).error, ref).toContain("repo name");
+    }
+    expect(touched).toEqual([]);
   });
 
   it("404 for paths with no sha segment", async () => {
@@ -309,14 +408,42 @@ describe("what is not a preview", () => {
     }
   });
 
-  it("404 for an unknown repo, by sha and by head", async () => {
+  it("404 for an unknown repo, by sha and by head, without touching its Ledger or the store", async () => {
     const name = unique("nope");
-    const bySha = await get(`/preview/${name}/${sha}/`);
-    expect(bySha.status).toBe(404);
-    expect(json(bySha).error).toContain(name);
-    const byHead = await get(`/preview/${name}/head/`);
-    expect(byHead.status).toBe(404);
-    expect(json(byHead).error).toContain("not initialised");
+    const touched: string[] = [];
+    const registry = { indexGet: async () => null };
+    const e = Object.create(env, {
+      LEDGER: { value: { idFromName: (n: string) => n, get: (n: string) => (touched.push(n), n === "__index" ? registry : {}) } },
+      RYKE_STORE_URL: { value: env.RYKE_TEST_GIT_URL },
+    }) as Env;
+    for (const ref of [sha, "head"]) {
+      const r = await previewFetch(new Request(`http://ryke.test/preview/${name}/${ref}/`), e);
+      expect(r.status, ref).toBe(404);
+      const error = ((await r.json()) as Json).error as string;
+      expect(error, ref).toContain(name);
+      expect(error, ref).toContain("not initialised");
+    }
+    expect(new Set(touched)).toEqual(new Set(["__index"]));
+  });
+
+  it("404 for a repo that exists in the store but that Ryke does not know, by sha as well", async () => {
+    const stray = unique("pv");
+    await store.create(stray);
+    const straySha = await commitTo(stray, { "src/index.ts": 'export default { fetch: () => new Response("stray") };' });
+    for (const ref of [straySha, "head"]) {
+      const r = await get(`/preview/${stray}/${ref}/`);
+      expect(r.status, ref).toBe(404);
+      expect(json(r).error, ref).toContain("not initialised");
+    }
+  });
+
+  it("404 for a repo that is registered but has no Ledger when asked for head", async () => {
+    const name = unique("pv");
+    await store.create(name);
+    await registerRepo(env, name);
+    const r = await get(`/preview/${name}/head/`);
+    expect(r.status).toBe(404);
+    expect(json(r).error).toContain("not initialised");
   });
 
   it("404 for a repo that has a store but no Ledger when asked for head", async () => {
@@ -332,6 +459,7 @@ describe("what is not a preview", () => {
   });
 
   it("404 for a commit that has no entry point", async () => {
+    await registerRepo(env, fixture.name);
     const r = await get(`/preview/${fixture.name}/${fixture.commits[0]}/`);
     expect(r.status).toBe(404);
     expect(json(r).error).toContain("no preview entry point src/index.ts");
@@ -445,6 +573,7 @@ describe("the bundle cache", () => {
     const fork = async () => {
       const name = unique("pv");
       await store.fork(tiny.name, name);
+      await registerRepo(env, name);
       return name;
     };
     await open(tiny.name);

@@ -15,7 +15,10 @@
     "e2e:land": "node harness/e2e/land.mjs",
     "swarm": "node harness/swarm.mjs",
     "ryke": "node harness/ryke.mjs",
-    "deploy:dry": "CLOUDFLARE_ENV=production vite build && wrangler deploy --dry-run --outdir .wrangler/dry"
+    "deploy:dry": "CLOUDFLARE_ENV=production vite build && wrangler deploy --dry-run --outdir .wrangler/dry",
+    "jev:record": "node harness/jev-record.mjs",
+    "jev:calibrate": "node harness/jev-calibrate.mjs",
+    "e2e:recall": "node harness/e2e/recall.mjs"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.63.0",

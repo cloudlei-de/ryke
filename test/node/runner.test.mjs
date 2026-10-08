@@ -25,6 +25,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { startRunner } from "../../dev/runner/server.mjs";
+import { runnerEnv, stackConfig } from "../../dev/stack.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(REPO_ROOT, "dev/runner/index.mjs");
@@ -1041,4 +1042,17 @@ it("the CLI exits non-zero when its configuration is invalid", async (t) => {
   const [code] = await once(cli.proc, "exit");
   assert.notEqual(code, 0);
   assert.match(cli.err(), /concurrency must be a positive integer/);
+});
+
+// Jobs run candidate code (the verify command, the agent's tools) in processes the runner starts, and
+// whatever is in the runner's own environment is in theirs. The stack therefore hands it no credential;
+// jobs that need the API token get it from the Worker with the job (api.ts, agent jobs).
+test("the dev stack gives the runner an environment without credentials", () => {
+  const cfg = { ...stackConfig(7), token: "sekret-token", internalSecret: "sekret-internal" };
+  const env = runnerEnv(cfg);
+  assert.deepEqual(env, { RYKE_API_URL: cfg.apiUrl, RYKE_PORT_OFFSET: "7" });
+  for (const [name, value] of Object.entries(env)) {
+    assert.doesNotMatch(name, /TOKEN|KEY|SECRET|PASSWORD/i);
+    assert.doesNotMatch(value, /sekret/);
+  }
 });
