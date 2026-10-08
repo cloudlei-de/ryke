@@ -79,6 +79,10 @@ Ryke's throughput falls: one train lands at a time, and 464 of its 466 stale abo
 were already waiting for a train when trunk moved under them. Full numbers, caveats and the chart:
 [bench/results/latest.md](bench/results/latest.md); the dashboard's `#/bench` view renders the same JSON.
 
+What the hot-file leases buy, from the same bench with Ryke's leases switched off
+([bench/results/ablation/latest.md](bench/results/ablation/latest.md)): at 50 agents 56 against 46
+landed per minute and 106 against 245 stale aborts; at 100 agents 64 against 31 and 246 against 502.
+
 ## Commands
 
 | Command | What it does |

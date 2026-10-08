@@ -11,9 +11,9 @@ No milestone is marked accepted until a verifier re-runs its Accept commands.
 | M2 Landing | built | `npm run e2e:land` PASS (train of 2, stale with delta, bisection 3 probes isolates "broken by design", trunk 89 tests) |
 | M3 Demo + scripted swarm | built | `npm run e2e:swarm` (Jev live) PASS: 34 landed (threshold 34, zero margin), G3 judged (dup-speed and dup-kmh rejected duplicate_of, dup-velocity warned), G5 protected, t-precision 9 stale aborts all landed after retry, trunk 672 tests, preview 200 with 25 categories |
 | M4 Dashboard | built + review fixes | `npm run shots` PASS earlier (40 files, 0 console errors, 502 s); rerun needed after the UI fixes and the bench |
-| M5 Jev + contention | built | jev-calibration.md 94 % overall (holdout gain within noise); `npm run e2e:contention` PASS but weak: hot-file stale aborts off 33 vs on 30, 0 lease waits (see Known issues) |
+| M5 Jev + contention | built | jev-calibration.md 94 % overall (holdout gain within noise); lease ablation on the bench (bench/results/ablation, 15d4267): leases on vs off at 50 agents 56 vs 46 landed/min, stale_read aborts 106 vs 245; at 100 agents 64 vs 31, 246 vs 502; 0 breakages. `npm run e2e:contention` (scripted swarm) PASS but weak: 0 lease waits, hot-file stale aborts 30 vs 33 |
 | M6 Recall | built | `npm run e2e:recall` PASS (2 G6 targets, 1 cascade re-queued and landed, trunk green) |
-| M7 Bench | harness built | measured run (lock, queue, ryke at 10/50/100/200) and the ryke vs ryke-nolease ablation still to run alone |
+| M7 Bench | measured, committed 485c763 | ryke 58/68/38.5 vs queue 24/19/24.5 vs lock 5.5/5.5/6.5 landed/min at 50/100/200; queue wins at 10 (25.5 vs 22); 0 trunk breakages in all 12 cells |
 | M8 Claude mode | built + review fixes | `npm run e2e:claude` PASS (7 landed incl. retries, tamper rejected, trunk 207 tests); claude-mode suite 283 |
 | M9 Production + docs | built | `npm run e2e:deploy` PASS (config checks; image build blocked by the VM proxy, BLOCKERS) |
 
@@ -39,10 +39,11 @@ No milestone is marked accepted until a verifier re-runs its Accept commands.
 4. Verifiers per milestone (≤ 2 heavy at once, offsets 0/10/20/30/40); fix; PROGRESS; PR.
 
 ## Known issues
-- M5 contention evidence is weak: the scripted catalogue never has two concurrent writers of a hot file,
-  so leases never make anyone wait (two samples: off/on hot-file stale aborts 22/16 and 33/30, baseline
-  noise larger than the gap). The bench ablation (`ryke` vs `ryke-nolease`, synthetic agents that edit
-  hot files) is the measurement that can show the lease effect.
+- The scripted-swarm contention comparison (e2e:contention) is weak evidence: the catalogue never has two
+  concurrent writers of a hot file, so leases never make anyone wait. The bench ablation is the
+  measurement of the lease effect (see M5 row).
+- At 200 bench agents Ryke's throughput falls to 38.5/min: 464 of 466 stale aborts hit changes already
+  ready, waiting for the one train at a time (README says so).
 - e2e:swarm has zero margin (exactly 34 landed in five runs): live Jev parks sloppy-a (and sometimes
   t-search/t-dark) in needs_human; cat-typography sometimes hits max_attempts.
 

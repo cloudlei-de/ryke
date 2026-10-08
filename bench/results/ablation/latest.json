@@ -1,0 +1,72 @@
+{
+  "generatedAt": "2026-10-08T05:50:41.738Z",
+  "durationSeconds": 120,
+  "synthetic": true,
+  "note": "Synthetic agents: real git, real merges, real tests, scripted edits. Time factor 1 (median think 6 s), seed 7, 4-vCPU VM, Jev off (the tests are the only gate for every policy).",
+  "cells": [
+    {
+      "policy": "ryke",
+      "agents": 50,
+      "landed": 112,
+      "landedPerMinute": 56,
+      "p50": 18.79,
+      "p95": 40.53,
+      "aborts": {
+        "stale_read": 106,
+        "failed_verify": 5,
+        "max_attempts": 13
+      },
+      "verifyRunsPerLanded": 0.31,
+      "wastedAgentSeconds": 576.9,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nolease",
+      "agents": 50,
+      "landed": 92,
+      "landedPerMinute": 46,
+      "p50": 24.92,
+      "p95": 60.63,
+      "aborts": {
+        "stale_read": 245,
+        "failed_verify": 7,
+        "max_attempts": 56
+      },
+      "verifyRunsPerLanded": 0.4,
+      "wastedAgentSeconds": 1308.8,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke",
+      "agents": 100,
+      "landed": 128,
+      "landedPerMinute": 64,
+      "p50": 25.5,
+      "p95": 60.36,
+      "aborts": {
+        "stale_read": 246,
+        "failed_verify": 2,
+        "max_attempts": 37
+      },
+      "verifyRunsPerLanded": 0.2,
+      "wastedAgentSeconds": 1370.9,
+      "trunkBreakages": 0
+    },
+    {
+      "policy": "ryke-nolease",
+      "agents": 100,
+      "landed": 62,
+      "landedPerMinute": 31,
+      "p50": 35.66,
+      "p95": 69.82,
+      "aborts": {
+        "stale_read": 502,
+        "failed_verify": 5,
+        "max_attempts": 133
+      },
+      "verifyRunsPerLanded": 0.4,
+      "wastedAgentSeconds": 2571.1,
+      "trunkBreakages": 0
+    }
+  ]
+}
